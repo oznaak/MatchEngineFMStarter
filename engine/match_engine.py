@@ -51,6 +51,7 @@ PASS_SPEEDS = {
     "progressive_ground": 33.0,
     "through_ball": 36.0,
     "switch": 40.0,
+    "cross": 34.0,
 }
 
 ROLE_INTENTS: Dict[str, Dict[str, float]] = {
@@ -139,7 +140,7 @@ class MatchEngine:
             named_slot = f"{slot}{slot_counts[slot]}" if formation_counts[slot] > 1 else slot
             coords = HOME_FORMATION_XY[named_slot] if side == "home" else AWAY_FORMATION_XY[named_slot]
             pace = profile.attributes["pace"]
-            speed = 2.1 + ((pace - 50.0) / 50.0) * 0.95
+            speed = 2.35 + ((pace - 50.0) / 50.0) * 1.08
             facing_x = 1.0 if side == "home" else -1.0
             xi_states.append(
                 PlayerState(
@@ -331,18 +332,19 @@ class MatchEngine:
                 x_target = ball_x - sign * 7.0
                 y_target = clamp(lerp(player.home_y, ball_y, 0.25), 8, PITCH_WIDTH - 8)
             elif player.slot == "CM":
-                x_target = ball_x + sign * 4.0
-                y_target = clamp(ball_y - 7.0, 6, PITCH_WIDTH - 6)
+                x_target = ball_x + sign * 2.5
+                side_offset = -7.5 if player.home_y < PITCH_WIDTH / 2 else 7.5
+                y_target = clamp(ball_y + side_offset, 6, PITCH_WIDTH - 6)
             elif player.slot == "AM":
-                x_target = ball_x + sign * 9.0
-                y_target = clamp(ball_y + 6.0, 6, PITCH_WIDTH - 6)
+                x_target = ball_x + sign * 6.5
+                y_target = clamp(lerp(player.home_y, ball_y, 0.22), 8, PITCH_WIDTH - 8)
             elif player.slot in ("LW", "RW"):
                 same_side = (player.slot == "LW" and ball_y < PITCH_WIDTH / 2) or (player.slot == "RW" and ball_y >= PITCH_WIDTH / 2)
-                x_target = player.home_x + sign * (5.0 if same_side else 1.5)
-                y_target = player.home_y + (ball_y - player.home_y) * (0.25 if same_side else 0.08)
+                x_target = player.home_x + sign * (3.5 if same_side else 1.0)
+                y_target = clamp(player.home_y + (ball_y - player.home_y) * (0.12 if same_side else 0.04), 3, PITCH_WIDTH - 3)
             elif player.slot == "ST":
-                x_target = player.home_x + sign * 3.5
-                y_target = clamp(lerp(player.home_y, ball_y, 0.18), 10, PITCH_WIDTH - 10)
+                x_target = player.home_x + sign * 2.0
+                y_target = clamp(lerp(player.home_y, ball_y, 0.10), 10, PITCH_WIDTH - 10)
         elif phase == "progression":
             if player.slot in ("CB", "LB", "RB"):
                 overlap = 4.0 if player.slot in ("LB", "RB") else 2.5
@@ -352,39 +354,41 @@ class MatchEngine:
                 x_target = ball_x - sign * 8.0
                 y_target = clamp(lerp(player.home_y, ball_y, 0.35), 7, PITCH_WIDTH - 7)
             elif player.slot == "CM":
-                x_target = ball_x + sign * 5.5
-                y_target = clamp(ball_y - 8.0, 6, PITCH_WIDTH - 6)
+                x_target = ball_x + sign * 3.8
+                side_offset = -8.0 if player.home_y < PITCH_WIDTH / 2 else 8.0
+                y_target = clamp(ball_y + side_offset, 6, PITCH_WIDTH - 6)
             elif player.slot == "AM":
-                x_target = ball_x + sign * 10.0
-                y_target = clamp(ball_y + 6.0, 6, PITCH_WIDTH - 6)
+                x_target = ball_x + sign * 7.2
+                y_target = clamp(lerp(player.home_y, ball_y, 0.24), 7, PITCH_WIDTH - 7)
             elif player.slot in ("LW", "RW"):
                 ball_on_side = (player.slot == "LW" and ball_y < PITCH_WIDTH * 0.55) or (player.slot == "RW" and ball_y > PITCH_WIDTH * 0.45)
-                diag_push = 10.0 if ball_on_side else 5.5
+                diag_push = 8.0 if ball_on_side else 4.2
                 x_target = player.home_x + sign * diag_push
                 offset = -5.0 if player.slot == "LW" else 5.0
-                y_target = clamp(player.home_y + (ball_y - player.home_y) * (0.42 if ball_on_side else 0.16) + offset * 0.15, 4, PITCH_WIDTH - 4)
+                y_target = clamp(player.home_y + (ball_y - player.home_y) * (0.24 if ball_on_side else 0.08) + offset * 0.10, 3, PITCH_WIDTH - 3)
             elif player.slot == "ST":
-                x_target = player.home_x + sign * 8.0
-                y_target = clamp(lerp(player.home_y, ball_y, 0.28), 8, PITCH_WIDTH - 8)
+                x_target = player.home_x + sign * 5.5
+                y_target = clamp(lerp(player.home_y, ball_y, 0.18), 9, PITCH_WIDTH - 9)
         else:
             if player.slot in ("CB", "LB", "RB"):
-                x_target = player.home_x + sign * (2.5 if player.slot == "CB" else 6.0)
+                base_push = 8.0 if player.slot == "CB" else 13.0
+                x_target = max(player.home_x + sign * base_push, ball_x - sign * 26.0) if sign > 0 else min(player.home_x + sign * base_push, ball_x - sign * 26.0)
                 y_target = clamp(player.home_y + (ball_y - player.home_y) * 0.28 + width_shift, 4, PITCH_WIDTH - 4)
             elif player.slot == "DM":
-                x_target = ball_x - sign * 5.0
+                x_target = ball_x - sign * 10.0
                 y_target = clamp(lerp(player.home_y, ball_y, 0.42), 6, PITCH_WIDTH - 6)
             elif player.slot == "CM":
-                x_target = ball_x + sign * 2.0
+                x_target = ball_x + sign * 4.0
                 y_target = clamp(ball_y - 7.0, 6, PITCH_WIDTH - 6)
             elif player.slot == "AM":
-                x_target = ball_x + sign * 5.0
+                x_target = ball_x + sign * 7.0
                 y_target = clamp(ball_y + 5.0, 6, PITCH_WIDTH - 6)
             elif player.slot in ("LW", "RW"):
-                x_target = player.home_x + sign * 6.0
-                inside = -7.0 if player.slot == "LW" else 7.0
-                y_target = clamp(player.home_y + inside * 0.35 + (ball_y - player.home_y) * 0.36, 4, PITCH_WIDTH - 4)
-            elif player.slot == "ST":
                 x_target = player.home_x + sign * 10.0
+                inside = -7.0 if player.slot == "LW" else 7.0
+                y_target = clamp(player.home_y + inside * 0.22 + (ball_y - player.home_y) * 0.24, 3, PITCH_WIDTH - 3)
+            elif player.slot == "ST":
+                x_target = player.home_x + sign * 12.0
                 y_target = clamp(lerp(player.home_y, ball_y, 0.30), 8, PITCH_WIDTH - 8)
 
         return clamp(x_target, 2, PITCH_LENGTH - 2), clamp(y_target, 2, PITCH_WIDTH - 2)
@@ -447,15 +451,20 @@ class MatchEngine:
 
                 if attacking:
                     tx, ty = self._role_target(p, self.state.phase_in_possession, self.state.ball_zone)
+                    tx, ty = self._dynamic_attack_target(p, tx, ty)
+                    tx, ty = self._return_to_role_target(p, tx, ty)
                     p.target_x, p.target_y = tx, ty
                     state = "support"
                     if p.profile.id == self.state.ball.target_player_id:
                         state = "receiving"
-                    elif p.slot in ("LW", "RW", "ST") and abs(p.target_x - p.x) > 4:
+                    elif distance((p.x, p.y), (p.home_x, p.home_y)) > 10.0 and distance((p.x, p.y), (ball_x, ball_y)) > 9.0:
+                        state = "recover"
+                    elif p.slot in ("LW", "RW", "ST", "AM", "CM") and abs(p.target_x - p.x) > 3:
                         state = "run"
                     self._set_render_state(p, state, self.state.phase_in_possession)
                 else:
                     tx, ty = self._defensive_shape_target(p)
+                    tx, ty = self._return_to_role_target(p, tx, ty)
                     if p.profile.id == main_presser.profile.id and p.profile.id != self.state.ball.carrier_id:
                         tx = lerp(p.x, ball_x, 0.48)
                         ty = lerp(p.y, ball_y, 0.48)
@@ -467,8 +476,125 @@ class MatchEngine:
                             ty = lerp(p.y, dangerous.y, 0.25)
                         self._set_render_state(p, "cover", "cover")
                     else:
-                        self._set_render_state(p, "shape", "shape")
+                        state = "recover" if distance((p.x, p.y), (p.home_x, p.home_y)) > 10.0 and distance((p.x, p.y), (ball_x, ball_y)) > 9.0 else "shape"
+                        self._set_render_state(p, state, "shape")
                     p.target_x, p.target_y = clamp(tx, 2, PITCH_LENGTH - 2), clamp(ty, 2, PITCH_WIDTH - 2)
+
+    def _dynamic_attack_target(self, player: PlayerState, tx: float, ty: float) -> Tuple[float, float]:
+        if player.slot == "GK":
+            return tx, ty
+        sign = self._side_forward_sign(player.side)
+        ball_x, ball_y = self.state.ball.x, self.state.ball.y
+        phase = self.state.phase_in_possession
+        space = self._receiver_space(player)
+        dist_to_ball = distance((player.x, player.y), (ball_x, ball_y))
+
+        if phase == "build_up":
+            if player.slot in ("CM", "AM"):
+                tx += sign * (1.6 + space * 1.2)
+            elif player.slot in ("LW", "RW", "ST"):
+                tx += sign * (2.8 + space * 1.4)
+        elif phase == "progression":
+            if player.slot in ("CB", "LB", "RB"):
+                tx += sign * (2.2 + space * 1.0)
+            if player.slot == "CM":
+                tx += sign * (3.4 + space * 2.0)
+                ty += -2.0 if player.home_y < PITCH_WIDTH / 2 else 2.0
+            elif player.slot == "AM":
+                tx += sign * (4.5 + space * 2.4)
+                ty += 2.5 if player.home_y >= PITCH_WIDTH / 2 else -2.5
+            elif player.slot in ("LW", "RW"):
+                tx += sign * (5.8 + space * 2.4)
+                ty += (-2.8 if player.slot == "LW" else 2.8)
+            elif player.slot == "ST":
+                tx += sign * (6.4 + space * 2.8)
+                ty += (-3.5 if ball_y < PITCH_WIDTH / 2 else 3.5) * 0.6
+        else:
+            if player.slot in ("CB", "LB", "RB"):
+                tx += sign * (3.5 + space * 1.2)
+            if player.slot == "CM":
+                tx += sign * (2.8 + space * 1.6)
+            elif player.slot == "AM":
+                tx += sign * (4.2 + space * 2.0)
+            elif player.slot in ("LW", "RW"):
+                tx += sign * (4.8 + space * 2.2)
+                ty += (-2.0 if player.slot == "LW" else 2.0)
+            elif player.slot == "ST":
+                tx += sign * (5.4 + space * 2.4)
+
+        if dist_to_ball > 12.0 and player.slot in ("CM", "AM", "LW", "RW", "ST"):
+            tx += sign * 1.6
+
+        tx, ty = clamp(tx, 2, PITCH_LENGTH - 2), clamp(ty, 2, PITCH_WIDTH - 2)
+        return self._apply_onside_target_limit(player, tx, ty)
+
+    def _return_to_role_target(self, player: PlayerState, tx: float, ty: float) -> Tuple[float, float]:
+        ball_x, ball_y = self.state.ball.x, self.state.ball.y
+        role_gap = distance((player.x, player.y), (player.home_x, player.home_y))
+        ball_gap = distance((player.x, player.y), (ball_x, ball_y))
+        target_gap = distance((player.x, player.y), (tx, ty))
+        if role_gap < 8.0 or ball_gap < 9.0 or target_gap < 4.0:
+            return tx, ty
+
+        recover_blend = clamp((role_gap - 8.0) / 18.0, 0.0, 0.7)
+        recover_x = lerp(tx, player.home_x, recover_blend * 0.55)
+        recover_y = lerp(ty, player.home_y, recover_blend * 0.70)
+        return clamp(recover_x, 2, PITCH_LENGTH - 2), clamp(recover_y, 2, PITCH_WIDTH - 2)
+
+    def _offside_line(self, attacking_side: str) -> float:
+        defenders = sorted(self.opponents(attacking_side), key=lambda p: p.x)
+        if len(defenders) < 2:
+            return 0.0 if attacking_side == "away" else PITCH_LENGTH
+        if attacking_side == "home":
+            return defenders[-2].x
+        return defenders[1].x
+
+    def _is_player_offside(self, player: PlayerState, passer_x: float) -> bool:
+        sign = self._side_forward_sign(player.side)
+        forward = self._forwardness(player.side, player.x)
+        passer_forward = self._forwardness(player.side, passer_x)
+        line_forward = self._forwardness(player.side, self._offside_line(player.side))
+        if forward <= (PITCH_LENGTH / 2):
+            return False
+        if forward <= passer_forward + 0.35:
+            return False
+        return forward > line_forward + 0.2
+
+    def _apply_onside_target_limit(self, player: PlayerState, tx: float, ty: float) -> Tuple[float, float]:
+        if player.side != self.state.possession or player.slot in ("GK", "CB", "LB", "RB", "DM"):
+            return tx, ty
+        sign = self._side_forward_sign(player.side)
+        line = self._offside_line(player.side) - sign * 1.2
+        if sign > 0:
+            tx = min(tx, max(PITCH_LENGTH / 2 + 0.5, line))
+        else:
+            tx = max(tx, min(PITCH_LENGTH / 2 - 0.5, line))
+        return clamp(tx, 2, PITCH_LENGTH - 2), ty
+
+    def _call_offside(self, offender: PlayerState) -> None:
+        defending_side = "away" if offender.side == "home" else "home"
+        defenders = self.teammates(defending_side)
+        spot_x = offender.x
+        spot_y = offender.y
+        taker = min(
+            defenders,
+            key=lambda p: distance((p.x, p.y), (spot_x, spot_y)) + (0.8 if p.slot == "GK" else 0.0),
+        )
+        self.state.ball.mode = "loose"
+        self.state.ball.carrier_id = None
+        self.state.ball.target_player_id = None
+        self.state.ball.offside_flag = False
+        self.state.ball.x = spot_x
+        self.state.ball.y = spot_y
+        self.state.ball.prev_x = spot_x
+        self.state.ball.prev_y = spot_y
+        self.state.ball.target_x = spot_x
+        self.state.ball.target_y = spot_y
+        taker.x = lerp(taker.x, spot_x, 0.35)
+        taker.y = lerp(taker.y, spot_y, 0.35)
+        taker.target_x = spot_x
+        taker.target_y = spot_y
+        self._give_ball_to(taker, note=f"Offside against {offender.short_name}", action_type="recovery")
 
     def _move_players(self) -> None:
         for p in self.home.xi + self.away.xi:
@@ -502,19 +628,20 @@ class MatchEngine:
         pace = player.profile.attributes["pace"]
         stamina = player.profile.attributes["stamina"]
         fatigue_penalty = clamp(player.fatigue / max(45.0, stamina * 0.75), 0.0, 0.42)
-        pace_boost = 0.90 + (pace - 50.0) / 120.0
+        pace_boost = 0.96 + (pace - 50.0) / 112.0
         state_multiplier = {
-            "pressing": 1.22,
-            "run": 1.18,
-            "transition": 1.20,
-            "carry": 1.08,
-            "receiving": 1.06,
-            "cover": 1.04,
+            "pressing": 1.28,
+            "recover": 1.38,
+            "run": 1.24,
+            "transition": 1.26,
+            "carry": 1.13,
+            "receiving": 1.10,
+            "cover": 1.08,
             "celebrate": 1.14,
-            "shape": 0.97,
-            "support": 1.00,
+            "shape": 1.01,
+            "support": 1.05,
         }.get(player.render_state, 1.0)
-        return max(1.8, player.base_speed * pace_boost * state_multiplier * (1.0 - fatigue_penalty))
+        return max(2.1, player.base_speed * pace_boost * state_multiplier * (1.0 - fatigue_penalty))
 
     def _ball_front_offset(self, carrier: PlayerState) -> Tuple[float, float]:
         mag = math.hypot(carrier.facing_x, carrier.facing_y)
@@ -533,6 +660,9 @@ class MatchEngine:
         if pass_type == "through_ball":
             lead_x += move_x * 0.75 + sign * (2.0 + space * 1.6)
             lead_y += move_y * 0.55
+        elif pass_type == "cross":
+            lead_x += move_x * 0.24 + sign * (1.8 + space * 1.0)
+            lead_y += (PITCH_WIDTH / 2 - receiver.y) * 0.12 + move_y * 0.18
         elif pass_type == "progressive_ground":
             lead_x += move_x * 0.35 + sign * 0.8
             lead_y += move_y * 0.25
@@ -576,6 +706,7 @@ class MatchEngine:
         receiver_space = self._receiver_space(receiver)
         moving_into_space = 1.0 if (receiver.target_x - receiver.x) * self._side_forward_sign(receiver.side) > 0.5 else 0.0
         body_shape = clamp(receiver.facing_x * self._side_forward_sign(receiver.side), -1.0, 1.0)
+        phase = self.state.phase_in_possession
         backward_penalty = max(0.0, -progression) * 1.25
         if progression < -8.0:
             backward_penalty += 8.0
@@ -583,6 +714,32 @@ class MatchEngine:
             return -999.0
         if self._goal_distance(carrier) < 22.0 and progression < -4.0:
             return -999.0
+
+        link_bonus = 0.0
+        if phase in ("build_up", "progression"):
+            if receiver.slot in ("DM", "CM", "AM"):
+                link_bonus += 4.5
+            if carrier.slot in ("CB", "LB", "RB", "DM") and receiver.slot in ("DM", "CM", "AM"):
+                link_bonus += 4.0
+            if carrier.slot in ("LW", "RW", "ST") and receiver.slot in ("CM", "AM", "DM"):
+                link_bonus += 3.6
+            if carrier.slot in ("CM", "AM", "DM") and receiver.slot in ("LW", "RW"):
+                same_side = (receiver.slot == "LW" and carrier.y < PITCH_WIDTH / 2) or (receiver.slot == "RW" and carrier.y >= PITCH_WIDTH / 2)
+                link_bonus += 3.2 if same_side else 1.4
+            if carrier.slot in ("LW", "RW") and receiver.slot in ("ST", "LW", "RW"):
+                link_bonus -= 4.2
+            if carrier.slot == "ST" and receiver.slot in ("LW", "RW", "ST"):
+                link_bonus -= 5.2
+        if phase == "final_third":
+            if carrier.slot == "ST" and receiver.slot == "AM":
+                link_bonus += 12.0
+            if carrier.slot == "ST" and receiver.slot in ("LW", "RW", "ST"):
+                link_bonus -= 16.0
+            if carrier.slot in ("LW", "RW") and receiver.slot in ("CM", "AM"):
+                link_bonus += 2.2
+            if carrier.slot in ("CM", "AM") and receiver.slot in ("LW", "RW"):
+                link_bonus += 2.6
+
         base = (
             carrier.profile.attributes["passing"] * 0.22
             + carrier.profile.attributes["vision"] * 0.18
@@ -592,6 +749,7 @@ class MatchEngine:
             + body_shape * 3.0
             + forward_angle * 8.0
             + moving_into_space * 4.0
+            + link_bonus
             - lane_penalty * 6.0
             - backward_penalty
             - dist * 0.12
@@ -599,12 +757,48 @@ class MatchEngine:
         if pass_type == "through_ball":
             if forward_angle < 0.45 or moving_into_space == 0.0 or receiver_space < 0.45:
                 return -999.0
+            if self._is_player_offside(receiver, carrier.x):
+                return -999.0
             return base + 4.5 - dist * 0.03
+        if pass_type == "cross":
+            if not self._is_cross_situation(carrier, receiver):
+                return -999.0
+            if self._is_player_offside(receiver, carrier.x):
+                return -999.0
+            target_box_bonus = max(0.0, self._forwardness(receiver.side, receiver.x) - 74.0) * 1.2
+            central_bonus = max(0.0, 16.0 - abs(receiver.y - PITCH_WIDTH / 2)) * 1.1
+            aerial_bonus = (
+                receiver.profile.attributes["positioning"] * 0.06
+                + receiver.profile.attributes["composure"] * 0.04
+            )
+            return base + 10.0 + target_box_bonus + central_bonus + aerial_bonus - abs(progression) * 0.04
+        if progression > 0.8 and self._is_player_offside(receiver, carrier.x):
+            return -999.0
         if pass_type == "progressive_ground":
+            if phase == "final_third" and carrier.slot == "ST" and receiver.slot in ("LW", "RW", "ST"):
+                return base - 6.5
             return base + 2.8
+        if phase == "final_third" and carrier.slot == "ST" and receiver.slot in ("LW", "RW", "ST"):
+            return base - 10.0 - max(0.0, 18.0 - dist) * 0.25
         if pass_type == "switch":
             return base + (3.5 if abs(receiver.y - carrier.y) > 16 else -2.0)
         return base + 1.4 - max(0.0, dist - 18.0) * 0.10
+
+    def _is_cross_situation(self, carrier: PlayerState, receiver: PlayerState) -> bool:
+        if carrier.slot not in ("LW", "RW", "LB", "RB"):
+            return False
+        if receiver.slot not in ("ST", "AM", "CM", "LW", "RW"):
+            return False
+        carrier_forward = self._forwardness(carrier.side, carrier.x)
+        receiver_forward = self._forwardness(receiver.side, receiver.x)
+        wide_zone = carrier.y < 14.0 or carrier.y > (PITCH_WIDTH - 14.0)
+        if carrier_forward < 74.0 or not wide_zone:
+            return False
+        if receiver_forward < 70.0:
+            return False
+        if abs(receiver.y - PITCH_WIDTH / 2) > 18.0 and receiver.slot not in ("LW", "RW"):
+            return False
+        return True
 
     def _update_ball_motion(self) -> None:
         ball = self.state.ball
@@ -749,6 +943,9 @@ class MatchEngine:
         receiver = self.find_player(ball.target_player_id)
         if not receiver:
             return False
+        if ball.offside_flag:
+            self._call_offside(receiver)
+            return True
         receiver_dist = distance((receiver.x, receiver.y), (ball.x, ball.y))
         opps = self.opponents(receiver.side)
         nearest_opp = min(opps, key=lambda p: distance((p.x, p.y), (ball.x, ball.y)))
@@ -760,10 +957,11 @@ class MatchEngine:
             if outcome == "clean":
                 self._settle_ball_for_reception(receiver)
                 self._give_ball_to(receiver, note=f"{receiver.short_name} receives", action_type="pass")
+                receiver.control_cooldown = max(receiver.control_cooldown, 0.36)
             elif outcome == "slowed":
                 self._settle_ball_for_reception(receiver)
                 self._give_ball_to(receiver, note=f"{receiver.short_name} cushions it", action_type="pass")
-                receiver.control_cooldown = 0.28
+                receiver.control_cooldown = 0.44
                 self._set_render_state(receiver, "receiving", "slow_control")
             elif outcome == "contested":
                 self.state.ball.mode = "loose"
@@ -788,6 +986,9 @@ class MatchEngine:
     def _resolve_arrived_pass(self) -> None:
         receiver = self.find_player(self.state.ball.target_player_id)
         if receiver:
+            if self.state.ball.offside_flag:
+                self._call_offside(receiver)
+                return
             opps = self.opponents(receiver.side)
             nearest_opp = min(opps, key=lambda p: distance((p.x, p.y), (receiver.x, receiver.y)))
             outcome = self._resolve_first_touch(receiver, nearest_opp)
@@ -795,7 +996,9 @@ class MatchEngine:
                 self._settle_ball_for_reception(receiver)
                 self._give_ball_to(receiver, note=f"{receiver.short_name} collects", action_type="pass")
                 if outcome == "slowed":
-                    receiver.control_cooldown = 0.24
+                    receiver.control_cooldown = 0.40
+                else:
+                    receiver.control_cooldown = max(receiver.control_cooldown, 0.34)
             else:
                 self.state.ball.mode = "loose"
                 self.state.ball.carrier_id = None
@@ -1031,6 +1234,9 @@ class MatchEngine:
         self.state.restart_side = None
         self._give_ball_to(striker, action_type="recovery")
         self._start_pass(striker, support, "kickoff pass", "short_ground")
+        striker.target_x = striker.home_x
+        striker.target_y = striker.home_y
+        self._set_render_state(striker, "recover", "kickoff_recover")
         self._derive_match_context()
 
     def _start_goal_kick_setup(self, side: str) -> None:
@@ -1155,6 +1361,16 @@ class MatchEngine:
 
     def _choose_pass_option(self, carrier: PlayerState, receiver: PlayerState) -> Dict[str, object]:
         pass_scores = {ptype: self._pass_type_score(carrier, receiver, ptype) for ptype in PASS_SPEEDS}
+        phase = self.state.phase_in_possession
+        if phase == "build_up":
+            pass_scores["short_ground"] += 9.0
+            pass_scores["progressive_ground"] -= 4.0
+            pass_scores["switch"] -= 1.5
+            pass_scores["cross"] = -999.0
+        elif phase == "progression":
+            pass_scores["short_ground"] += 3.0
+            pass_scores["progressive_ground"] += 1.0
+            pass_scores["switch"] -= 0.5
         pass_type = max(pass_scores, key=pass_scores.get)
         return {
             "type": "pass",
@@ -1175,17 +1391,41 @@ class MatchEngine:
         )
         shot_score = self._shot_score(carrier)
         dribble_score = self._dribble_score(carrier)
-        short_pass_score = float(best_safe["score"]) + strength * 8.0
-        forward_pass_score = float(best_forward["score"]) + strength * 6.5
+        pressure = self._pressure_on_player(carrier)
+        goal_dist = self._goal_distance(carrier)
+        short_pass_score = float(best_safe["score"]) + strength * 6.8
+        forward_pass_score = float(best_forward["score"]) + strength * 5.8
+        if str(best_forward.get("pass_type")) == "cross":
+            forward_pass_score += 7.5 if carrier.slot in ("LW", "RW", "LB", "RB") else 3.0
 
-        recycle_bonus = 5.0 if self._pressure_on_player(carrier) > 0.7 else 0.0
-        dribble_penalty = 4.5 if self._pressure_on_player(carrier) > 0.65 else 0.0
+        phase = self.state.phase_in_possession
+        recycle_bonus = 5.0 if pressure > 0.7 else 0.0
+        dribble_penalty = 4.5 if pressure > 0.68 else 0.0
+        carry_bias = 0.0
+        if pressure < 0.42:
+            carry_bias += 4.4
+        if goal_dist > 22.0:
+            carry_bias += 2.4
+        if self.state.phase_in_possession in ("progression", "transition"):
+            carry_bias += 2.0
+        if phase == "build_up":
+            short_pass_score += 15.0
+            forward_pass_score -= 2.0
+            carry_bias -= 3.2
+        elif phase == "progression":
+            short_pass_score += 7.5
+            forward_pass_score += 1.0
+            carry_bias -= 1.2
+        elif phase == "final_third":
+            forward_pass_score += 2.0
+            carry_bias += 1.4
         scores = {
             "short_pass": short_pass_score + recycle_bonus,
             "forward_pass": forward_pass_score,
-            "dribble": dribble_score + strength * 3.5 - dribble_penalty,
-            "shoot": shot_score + strength * 3.0,
+            "dribble": dribble_score + strength * 3.5 + carry_bias - dribble_penalty,
         }
+        if self._should_attempt_shot(carrier):
+            scores["shoot"] = shot_score + strength * 3.0
         chosen = weighted_choice(scores, self.rng)
         if chosen == "short_pass":
             return best_safe
@@ -1215,15 +1455,38 @@ class MatchEngine:
         pressure = self._pressure_on_player(carrier)
         goal_dist = self._goal_distance(carrier)
         angle_quality = 1.0 - abs(carrier.y - PITCH_WIDTH / 2) / (PITCH_WIDTH / 2)
+        forwardness = self._forwardness(carrier.side, carrier.x)
         return (
             attrs["finishing"] * 0.35
             + attrs["composure"] * 0.18
             + attrs["decisions"] * 0.10
             + max(0.0, 26.0 - goal_dist) * 1.0
             + angle_quality * 10.0
+            + max(0.0, forwardness - 63.0) * 0.45
             - pressure * 16.0
             - max(0.0, goal_dist - 24.0) * 0.8
+            - max(0.0, 58.0 - forwardness) * 1.2
         )
+
+    def _should_attempt_shot(self, carrier: PlayerState) -> bool:
+        goal_dist = self._goal_distance(carrier)
+        pressure = self._pressure_on_player(carrier)
+        angle_quality = 1.0 - abs(carrier.y - PITCH_WIDTH / 2) / (PITCH_WIDTH / 2)
+        forwardness = self._forwardness(carrier.side, carrier.x)
+        decisions = carrier.profile.attributes["decisions"]
+        finishing = carrier.profile.attributes["finishing"]
+
+        if forwardness < (PITCH_LENGTH / 2) - 1.0:
+            return False
+        if goal_dist > 38.0:
+            return False
+        if goal_dist > 31.0 and (pressure > 0.28 or angle_quality < 0.72):
+            return False
+        if goal_dist > 27.0 and angle_quality < 0.52:
+            return False
+        if goal_dist > 29.0 and decisions < 62.0 and finishing < 66.0:
+            return False
+        return True
 
     def _resolve_action(self, carrier: PlayerState, action: Dict[str, object]) -> None:
         if action["type"] == "pass":
@@ -1245,13 +1508,20 @@ class MatchEngine:
         for p in self.home.xi + self.away.xi:
             p.has_ball = False
         player.has_ball = True
-        player.control_cooldown = 0.18
+        player.control_cooldown = {
+            "pass": 0.34,
+            "dribble": 0.24,
+            "recovery": 0.22,
+            "interception": 0.24,
+            "shot": 0.18,
+        }.get(action_type, 0.24)
         self.state.ball.mode = "carried"
         self.state.ball.carrier_id = player.profile.id
         self.state.ball.target_player_id = None
         self.state.ball.team_in_possession = player.side
         self.state.ball.lead_player_id = player.profile.id
         self.state.ball.loose_owner_bias = player.side
+        self.state.ball.offside_flag = False
         self.state.restart_mode = None
         self.state.restart_timer = 0.0
         self.state.restart_side = None
@@ -1312,6 +1582,7 @@ class MatchEngine:
         self.state.ball.target_y = target_y
         self.state.ball.travel_progress = 0.0
         self.state.ball.pass_type = pass_type
+        self.state.ball.offside_flag = self._is_player_offside(receiver, carrier.x) if (receiver.x - carrier.x) * self._side_forward_sign(carrier.side) > 0 else False
         self.state.ball.travel_time = max(0.24, travel_dist / PASS_SPEEDS[pass_type])
         self.state.ball.speed = PASS_SPEEDS[pass_type]
         self.state.ball.lead_player_id = carrier.profile.id
@@ -1356,7 +1627,7 @@ class MatchEngine:
         margin = carrier_score - defender_score
         if margin > 10.0:
             self._give_ball_to(carrier, note=f"{carrier.short_name} rides the challenge", action_type="dribble")
-            carrier.control_cooldown = 0.12
+            carrier.control_cooldown = 0.22
             return
         ball.mode = "loose"
         ball.carrier_id = None
@@ -1385,7 +1656,7 @@ class MatchEngine:
         if self._success_roll(chance):
             carrier.target_x = target_x
             carrier.target_y = target_y
-            carrier.control_cooldown = 0.14
+            carrier.control_cooldown = 0.28
             self.state.last_action_type = "dribble"
             self._set_render_state(carrier, "carry", "dribble")
             self.add_event(f"{carrier.short_name} carries into space")
@@ -1394,8 +1665,9 @@ class MatchEngine:
 
     def _carry_ball_forward(self, carrier: PlayerState) -> None:
         lead_x, lead_y = self._open_space_target(carrier)
-        carrier.target_x = lerp(carrier.x, lead_x, 0.35)
-        carrier.target_y = lerp(carrier.y, lead_y, 0.22)
+        sign = self._side_forward_sign(carrier.side)
+        carrier.target_x = clamp(lerp(carrier.x, lead_x, 0.58) + sign * 0.8, 2, PITCH_LENGTH - 2)
+        carrier.target_y = clamp(lerp(carrier.y, lead_y, 0.34), 2, PITCH_WIDTH - 2)
         bx, by = self._ball_front_offset(carrier)
         self.state.ball.x = bx
         self.state.ball.y = by

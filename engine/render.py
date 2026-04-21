@@ -20,6 +20,10 @@ PITCH_Y = VIEWPORT_Y
 PITCH_W = 1138
 PITCH_H = 737
 SPEED_OPTIONS = ("X1", "X2", "X4")
+PLAYER_OUTLINE_RADIUS = 16
+PLAYER_OUTER_RADIUS = 14
+PLAYER_INNER_RADIUS = 11
+PLAYER_HAS_BALL_RADIUS = 18
 
 GLYPHS = {
     'A': ["01110","10001","10001","11111","10001","10001","10001"],
@@ -282,19 +286,19 @@ class Renderer:
         }.get(render_state)
 
         if outline:
-            pygame.draw.circle(self.screen, outline, (sx, sy), 20, 2)
-        pygame.draw.circle(self.screen, (245, 245, 245), (sx, sy), 18)
-        pygame.draw.circle(self.screen, color, (sx, sy), 15)
+            pygame.draw.circle(self.screen, outline, (sx, sy), PLAYER_OUTLINE_RADIUS, 2)
+        pygame.draw.circle(self.screen, (245, 245, 245), (sx, sy), PLAYER_OUTER_RADIUS)
+        pygame.draw.circle(self.screen, color, (sx, sy), PLAYER_INNER_RADIUS)
         if math.hypot(facing_x, facing_y) > 0.1:
-            start = (int(sx + facing_x * 18), int(sy + facing_y * 18))
-            end = (int(sx + facing_x * 28), int(sy + facing_y * 28))
+            start = (int(sx + facing_x * 16), int(sy + facing_y * 16))
+            end = (int(sx + facing_x * 25), int(sy + facing_y * 25))
             pygame.draw.line(self.screen, (255, 255, 255), start, end, 2)
         if has_ball:
-            pygame.draw.circle(self.screen, (255, 232, 122), (sx, sy), 22, 2)
+            pygame.draw.circle(self.screen, (255, 232, 122), (sx, sy), PLAYER_HAS_BALL_RADIUS, 2)
         shirt_number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "0"
         draw_text(self.screen, shirt_number, sx - text_width(shirt_number, 1) // 2, sy - 5, (255, 255, 255), scale=1)
         label = name[:12]
-        draw_text(self.screen, label, sx - text_width(label, 1) // 2, sy + 24, (18, 18, 18), scale=1)
+        draw_text(self.screen, label, sx - text_width(label, 1) // 2, sy + 22, (18, 18, 18), scale=1)
 
     def _draw_scoreboard(
         self,

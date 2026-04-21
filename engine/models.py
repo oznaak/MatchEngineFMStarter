@@ -93,6 +93,7 @@ class BallState:
     lead_player_id: Optional[str] = None
     loose_owner_bias: Optional[str] = None
     shot_outcome: Optional[str] = None
+    offside_flag: bool = False
 
     def __post_init__(self) -> None:
         self.prev_x = self.x
