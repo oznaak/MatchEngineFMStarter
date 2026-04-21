@@ -12,8 +12,11 @@ SCREEN_H = 820
 PITCH_MARGIN = 40
 PITCH_W = 900
 PITCH_H = 720
-SIDE_PANEL_X = PITCH_MARGIN + PITCH_W + 24
-SIDE_PANEL_W = SCREEN_W - SIDE_PANEL_X - 24
+TOP_BAR_H = 40
+BOTTOM_TICKER_H = 44
+VIEWPORT_Y = TOP_BAR_H
+VIEWPORT_H = SCREEN_H - TOP_BAR_H - BOTTOM_TICKER_H
+PITCH_PANEL = pygame.Rect(0, VIEWPORT_Y, SCREEN_W, VIEWPORT_H)
 
 GLYPHS = {
     'A': ["01110","10001","10001","11111","10001","10001","10001"],
@@ -94,6 +97,17 @@ def pitch_width_to_px(width: float) -> int:
     return int((width / PITCH_WIDTH) * PITCH_H)
 
 
+def arc_points(center: Tuple[int, int], radius: int, start_deg: float, end_deg: float, steps: int = 12) -> list[Tuple[int, int]]:
+    points: list[Tuple[int, int]] = []
+    for idx in range(steps + 1):
+        t = idx / steps
+        angle = math.radians(start_deg + (end_deg - start_deg) * t)
+        x = int(center[0] + math.cos(angle) * radius)
+        y = int(center[1] + math.sin(angle) * radius)
+        points.append((x, y))
+    return points
+
+
 class Renderer:
     def __init__(self) -> None:
         pygame.init()
@@ -113,7 +127,8 @@ class Renderer:
         speed_label: str = "x1",
         clock_seconds: float | None = None,
     ) -> None:
-        self.screen.fill((20, 20, 24))
+        self.screen.fill((18, 18, 22))
+        pygame.draw.rect(self.screen, (248, 248, 246), PITCH_PANEL)
         self._draw_pitch()
         self._draw_players_and_ball(state, alpha)
         self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds)
@@ -177,10 +192,10 @@ class Renderer:
         )
 
         corner_r = 38
-        pygame.draw.arc(self.screen, (235, 235, 235), (PITCH_MARGIN, PITCH_MARGIN, corner_r * 2, corner_r * 2), math.pi, math.pi * 1.5, 3)
-        pygame.draw.arc(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W - corner_r * 2, PITCH_MARGIN, corner_r * 2, corner_r * 2), math.pi * 1.5, math.pi * 2, 3)
-        pygame.draw.arc(self.screen, (235, 235, 235), (PITCH_MARGIN, PITCH_MARGIN + PITCH_H - corner_r * 2, corner_r * 2, corner_r * 2), math.pi / 2, math.pi, 3)
-        pygame.draw.arc(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W - corner_r * 2, PITCH_MARGIN + PITCH_H - corner_r * 2, corner_r * 2, corner_r * 2), 0, math.pi / 2, 3)
+        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_MARGIN, PITCH_MARGIN), corner_r, 0, 90), 3)
+        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_MARGIN + PITCH_W, PITCH_MARGIN), corner_r, 90, 180), 3)
+        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_MARGIN, PITCH_MARGIN + PITCH_H), corner_r, -90, 0), 3)
+        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_MARGIN + PITCH_W, PITCH_MARGIN + PITCH_H), corner_r, 180, 270), 3)
 
     def _draw_players_and_ball(self, state: MatchState, alpha: float) -> None:
         for player in state.home.xi:
@@ -245,30 +260,42 @@ class Renderer:
         speed_label: str,
         clock_seconds: float | None,
     ) -> None:
-        panel = pygame.Rect(0, 0, SCREEN_W, 34)
-        pygame.draw.rect(self.screen, (12, 12, 16), panel)
-        score = f"{state.home.name} {state.home_score} - {state.away_score} {state.away.name}"
-        draw_text(self.screen, score, 30, SCREEN_H - 70, (255, 255, 255), scale=3)
+        panel = pygame.Rect(0, 0, SCREEN_W, TOP_BAR_H)
+        pygame.draw.rect(self.screen, (10, 10, 12), panel)
         shown_seconds = state.elapsed_seconds if clock_seconds is None else clock_seconds
         minute = min(90, int(shown_seconds // 60))
         second = int(shown_seconds % 60)
         minute_text = f"{minute:02d}:{second:02d}"
-        draw_text(self.screen, minute_text, SCREEN_W - 220, SCREEN_H - 70, (255, 232, 122), scale=3)
-        draw_text(self.screen, speed_label, SCREEN_W - 90, SCREEN_H - 70, (255, 255, 255), scale=3)
-        top = fixture_label + (" [PAUSED]" if paused else "")
-        draw_text(self.screen, top, 20, 8, (255, 255, 255), scale=2)
+        self._draw_top_bar(state, minute_text, paused, speed_label)
 
     def _draw_events(self, state: MatchState) -> None:
-        x = SIDE_PANEL_X + 12
-        y = 60
-        panel = pygame.Rect(SIDE_PANEL_X, y - 14, SIDE_PANEL_W, 260)
-        pygame.draw.rect(self.screen, (12, 12, 16), panel)
-        draw_text(self.screen, "Commentary", x, y, (255, 255, 255), scale=2)
-        line_y = y + 30
-        for event in state.events[:8]:
-            line = f"{event.minute:02d}:{event.second:02d}  {event.text[:18]}"
-            draw_text(self.screen, line, x, line_y, (220, 220, 220), scale=1)
-            line_y += 22
+        panel = pygame.Rect(0, SCREEN_H - BOTTOM_TICKER_H, SCREEN_W, BOTTOM_TICKER_H)
+        pygame.draw.rect(self.screen, (12, 12, 14), panel)
+        left_pad = 14
+        right_pad = 14
+        icon_box = pygame.Rect(left_pad, SCREEN_H - BOTTOM_TICKER_H + 6, 54, BOTTOM_TICKER_H - 12)
+        right_icon_box = pygame.Rect(SCREEN_W - right_pad - 54, SCREEN_H - BOTTOM_TICKER_H + 6, 54, BOTTOM_TICKER_H - 12)
+        pygame.draw.rect(self.screen, (8, 8, 10), icon_box)
+        pygame.draw.rect(self.screen, (8, 8, 10), right_icon_box)
+        draw_text(self.screen, "S", icon_box.x + 20, icon_box.y + 8, (240, 240, 240), scale=2)
+        draw_text(self.screen, "S", right_icon_box.x + 20, right_icon_box.y + 8, (240, 240, 240), scale=2)
+
+        ticker_x = icon_box.right + 14
+        ticker_w = right_icon_box.x - ticker_x - 14
+        ticker = pygame.Rect(ticker_x, SCREEN_H - BOTTOM_TICKER_H + 4, ticker_w, BOTTOM_TICKER_H - 8)
+        pygame.draw.rect(self.screen, (248, 187, 32), ticker)
+        latest = state.events[0] if state.events else None
+        ticker_text = "Kick off"
+        if latest:
+            ticker_text = latest.text[:48]
+        draw_text(
+            self.screen,
+            ticker_text,
+            ticker.x + max(16, (ticker.width - text_width(ticker_text, 2)) // 2),
+            ticker.y + 11,
+            (28, 28, 28),
+            scale=2,
+        )
 
     def _draw_goal_banner(self, state: MatchState) -> None:
         if not state.goal_banner_text:
@@ -276,8 +303,48 @@ class Renderer:
         banner_w = 420
         banner_h = 56
         x = PITCH_MARGIN + (PITCH_W - banner_w) // 2
-        y = 54
+        y = TOP_BAR_H + 12
         panel = pygame.Rect(x, y, banner_w, banner_h)
         pygame.draw.rect(self.screen, (24, 24, 28), panel)
         pygame.draw.rect(self.screen, (255, 220, 90), panel, 3)
         draw_text(self.screen, state.goal_banner_text, x + 18, y + 18, (255, 240, 120), scale=2)
+
+    def _draw_top_bar(self, state: MatchState, minute_text: str, paused: bool, speed_label: str) -> None:
+        menu_box = pygame.Rect(0, 0, 62, TOP_BAR_H)
+        time_box = pygame.Rect(menu_box.right, 0, 96, TOP_BAR_H)
+        home_box = pygame.Rect(time_box.right, 0, 138, TOP_BAR_H)
+        score_box = pygame.Rect(home_box.right, 0, 116, TOP_BAR_H)
+        away_box = pygame.Rect(score_box.right, 0, 138, TOP_BAR_H)
+        pause_box = pygame.Rect(SCREEN_W - 172, 0, 172, TOP_BAR_H)
+
+        pygame.draw.rect(self.screen, (10, 10, 12), menu_box)
+        pygame.draw.rect(self.screen, (10, 10, 12), time_box)
+        pygame.draw.rect(self.screen, (243, 183, 41), home_box)
+        pygame.draw.rect(self.screen, (10, 10, 12), score_box)
+        pygame.draw.rect(self.screen, (44, 58, 104), away_box)
+        pygame.draw.rect(self.screen, (120, 108, 242), pause_box)
+
+        draw_text(self.screen, "=", 24, 11, (245, 245, 245), scale=2)
+        draw_text(self.screen, minute_text, time_box.x + 18, 11, (245, 245, 245), scale=2)
+
+        home_name = state.home.name[:8]
+        away_name = state.away.name[:8]
+        draw_text(self.screen, home_name, home_box.x + 16, 11, (40, 30, 14), scale=2)
+        draw_text(self.screen, away_name, away_box.x + 16, 11, (236, 207, 97), scale=2)
+
+        home_score = str(state.home_score)
+        away_score = str(state.away_score)
+        score_y = 11
+        draw_text(self.screen, home_score, score_box.x + 28, score_y, (250, 250, 250), scale=2)
+        draw_text(self.screen, away_score, score_box.x + 74, score_y, (250, 250, 250), scale=2)
+
+        indicator_y = TOP_BAR_H // 2
+        indicator_start = SCREEN_W // 2 + 80
+        for idx in range(6):
+            color = (245, 245, 245) if idx == 0 else (110, 110, 114)
+            pygame.draw.circle(self.screen, color, (indicator_start + idx * 24, indicator_y), 3)
+
+        draw_text(self.screen, speed_label, pause_box.x - 74, 11, (245, 245, 245), scale=2)
+        pause_text = "PAUSE" if paused else "LIVE"
+        pause_color = (245, 245, 245) if paused else (230, 245, 255)
+        draw_text(self.screen, pause_text, pause_box.x + 42, 11, pause_color, scale=2)
