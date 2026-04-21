@@ -10,6 +10,11 @@ from engine.render import Renderer
 
 ROOT = Path(__file__).resolve().parent
 LEAGUE_FILE = ROOT / "data" / "league.json"
+SPEED_MULTIPLIERS = {
+    "X1": 1.0,
+    "X2": 2.0,
+    "X4": 2.5,
+}
 
 
 def main() -> int:
@@ -30,10 +35,13 @@ def main() -> int:
 
     renderer = Renderer()
     paused = False
+    speed_label = "X1"
 
     def build_engine() -> MatchEngine:
         seed = hash((home_id, away_id)) & 0xFFFFFFFF
-        return MatchEngine(clubs[home_id], clubs[away_id], seed=seed)
+        engine = MatchEngine(clubs[home_id], clubs[away_id], seed=seed)
+        engine.set_speed(SPEED_MULTIPLIERS[speed_label])
+        return engine
 
     engine = build_engine()
     fixture_label = f"{clubs[home_id].name} vs {clubs[away_id].name}"
@@ -52,6 +60,11 @@ def main() -> int:
                 elif event.key == pygame.K_r:
                     engine = build_engine()
                     paused = False
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                selected_speed = renderer.handle_click(event.pos)
+                if selected_speed:
+                    speed_label = selected_speed
+                    engine.set_speed(SPEED_MULTIPLIERS[speed_label])
 
         if not paused:
             engine.update(dt)
@@ -60,7 +73,8 @@ def main() -> int:
             engine.state,
             fixture_label,
             paused,
-            engine.slice_progress(),
+            alpha=engine.slice_progress(),
+            speed_label=speed_label,
             clock_seconds=engine.display_clock_seconds(),
         )
 

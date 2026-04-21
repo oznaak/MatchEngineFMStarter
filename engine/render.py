@@ -9,14 +9,17 @@ from .models import MatchState
 
 SCREEN_W = 1280
 SCREEN_H = 820
-PITCH_MARGIN = 40
-PITCH_W = 900
-PITCH_H = 720
 TOP_BAR_H = 40
 BOTTOM_TICKER_H = 44
 VIEWPORT_Y = TOP_BAR_H
 VIEWPORT_H = SCREEN_H - TOP_BAR_H - BOTTOM_TICKER_H
 PITCH_PANEL = pygame.Rect(0, VIEWPORT_Y, SCREEN_W, VIEWPORT_H)
+VIEWPORT_PAD_X = 28
+PITCH_X = 62
+PITCH_Y = VIEWPORT_Y
+PITCH_W = 1138
+PITCH_H = 737
+SPEED_OPTIONS = ("X1", "X2", "X4")
 
 GLYPHS = {
     'A': ["01110","10001","10001","11111","10001","10001","10001"],
@@ -84,8 +87,8 @@ def text_width(text: str, scale: int = 2) -> int:
 
 
 def world_to_screen(x: float, y: float) -> Tuple[int, int]:
-    sx = int(PITCH_MARGIN + (x / PITCH_LENGTH) * PITCH_W)
-    sy = int(PITCH_MARGIN + (y / PITCH_WIDTH) * PITCH_H)
+    sx = int(PITCH_X + (x / PITCH_LENGTH) * PITCH_W)
+    sy = int(PITCH_Y + (y / PITCH_WIDTH) * PITCH_H)
     return sx, sy
 
 
@@ -97,7 +100,7 @@ def pitch_width_to_px(width: float) -> int:
     return int((width / PITCH_WIDTH) * PITCH_H)
 
 
-def arc_points(center: Tuple[int, int], radius: int, start_deg: float, end_deg: float, steps: int = 12) -> list[Tuple[int, int]]:
+def arc_points(center: Tuple[int, int], radius: int, start_deg: float, end_deg: float, steps: int = 18) -> list[Tuple[int, int]]:
     points: list[Tuple[int, int]] = []
     for idx in range(steps + 1):
         t = idx / steps
@@ -114,9 +117,24 @@ class Renderer:
         pygame.display.set_caption("FM-Style Match Engine Prototype")
         self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
         self.clock = pygame.time.Clock()
+        self.speed_menu_open = False
+        self.speed_rect = pygame.Rect(0, 0, 0, 0)
+        self.speed_option_rects: dict[str, pygame.Rect] = {}
 
     def tick(self) -> float:
         return self.clock.tick(60) / 1000.0
+
+    def handle_click(self, pos: Tuple[int, int]) -> str | None:
+        if self.speed_rect.collidepoint(pos):
+            self.speed_menu_open = not self.speed_menu_open
+            return None
+        if self.speed_menu_open:
+            for label, rect in self.speed_option_rects.items():
+                if rect.collidepoint(pos):
+                    self.speed_menu_open = False
+                    return label
+            self.speed_menu_open = False
+        return None
 
     def draw(
         self,
@@ -128,7 +146,8 @@ class Renderer:
         clock_seconds: float | None = None,
     ) -> None:
         self.screen.fill((18, 18, 22))
-        pygame.draw.rect(self.screen, (248, 248, 246), PITCH_PANEL)
+        self._layout_pitch()
+        pygame.draw.rect(self.screen, (108, 142, 63), PITCH_PANEL)
         self._draw_pitch()
         self._draw_players_and_ball(state, alpha)
         self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds)
@@ -136,48 +155,72 @@ class Renderer:
         self._draw_goal_banner(state)
         pygame.display.flip()
 
+    def _layout_pitch(self) -> None:
+        global PITCH_X, PITCH_Y, PITCH_W, PITCH_H
+
+        max_height = VIEWPORT_H
+        max_width = SCREEN_W - VIEWPORT_PAD_X * 2 - 2 * 28
+        pitch_ratio = PITCH_LENGTH / PITCH_WIDTH
+
+        pitch_h = max_height
+        pitch_w = int(pitch_h * pitch_ratio)
+        if pitch_w > max_width:
+            pitch_w = max_width
+            pitch_h = int(pitch_w / pitch_ratio)
+
+        goal_depth = int((2.2 / PITCH_LENGTH) * pitch_w)
+        total_width = pitch_w + goal_depth * 2
+        pitch_x = max(VIEWPORT_PAD_X + goal_depth, (SCREEN_W - total_width) // 2 + goal_depth)
+        pitch_y = VIEWPORT_Y
+
+        PITCH_X = pitch_x
+        PITCH_Y = pitch_y
+        PITCH_W = pitch_w
+        PITCH_H = pitch_h
+
     def _draw_pitch(self) -> None:
-        pitch = pygame.Rect(PITCH_MARGIN, PITCH_MARGIN, PITCH_W, PITCH_H)
+        pitch = pygame.Rect(PITCH_X, PITCH_Y, PITCH_W, PITCH_H)
         stripe_h = PITCH_H // 7
         for idx in range(7):
             color = (112, 146, 67) if idx % 2 == 0 else (104, 139, 60)
-            band = pygame.Rect(PITCH_MARGIN, PITCH_MARGIN + idx * stripe_h, PITCH_W, stripe_h + 2)
+            band = pygame.Rect(PITCH_X, PITCH_Y + idx * stripe_h, PITCH_W, stripe_h + 2)
             pygame.draw.rect(self.screen, color, band)
         pygame.draw.rect(self.screen, (235, 235, 235), pitch, 4)
-        pygame.draw.line(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W // 2, PITCH_MARGIN), (PITCH_MARGIN + PITCH_W // 2, PITCH_MARGIN + PITCH_H), 3)
-        pygame.draw.circle(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W // 2, PITCH_MARGIN + PITCH_H // 2), 72, 3)
-        pygame.draw.circle(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W // 2, PITCH_MARGIN + PITCH_H // 2), 5)
+        pygame.draw.line(self.screen, (235, 235, 235), (PITCH_X + PITCH_W // 2, PITCH_Y), (PITCH_X + PITCH_W // 2, PITCH_Y + PITCH_H), 3)
+        centre_circle_radius = pitch_length_to_px(9.15)
+        pygame.draw.circle(self.screen, (235, 235, 235), (PITCH_X + PITCH_W // 2, PITCH_Y + PITCH_H // 2), centre_circle_radius, 3)
+        pygame.draw.circle(self.screen, (235, 235, 235), (PITCH_X + PITCH_W // 2, PITCH_Y + PITCH_H // 2), 5)
 
         penalty_depth = pitch_length_to_px(16.5)
         six_yard_depth = pitch_length_to_px(5.5)
         goal_width = pitch_width_to_px(7.32)
         six_yard_width = pitch_width_to_px(18.32)
         penalty_width = pitch_width_to_px(40.32)
-        top_penalty_y = PITCH_MARGIN + (PITCH_H - penalty_width) // 2
-        top_six_yard_y = PITCH_MARGIN + (PITCH_H - six_yard_width) // 2
-        goal_y = PITCH_MARGIN + (PITCH_H - goal_width) // 2
+        top_penalty_y = PITCH_Y + (PITCH_H - penalty_width) // 2
+        top_six_yard_y = PITCH_Y + (PITCH_H - six_yard_width) // 2
+        goal_y = PITCH_Y + (PITCH_H - goal_width) // 2
 
-        left_penalty = pygame.Rect(PITCH_MARGIN, top_penalty_y, penalty_depth, penalty_width)
-        right_penalty = pygame.Rect(PITCH_MARGIN + PITCH_W - penalty_depth, top_penalty_y, penalty_depth, penalty_width)
-        left_six_yard = pygame.Rect(PITCH_MARGIN, top_six_yard_y, six_yard_depth, six_yard_width)
-        right_six_yard = pygame.Rect(PITCH_MARGIN + PITCH_W - six_yard_depth, top_six_yard_y, six_yard_depth, six_yard_width)
+        left_penalty = pygame.Rect(PITCH_X, top_penalty_y, penalty_depth, penalty_width)
+        right_penalty = pygame.Rect(PITCH_X + PITCH_W - penalty_depth, top_penalty_y, penalty_depth, penalty_width)
+        left_six_yard = pygame.Rect(PITCH_X, top_six_yard_y, six_yard_depth, six_yard_width)
+        right_six_yard = pygame.Rect(PITCH_X + PITCH_W - six_yard_depth, top_six_yard_y, six_yard_depth, six_yard_width)
         pygame.draw.rect(self.screen, (235, 235, 235), left_penalty, 3)
         pygame.draw.rect(self.screen, (235, 235, 235), right_penalty, 3)
         pygame.draw.rect(self.screen, (235, 235, 235), left_six_yard, 3)
         pygame.draw.rect(self.screen, (235, 235, 235), right_six_yard, 3)
 
-        left_goal = pygame.Rect(PITCH_MARGIN - pitch_length_to_px(2.2), goal_y, pitch_length_to_px(2.2), goal_width)
-        right_goal = pygame.Rect(PITCH_MARGIN + PITCH_W, goal_y, pitch_length_to_px(2.2), goal_width)
+        left_goal = pygame.Rect(PITCH_X - pitch_length_to_px(2.2), goal_y, pitch_length_to_px(2.2), goal_width)
+        right_goal = pygame.Rect(PITCH_X + PITCH_W, goal_y, pitch_length_to_px(2.2), goal_width)
         pygame.draw.rect(self.screen, (235, 235, 235), left_goal, 3)
         pygame.draw.rect(self.screen, (235, 235, 235), right_goal, 3)
 
         arc_radius = pitch_length_to_px(9.15)
         penalty_spot_offset = pitch_length_to_px(11.0)
-        centre_y = PITCH_MARGIN + PITCH_H // 2
+        centre_y = PITCH_Y + PITCH_H // 2
         pygame.draw.arc(
             self.screen,
             (235, 235, 235),
-            (PITCH_MARGIN + penalty_spot_offset - arc_radius, centre_y - arc_radius, arc_radius * 2, arc_radius * 2),
+            (PITCH_X + penalty_spot_offset - arc_radius, centre_y - arc_radius, arc_radius * 2, arc_radius * 2),
             math.radians(308),
             math.radians(52),
             3,
@@ -185,17 +228,18 @@ class Renderer:
         pygame.draw.arc(
             self.screen,
             (235, 235, 235),
-            (PITCH_MARGIN + PITCH_W - penalty_spot_offset - arc_radius, centre_y - arc_radius, arc_radius * 2, arc_radius * 2),
+            (PITCH_X + PITCH_W - penalty_spot_offset - arc_radius, centre_y - arc_radius, arc_radius * 2, arc_radius * 2),
             math.radians(128),
             math.radians(232),
             3,
         )
 
-        corner_r = 38
-        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_MARGIN, PITCH_MARGIN), corner_r, 0, 90), 3)
-        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_MARGIN + PITCH_W, PITCH_MARGIN), corner_r, 90, 180), 3)
-        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_MARGIN, PITCH_MARGIN + PITCH_H), corner_r, -90, 0), 3)
-        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_MARGIN + PITCH_W, PITCH_MARGIN + PITCH_H), corner_r, 180, 270), 3)
+        corner_r = max(20, pitch_width_to_px(1.25))
+        corner_inset = 2
+        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_X + corner_inset, PITCH_Y + corner_inset), corner_r, 0, 90), 3)
+        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_X + PITCH_W - corner_inset, PITCH_Y + corner_inset), corner_r, 90, 180), 3)
+        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_X + corner_inset, PITCH_Y + PITCH_H - corner_inset), corner_r, -90, 0), 3)
+        pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_X + PITCH_W - corner_inset, PITCH_Y + PITCH_H - corner_inset), corner_r, 180, 270), 3)
 
     def _draw_players_and_ball(self, state: MatchState, alpha: float) -> None:
         for player in state.home.xi:
@@ -302,7 +346,7 @@ class Renderer:
             return
         banner_w = 420
         banner_h = 56
-        x = PITCH_MARGIN + (PITCH_W - banner_w) // 2
+        x = PITCH_X + (PITCH_W - banner_w) // 2
         y = TOP_BAR_H + 12
         panel = pygame.Rect(x, y, banner_w, banner_h)
         pygame.draw.rect(self.screen, (24, 24, 28), panel)
@@ -344,7 +388,37 @@ class Renderer:
             color = (245, 245, 245) if idx == 0 else (110, 110, 114)
             pygame.draw.circle(self.screen, color, (indicator_start + idx * 24, indicator_y), 3)
 
-        draw_text(self.screen, speed_label, pause_box.x - 74, 11, (245, 245, 245), scale=2)
+        speed_w = 84
+        speed_h = 28
+        speed_x = pause_box.x - 102
+        speed_y = 6
+        self.speed_rect = pygame.Rect(speed_x, speed_y, speed_w, speed_h)
+        pygame.draw.rect(self.screen, (14, 14, 16), self.speed_rect)
+        pygame.draw.rect(self.screen, (78, 78, 84), self.speed_rect, 1)
+        draw_text(self.screen, speed_label, speed_x + 16, 11, (245, 245, 245), scale=2)
+        draw_text(self.screen, "V" if self.speed_menu_open else "/", speed_x + 56, 11, (190, 190, 196), scale=1)
         pause_text = "PAUSE" if paused else "LIVE"
         pause_color = (245, 245, 245) if paused else (230, 245, 255)
         draw_text(self.screen, pause_text, pause_box.x + 42, 11, pause_color, scale=2)
+        self._draw_speed_menu(speed_label)
+
+    def _draw_speed_menu(self, current_label: str) -> None:
+        self.speed_option_rects = {}
+        if not self.speed_menu_open:
+            return
+
+        menu_w = self.speed_rect.width
+        option_h = 28
+        menu_h = option_h * len(SPEED_OPTIONS)
+        menu_rect = pygame.Rect(self.speed_rect.x, self.speed_rect.bottom + 4, menu_w, menu_h)
+        pygame.draw.rect(self.screen, (14, 14, 16), menu_rect)
+        pygame.draw.rect(self.screen, (78, 78, 84), menu_rect, 1)
+
+        for idx, label in enumerate(SPEED_OPTIONS):
+            option_rect = pygame.Rect(menu_rect.x, menu_rect.y + idx * option_h, menu_w, option_h)
+            self.speed_option_rects[label] = option_rect
+            if label == current_label:
+                pygame.draw.rect(self.screen, (46, 58, 102), option_rect)
+            elif idx > 0:
+                pygame.draw.line(self.screen, (60, 60, 66), (option_rect.x + 8, option_rect.y), (option_rect.right - 8, option_rect.y), 1)
+            draw_text(self.screen, label, option_rect.x + 16, option_rect.y + 8, (245, 245, 245), scale=2)
