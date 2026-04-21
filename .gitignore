@@ -1,0 +1,6 @@
+requirements.txt
+README.md
+.codex
+tests
+.venv
+__pycache__

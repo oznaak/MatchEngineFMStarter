@@ -1,0 +1,89 @@
+{
+  "league_name": "Test League",
+  "clubs": [
+    {
+      "id": "A",
+      "name": "Club A",
+      "players": [
+        {"id":"A01","name":"A Player 1","position":"GK","ovr":82},
+        {"id":"A02","name":"A Player 2","position":"LB","ovr":80},
+        {"id":"A03","name":"A Player 3","position":"CB","ovr":83},
+        {"id":"A04","name":"A Player 4","position":"CB","ovr":82},
+        {"id":"A05","name":"A Player 5","position":"RB","ovr":79},
+        {"id":"A06","name":"A Player 6","position":"DM","ovr":84},
+        {"id":"A07","name":"A Player 7","position":"CM","ovr":83},
+        {"id":"A08","name":"A Player 8","position":"AM","ovr":82},
+        {"id":"A09","name":"A Player 9","position":"LW","ovr":84},
+        {"id":"A10","name":"A Player 10","position":"ST","ovr":85},
+        {"id":"A11","name":"A Player 11","position":"RW","ovr":83},
+        {"id":"A12","name":"A Player 12","position":"GK","ovr":76},
+        {"id":"A13","name":"A Player 13","position":"CB","ovr":77},
+        {"id":"A14","name":"A Player 14","position":"CM","ovr":78},
+        {"id":"A15","name":"A Player 15","position":"ST","ovr":77}
+      ]
+    },
+    {
+      "id": "B",
+      "name": "Club B",
+      "players": [
+        {"id":"B01","name":"B Player 1","position":"GK","ovr":78},
+        {"id":"B02","name":"B Player 2","position":"LB","ovr":77},
+        {"id":"B03","name":"B Player 3","position":"CB","ovr":79},
+        {"id":"B04","name":"B Player 4","position":"CB","ovr":78},
+        {"id":"B05","name":"B Player 5","position":"RB","ovr":76},
+        {"id":"B06","name":"B Player 6","position":"DM","ovr":79},
+        {"id":"B07","name":"B Player 7","position":"CM","ovr":78},
+        {"id":"B08","name":"B Player 8","position":"AM","ovr":77},
+        {"id":"B09","name":"B Player 9","position":"LW","ovr":79},
+        {"id":"B10","name":"B Player 10","position":"ST","ovr":80},
+        {"id":"B11","name":"B Player 11","position":"RW","ovr":78},
+        {"id":"B12","name":"B Player 12","position":"GK","ovr":73},
+        {"id":"B13","name":"B Player 13","position":"CB","ovr":74},
+        {"id":"B14","name":"B Player 14","position":"CM","ovr":75},
+        {"id":"B15","name":"B Player 15","position":"ST","ovr":74}
+      ]
+    },
+    {
+      "id": "C",
+      "name": "Club C",
+      "players": [
+        {"id":"C01","name":"C Player 1","position":"GK","ovr":73},
+        {"id":"C02","name":"C Player 2","position":"LB","ovr":71},
+        {"id":"C03","name":"C Player 3","position":"CB","ovr":73},
+        {"id":"C04","name":"C Player 4","position":"CB","ovr":72},
+        {"id":"C05","name":"C Player 5","position":"RB","ovr":70},
+        {"id":"C06","name":"C Player 6","position":"DM","ovr":74},
+        {"id":"C07","name":"C Player 7","position":"CM","ovr":72},
+        {"id":"C08","name":"C Player 8","position":"AM","ovr":71},
+        {"id":"C09","name":"C Player 9","position":"LW","ovr":73},
+        {"id":"C10","name":"C Player 10","position":"ST","ovr":74},
+        {"id":"C11","name":"C Player 11","position":"RW","ovr":72},
+        {"id":"C12","name":"C Player 12","position":"GK","ovr":68},
+        {"id":"C13","name":"C Player 13","position":"CB","ovr":69},
+        {"id":"C14","name":"C Player 14","position":"CM","ovr":70},
+        {"id":"C15","name":"C Player 15","position":"ST","ovr":69}
+      ]
+    },
+    {
+      "id": "D",
+      "name": "Club D",
+      "players": [
+        {"id":"D01","name":"D Player 1","position":"GK","ovr":67},
+        {"id":"D02","name":"D Player 2","position":"LB","ovr":65},
+        {"id":"D03","name":"D Player 3","position":"CB","ovr":66},
+        {"id":"D04","name":"D Player 4","position":"CB","ovr":65},
+        {"id":"D05","name":"D Player 5","position":"RB","ovr":64},
+        {"id":"D06","name":"D Player 6","position":"DM","ovr":67},
+        {"id":"D07","name":"D Player 7","position":"CM","ovr":66},
+        {"id":"D08","name":"D Player 8","position":"AM","ovr":65},
+        {"id":"D09","name":"D Player 9","position":"LW","ovr":67},
+        {"id":"D10","name":"D Player 10","position":"ST","ovr":68},
+        {"id":"D11","name":"D Player 11","position":"RW","ovr":66},
+        {"id":"D12","name":"D Player 12","position":"GK","ovr":62},
+        {"id":"D13","name":"D Player 13","position":"CB","ovr":63},
+        {"id":"D14","name":"D Player 14","position":"CM","ovr":64},
+        {"id":"D15","name":"D Player 15","position":"ST","ovr":63}
+      ]
+    }
+  ]
+}
