@@ -86,6 +86,14 @@ def world_to_screen(x: float, y: float) -> Tuple[int, int]:
     return sx, sy
 
 
+def pitch_length_to_px(length: float) -> int:
+    return int((length / PITCH_LENGTH) * PITCH_W)
+
+
+def pitch_width_to_px(width: float) -> int:
+    return int((width / PITCH_WIDTH) * PITCH_H)
+
+
 class Renderer:
     def __init__(self) -> None:
         pygame.init()
@@ -115,31 +123,78 @@ class Renderer:
 
     def _draw_pitch(self) -> None:
         pitch = pygame.Rect(PITCH_MARGIN, PITCH_MARGIN, PITCH_W, PITCH_H)
-        pygame.draw.rect(self.screen, (34, 120, 52), pitch)
+        stripe_h = PITCH_H // 7
+        for idx in range(7):
+            color = (112, 146, 67) if idx % 2 == 0 else (104, 139, 60)
+            band = pygame.Rect(PITCH_MARGIN, PITCH_MARGIN + idx * stripe_h, PITCH_W, stripe_h + 2)
+            pygame.draw.rect(self.screen, color, band)
         pygame.draw.rect(self.screen, (235, 235, 235), pitch, 4)
         pygame.draw.line(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W // 2, PITCH_MARGIN), (PITCH_MARGIN + PITCH_W // 2, PITCH_MARGIN + PITCH_H), 3)
         pygame.draw.circle(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W // 2, PITCH_MARGIN + PITCH_H // 2), 72, 3)
-        pygame.draw.circle(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W // 2, PITCH_MARGIN + PITCH_H // 2), 4)
-        pygame.draw.rect(self.screen, (235, 235, 235), (PITCH_MARGIN, PITCH_MARGIN + 160, 160, 400), 3)
-        pygame.draw.rect(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W - 160, PITCH_MARGIN + 160, 160, 400), 3)
+        pygame.draw.circle(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W // 2, PITCH_MARGIN + PITCH_H // 2), 5)
+
+        penalty_depth = pitch_length_to_px(16.5)
+        six_yard_depth = pitch_length_to_px(5.5)
+        goal_width = pitch_width_to_px(7.32)
+        six_yard_width = pitch_width_to_px(18.32)
+        penalty_width = pitch_width_to_px(40.32)
+        top_penalty_y = PITCH_MARGIN + (PITCH_H - penalty_width) // 2
+        top_six_yard_y = PITCH_MARGIN + (PITCH_H - six_yard_width) // 2
+        goal_y = PITCH_MARGIN + (PITCH_H - goal_width) // 2
+
+        left_penalty = pygame.Rect(PITCH_MARGIN, top_penalty_y, penalty_depth, penalty_width)
+        right_penalty = pygame.Rect(PITCH_MARGIN + PITCH_W - penalty_depth, top_penalty_y, penalty_depth, penalty_width)
+        left_six_yard = pygame.Rect(PITCH_MARGIN, top_six_yard_y, six_yard_depth, six_yard_width)
+        right_six_yard = pygame.Rect(PITCH_MARGIN + PITCH_W - six_yard_depth, top_six_yard_y, six_yard_depth, six_yard_width)
+        pygame.draw.rect(self.screen, (235, 235, 235), left_penalty, 3)
+        pygame.draw.rect(self.screen, (235, 235, 235), right_penalty, 3)
+        pygame.draw.rect(self.screen, (235, 235, 235), left_six_yard, 3)
+        pygame.draw.rect(self.screen, (235, 235, 235), right_six_yard, 3)
+
+        left_goal = pygame.Rect(PITCH_MARGIN - pitch_length_to_px(2.2), goal_y, pitch_length_to_px(2.2), goal_width)
+        right_goal = pygame.Rect(PITCH_MARGIN + PITCH_W, goal_y, pitch_length_to_px(2.2), goal_width)
+        pygame.draw.rect(self.screen, (235, 235, 235), left_goal, 3)
+        pygame.draw.rect(self.screen, (235, 235, 235), right_goal, 3)
+
+        arc_radius = pitch_length_to_px(9.15)
+        penalty_spot_offset = pitch_length_to_px(11.0)
+        centre_y = PITCH_MARGIN + PITCH_H // 2
+        pygame.draw.arc(
+            self.screen,
+            (235, 235, 235),
+            (PITCH_MARGIN + penalty_spot_offset - arc_radius, centre_y - arc_radius, arc_radius * 2, arc_radius * 2),
+            math.radians(308),
+            math.radians(52),
+            3,
+        )
+        pygame.draw.arc(
+            self.screen,
+            (235, 235, 235),
+            (PITCH_MARGIN + PITCH_W - penalty_spot_offset - arc_radius, centre_y - arc_radius, arc_radius * 2, arc_radius * 2),
+            math.radians(128),
+            math.radians(232),
+            3,
+        )
+
+        corner_r = 38
+        pygame.draw.arc(self.screen, (235, 235, 235), (PITCH_MARGIN, PITCH_MARGIN, corner_r * 2, corner_r * 2), math.pi, math.pi * 1.5, 3)
+        pygame.draw.arc(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W - corner_r * 2, PITCH_MARGIN, corner_r * 2, corner_r * 2), math.pi * 1.5, math.pi * 2, 3)
+        pygame.draw.arc(self.screen, (235, 235, 235), (PITCH_MARGIN, PITCH_MARGIN + PITCH_H - corner_r * 2, corner_r * 2, corner_r * 2), math.pi / 2, math.pi, 3)
+        pygame.draw.arc(self.screen, (235, 235, 235), (PITCH_MARGIN + PITCH_W - corner_r * 2, PITCH_MARGIN + PITCH_H - corner_r * 2, corner_r * 2, corner_r * 2), 0, math.pi / 2, 3)
 
     def _draw_players_and_ball(self, state: MatchState, alpha: float) -> None:
         for player in state.home.xi:
             x = player.prev_x + (player.x - player.prev_x) * alpha
             y = player.prev_y + (player.y - player.prev_y) * alpha
-            self._draw_player(x, y, player.profile.name, (60, 140, 255), player.has_ball, player.facing_x, player.facing_y, player.render_state)
+            self._draw_player(x, y, player.profile.id, player.profile.name, (50, 95, 230), player.has_ball, player.facing_x, player.facing_y, player.render_state)
         for player in state.away.xi:
             x = player.prev_x + (player.x - player.prev_x) * alpha
             y = player.prev_y + (player.y - player.prev_y) * alpha
-            self._draw_player(x, y, player.profile.name, (255, 90, 90), player.has_ball, player.facing_x, player.facing_y, player.render_state)
+            self._draw_player(x, y, player.profile.id, player.profile.name, (225, 88, 88), player.has_ball, player.facing_x, player.facing_y, player.render_state)
 
         bx = state.ball.prev_x + (state.ball.x - state.ball.prev_x) * alpha
         by = state.ball.prev_y + (state.ball.y - state.ball.prev_y) * alpha
         sx, sy = world_to_screen(bx, by)
-        if state.ball.mode in ("travelling", "shot"):
-            tail_x = int(sx - (state.ball.x - state.ball.prev_x) * 18)
-            tail_y = int(sy - (state.ball.y - state.ball.prev_y) * 18)
-            pygame.draw.line(self.screen, (210, 210, 210), (tail_x, tail_y), (sx, sy), 2)
         pygame.draw.circle(self.screen, (245, 245, 245), (sx, sy), 6)
         pygame.draw.circle(self.screen, (20, 20, 20), (sx, sy), 6, 1)
 
@@ -147,6 +202,7 @@ class Renderer:
         self,
         x: float,
         y: float,
+        player_id: str,
         name: str,
         color: Tuple[int, int, int],
         has_ball: bool,
@@ -167,15 +223,19 @@ class Renderer:
         }.get(render_state)
 
         if outline:
-            pygame.draw.circle(self.screen, outline, (sx, sy), 15, 2)
-        pygame.draw.circle(self.screen, color, (sx, sy), 12)
+            pygame.draw.circle(self.screen, outline, (sx, sy), 20, 2)
+        pygame.draw.circle(self.screen, (245, 245, 245), (sx, sy), 18)
+        pygame.draw.circle(self.screen, color, (sx, sy), 15)
         if math.hypot(facing_x, facing_y) > 0.1:
-            facing_end = (int(sx + facing_x * 12), int(sy + facing_y * 12))
-            pygame.draw.line(self.screen, (20, 20, 20), (sx, sy), facing_end, 3)
+            start = (int(sx + facing_x * 18), int(sy + facing_y * 18))
+            end = (int(sx + facing_x * 28), int(sy + facing_y * 28))
+            pygame.draw.line(self.screen, (255, 255, 255), start, end, 2)
         if has_ball:
-            pygame.draw.circle(self.screen, (255, 232, 122), (sx, sy), 15, 2)
-        surname = name.split()[-1][:8]
-        draw_text(self.screen, surname, sx - text_width(surname, 1) // 2, sy - 30, (255, 255, 255), scale=1)
+            pygame.draw.circle(self.screen, (255, 232, 122), (sx, sy), 22, 2)
+        shirt_number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "0"
+        draw_text(self.screen, shirt_number, sx - text_width(shirt_number, 1) // 2, sy - 5, (255, 255, 255), scale=1)
+        label = name[:12]
+        draw_text(self.screen, label, sx - text_width(label, 1) // 2, sy + 24, (18, 18, 18), scale=1)
 
     def _draw_scoreboard(
         self,

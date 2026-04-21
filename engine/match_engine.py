@@ -915,6 +915,7 @@ class MatchEngine:
         support.prev_y = support.y
         self._set_render_state(striker, "shape", "kickoff")
         self._set_render_state(support, "shape", "kickoff")
+        self._resolve_kickoff_overlaps(kickoff_side, striker.profile.id)
         if opening:
             self.add_event(f"{self.home.name} kick off")
 
@@ -947,6 +948,79 @@ class MatchEngine:
                 player.prev_y = player.y
                 player.target_x = player.x
                 player.target_y = player.y
+
+    def _resolve_kickoff_overlaps(self, kickoff_side: str, kicker_id: str) -> None:
+        centre_x = PITCH_LENGTH / 2
+        centre_y = PITCH_WIDTH / 2
+        protected_radius = 5.0
+        opposition_circle_radius = 10.2
+        players = self.home.xi + self.away.xi
+
+        for player in players:
+            if player.profile.id == kicker_id:
+                continue
+            dist_to_centre = distance((player.x, player.y), (centre_x, centre_y))
+            if dist_to_centre < protected_radius:
+                dx = player.x - centre_x
+                dy = player.y - centre_y
+                if abs(dx) < 0.01 and abs(dy) < 0.01:
+                    dx = -1.0 if player.side == kickoff_side else 1.0
+                    dy = 0.6 if player.side == kickoff_side else -0.6
+                mag = math.hypot(dx, dy) or 1.0
+                player.x = clamp(centre_x + dx / mag * protected_radius, 2, PITCH_LENGTH - 2)
+                player.y = clamp(centre_y + dy / mag * protected_radius, 2, PITCH_WIDTH - 2)
+                if player.side != kickoff_side:
+                    player.x = max(player.x, centre_x + 0.8) if player.side == "away" else min(player.x, centre_x - 0.8)
+                else:
+                    player.x = min(player.x, centre_x) if player.side == "home" else max(player.x, centre_x)
+
+        for _ in range(3):
+            moved = False
+            for idx, player in enumerate(players):
+                for other in players[idx + 1:]:
+                    if distance((player.x, player.y), (other.x, other.y)) >= 1.55:
+                        continue
+                    dx = other.x - player.x
+                    dy = other.y - player.y
+                    if abs(dx) < 0.01 and abs(dy) < 0.01:
+                        dx = 0.9 if other.side == "away" else -0.9
+                        dy = 0.7 if other.slot in ("CM", "AM", "DM") else -0.7
+                    mag = math.hypot(dx, dy) or 1.0
+                    push_x = dx / mag * 1.0
+                    push_y = dy / mag * 1.0
+                    player.x = clamp(player.x - push_x, 2, PITCH_LENGTH - 2)
+                    player.y = clamp(player.y - push_y, 2, PITCH_WIDTH - 2)
+                    other.x = clamp(other.x + push_x, 2, PITCH_LENGTH - 2)
+                    other.y = clamp(other.y + push_y, 2, PITCH_WIDTH - 2)
+                    if player.profile.id != kicker_id:
+                        player.x = min(player.x, centre_x) if player.side == "home" else max(player.x, centre_x)
+                    if other.profile.id != kicker_id:
+                        other.x = min(other.x, centre_x) if other.side == "home" else max(other.x, centre_x)
+                    moved = True
+            if not moved:
+                break
+
+        for player in players:
+            if player.side == kickoff_side or player.profile.id == kicker_id:
+                continue
+            dx = player.x - centre_x
+            dy = player.y - centre_y
+            dist = math.hypot(dx, dy)
+            if dist < opposition_circle_radius:
+                if dist < 0.01:
+                    dx = 1.0 if player.side == "away" else -1.0
+                    dy = 0.0
+                    dist = 1.0
+                scale = opposition_circle_radius / dist
+                player.x = clamp(centre_x + dx * scale, 2, PITCH_LENGTH - 2)
+                player.y = clamp(centre_y + dy * scale, 2, PITCH_WIDTH - 2)
+                player.x = min(player.x, centre_x - 0.8) if player.side == "home" else max(player.x, centre_x + 0.8)
+
+        for player in players:
+            player.prev_x = player.x
+            player.prev_y = player.y
+            player.target_x = player.x
+            player.target_y = player.y
 
     def _execute_kickoff(self) -> None:
         kickoff_side = self.state.restart_side or "home"
