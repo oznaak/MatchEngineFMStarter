@@ -17,6 +17,7 @@ class Club:
     id: str
     name: str
     players: List[PlayerProfile]
+    tactics: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -45,6 +46,9 @@ class PlayerState:
     facing_y: float = 0.0
     render_state: str = "shape"
     run_intent: Optional[str] = None
+    run_commit_timer: float = 0.0
+    commit_target_x: Optional[float] = None
+    commit_target_y: Optional[float] = None
 
     def __post_init__(self) -> None:
         self.prev_x = self.x
@@ -138,3 +142,4 @@ class MatchState:
     restart_mode: Optional[str] = None
     restart_timer: float = 0.0
     restart_side: Optional[str] = None
+    awaiting_start: bool = False

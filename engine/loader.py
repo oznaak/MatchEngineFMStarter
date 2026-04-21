@@ -20,19 +20,35 @@ FALLBACKS = {
     "RW": ["RW", "LW", "AM", "ST", "CM"],
 }
 
+DEFAULT_TACTICS = {
+    "tempo": 50.0,
+    "width": 50.0,
+    "defensive_line": 50.0,
+    "pressing": 50.0,
+    "directness": 50.0,
+    "crossing": 50.0,
+    "counter": 50.0,
+}
+
 
 def attribute_map_from_ovr(ovr: int, pos: str) -> Dict[str, float]:
     base = float(ovr)
     attrs = {
         "passing": base,
+        "short_passing": base,
+        "long_passing": base,
         "vision": base,
         "decisions": base,
+        "anticipation": base,
         "composure": base,
         "first_touch": base,
         "dribbling": base,
         "finishing": base,
+        "crossing": base,
+        "off_ball": base,
         "tackling": base,
         "positioning": base,
+        "acceleration": base,
         "pace": base,
         "stamina": base,
     }
@@ -41,23 +57,67 @@ def attribute_map_from_ovr(ovr: int, pos: str) -> Dict[str, float]:
         attrs["dribbling"] -= 20
         attrs["tackling"] -= 15
         attrs["positioning"] += 5
+        attrs["long_passing"] += 4
+        attrs["crossing"] -= 18
+        attrs["off_ball"] -= 15
+        attrs["acceleration"] -= 5
     elif pos in ("CB", "LB", "RB", "DM"):
         attrs["tackling"] += 6
         attrs["positioning"] += 4
         attrs["finishing"] -= 6
+        attrs["anticipation"] += 4
+        attrs["off_ball"] -= 2
+        if pos in ("LB", "RB"):
+            attrs["crossing"] += 4
+            attrs["acceleration"] += 2
     elif pos in ("CM", "AM"):
         attrs["passing"] += 5
+        attrs["short_passing"] += 6
+        attrs["long_passing"] += 3
         attrs["vision"] += 5
         attrs["decisions"] += 3
+        attrs["anticipation"] += 2
     elif pos in ("LW", "RW"):
         attrs["dribbling"] += 6
         attrs["pace"] += 4
+        attrs["acceleration"] += 5
+        attrs["crossing"] += 7
+        attrs["off_ball"] += 4
     elif pos == "ST":
         attrs["finishing"] += 7
         attrs["composure"] += 4
+        attrs["off_ball"] += 8
+        attrs["anticipation"] += 3
+        attrs["passing"] -= 2
     for key in attrs:
         attrs[key] = max(35.0, min(99.0, attrs[key]))
     return attrs
+
+
+def merge_player_attributes(ovr: int, pos: str, custom: Dict[str, float] | None) -> Dict[str, float]:
+    attrs = attribute_map_from_ovr(ovr, pos)
+    if not custom:
+        return attrs
+    for key, value in custom.items():
+        attrs[key] = max(35.0, min(99.0, float(value)))
+    if "passing" in custom:
+        if "short_passing" not in custom:
+            attrs["short_passing"] = attrs["passing"]
+        if "long_passing" not in custom:
+            attrs["long_passing"] = attrs["passing"]
+    return attrs
+
+
+def merge_team_tactics(custom: Dict[str, float] | None) -> Dict[str, float]:
+    tactics = dict(DEFAULT_TACTICS)
+    if not custom:
+        return tactics
+    for key, default in DEFAULT_TACTICS.items():
+        if key in custom:
+            tactics[key] = max(0.0, min(100.0, float(custom[key])))
+        else:
+            tactics[key] = default
+    return tactics
 
 
 def load_league(path: Path) -> Dict[str, Club]:
@@ -72,13 +132,14 @@ def load_league(path: Path) -> Dict[str, Club]:
                     name=p["name"],
                     position=p["position"],
                     ovr=int(p["ovr"]),
-                    attributes=attribute_map_from_ovr(int(p["ovr"]), p["position"]),
+                    attributes=merge_player_attributes(int(p["ovr"]), p["position"], p.get("attributes")),
                 )
             )
         clubs[club_data["id"].upper()] = Club(
             id=club_data["id"].upper(),
             name=club_data["name"],
             players=players,
+            tactics=merge_team_tactics(club_data.get("tactics")),
         )
     return clubs
 
@@ -94,7 +155,13 @@ def pick_best_xi(club: Club) -> Tuple[List[PlayerProfile], List[PlayerProfile]]:
         ]
         if not candidates:
             candidates = [p for p in club.players if p.id not in used_ids]
-        candidates.sort(key=lambda p: p.ovr, reverse=True)
+        fallback_order = FALLBACKS[slot]
+        candidates.sort(
+            key=lambda p: (
+                -(120.0 - fallback_order.index(p.position) * 12.0) if p.position in fallback_order else -20.0,
+                -float(p.ovr),
+            )
+        )
         chosen = candidates[0]
         xi.append(chosen)
         used_ids.add(chosen.id)

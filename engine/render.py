@@ -90,6 +90,17 @@ def text_width(text: str, scale: int = 2) -> int:
     return len(text) * 6 * scale
 
 
+def compact_team_name(name: str) -> str:
+    if len(name) <= 10:
+        return name
+    words = name.split()
+    if len(words) >= 2:
+        compact = f"{words[0][0]} {words[-1]}"
+        if len(compact) <= 10:
+            return compact
+    return name[:10]
+
+
 def world_to_screen(x: float, y: float) -> Tuple[int, int]:
     sx = int(PITCH_X + (x / PITCH_LENGTH) * PITCH_W)
     sy = int(PITCH_Y + (y / PITCH_WIDTH) * PITCH_H)
@@ -123,12 +134,15 @@ class Renderer:
         self.clock = pygame.time.Clock()
         self.speed_menu_open = False
         self.speed_rect = pygame.Rect(0, 0, 0, 0)
+        self.start_rect = pygame.Rect(0, 0, 0, 0)
         self.speed_option_rects: dict[str, pygame.Rect] = {}
 
     def tick(self) -> float:
         return self.clock.tick(60) / 1000.0
 
     def handle_click(self, pos: Tuple[int, int]) -> str | None:
+        if self.start_rect.collidepoint(pos):
+            return "start"
         if self.speed_rect.collidepoint(pos):
             self.speed_menu_open = not self.speed_menu_open
             return None
@@ -136,7 +150,7 @@ class Renderer:
             for label, rect in self.speed_option_rects.items():
                 if rect.collidepoint(pos):
                     self.speed_menu_open = False
-                    return label
+                    return f"speed:{label}"
             self.speed_menu_open = False
         return None
 
@@ -154,6 +168,7 @@ class Renderer:
         pygame.draw.rect(self.screen, (108, 142, 63), PITCH_PANEL)
         self._draw_pitch()
         self._draw_players_and_ball(state, alpha)
+        self._draw_pitch_overlay(state, fixture_label)
         self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds)
         self._draw_events(state)
         self._draw_goal_banner(state)
@@ -297,8 +312,41 @@ class Renderer:
             pygame.draw.circle(self.screen, (255, 232, 122), (sx, sy), PLAYER_HAS_BALL_RADIUS, 2)
         shirt_number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "0"
         draw_text(self.screen, shirt_number, sx - text_width(shirt_number, 1) // 2, sy - 5, (255, 255, 255), scale=1)
-        label = name[:12]
+        label = (name.split()[-1] if name.split() else name)[:12]
         draw_text(self.screen, label, sx - text_width(label, 1) // 2, sy + 22, (18, 18, 18), scale=1)
+
+    def _draw_pitch_overlay(self, state: MatchState, fixture_label: str) -> None:
+        if state.phase == "pre_match" and state.awaiting_start:
+            home_name = state.home.name
+            away_name = state.away.name
+            mid = "VS"
+            subtitle = "CLICK START"
+            title_y = PITCH_Y + PITCH_H // 2 - 58
+            draw_text(self.screen, home_name, PITCH_X + (PITCH_W - text_width(home_name, 3)) // 2, title_y, (245, 245, 245), scale=3)
+            draw_text(self.screen, mid, PITCH_X + (PITCH_W - text_width(mid, 3)) // 2, title_y + 28, (245, 245, 245), scale=3)
+            draw_text(self.screen, away_name, PITCH_X + (PITCH_W - text_width(away_name, 3)) // 2, title_y + 56, (245, 245, 245), scale=3)
+            draw_text(
+                self.screen,
+                subtitle,
+                PITCH_X + (PITCH_W - text_width(subtitle, 2)) // 2,
+                title_y + 95,
+                (248, 187, 32),
+                scale=2,
+            )
+        elif state.phase == "halftime" and state.awaiting_start:
+            title = "HALF TIME"
+            subtitle = fixture_label[:32]
+            title_x = PITCH_X + (PITCH_W - text_width(title, 3)) // 2
+            title_y = PITCH_Y + PITCH_H // 2 - 34
+            draw_text(self.screen, title, title_x, title_y, (245, 245, 245), scale=3)
+            draw_text(
+                self.screen,
+                subtitle,
+                PITCH_X + (PITCH_W - text_width(subtitle, 2)) // 2,
+                title_y + 38,
+                (248, 187, 32),
+                scale=2,
+            )
 
     def _draw_scoreboard(
         self,
@@ -375,8 +423,8 @@ class Renderer:
         draw_text(self.screen, "=", 24, 11, (245, 245, 245), scale=2)
         draw_text(self.screen, minute_text, time_box.x + 18, 11, (245, 245, 245), scale=2)
 
-        home_name = state.home.name[:8]
-        away_name = state.away.name[:8]
+        home_name = compact_team_name(state.home.name)
+        away_name = compact_team_name(state.away.name)
         draw_text(self.screen, home_name, home_box.x + 16, 11, (40, 30, 14), scale=2)
         draw_text(self.screen, away_name, away_box.x + 16, 11, (236, 207, 97), scale=2)
 
@@ -401,9 +449,17 @@ class Renderer:
         pygame.draw.rect(self.screen, (78, 78, 84), self.speed_rect, 1)
         draw_text(self.screen, speed_label, speed_x + 16, 11, (245, 245, 245), scale=2)
         draw_text(self.screen, "V" if self.speed_menu_open else "/", speed_x + 56, 11, (190, 190, 196), scale=1)
-        pause_text = "PAUSE" if paused else "LIVE"
-        pause_color = (245, 245, 245) if paused else (230, 245, 255)
-        draw_text(self.screen, pause_text, pause_box.x + 42, 11, pause_color, scale=2)
+        if state.awaiting_start:
+            status_text = "START"
+            status_color = (255, 250, 215)
+        elif paused:
+            status_text = "PAUSE"
+            status_color = (245, 245, 245)
+        else:
+            status_text = "LIVE"
+            status_color = (230, 245, 255)
+        draw_text(self.screen, status_text, pause_box.x + 42, 11, status_color, scale=2)
+        self.start_rect = pause_box
         self._draw_speed_menu(speed_label)
 
     def _draw_speed_menu(self, current_label: str) -> None:

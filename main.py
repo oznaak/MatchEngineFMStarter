@@ -11,9 +11,9 @@ from engine.render import Renderer
 ROOT = Path(__file__).resolve().parent
 LEAGUE_FILE = ROOT / "data" / "league.json"
 SPEED_MULTIPLIERS = {
-    "X1": 1.0,
-    "X2": 2.0,
-    "X4": 2.5,
+    "X1": 2.0,
+    "X2": 2.5,
+    "X4": 5.0,
 }
 
 
@@ -56,14 +56,18 @@ def main() -> int:
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.key == pygame.K_SPACE:
-                    paused = not paused
+                    if not engine.state.awaiting_start and not engine.state.is_finished:
+                        paused = not paused
                 elif event.key == pygame.K_r:
                     engine = build_engine()
                     paused = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                selected_speed = renderer.handle_click(event.pos)
-                if selected_speed:
-                    speed_label = selected_speed
+                action = renderer.handle_click(event.pos)
+                if action == "start":
+                    if engine.start_match_flow():
+                        paused = False
+                elif action and action.startswith("speed:"):
+                    speed_label = action.split(":", 1)[1]
                     engine.set_speed(SPEED_MULTIPLIERS[speed_label])
 
         if not paused:
