@@ -33,6 +33,7 @@ class Club:
     players: List[PlayerProfile]
     tactics: Dict[str, float] = field(default_factory=dict)
     colors: Dict[str, str] = field(default_factory=dict)
+    badge: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

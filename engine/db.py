@@ -23,9 +23,42 @@ DEFAULT_COLORS = {
     "secondary": "#F5F5F5",
 }
 
+DEFAULT_BADGE = {
+    "template_id": "1",
+    "primary": DEFAULT_COLORS["primary"],
+    "secondary": DEFAULT_COLORS["secondary"],
+    "border": "#F5F5F5",
+}
+
 DEFAULT_LEAGUE = {
     "id": "ENG1",
     "name": "England Division I",
+}
+
+BADGE_TEMPLATES = {
+    "1": {
+        "name": "Classic Split Shield",
+        "svg": """<svg width="114.4" height="148.8" viewBox="0 0 114.4 148.8" xmlns="http://www.w3.org/2000/svg"><defs><clipPath id="shield-clip"><path d="M57.2,0L0,10.6c0,0,0,17.2,0,31.9c0,80.2,57.2,106.3,57.2,106.3s57.2-26.1,57.2-106.3c0-14.6,0-31.9,0-31.9L57.2,0z" /></clipPath></defs><g clip-path="url(#shield-clip)"><rect x="0" y="0" width="57.2" height="148.8" fill="{primary}" /><rect x="57.2" y="0" width="57.2" height="148.8" fill="{secondary}" /></g><path d="M57.2,0L0,10.6c0,0,0,17.2,0,31.9c0,80.2,57.2,106.3,57.2,106.3s57.2-26.1,57.2-106.3c0-14.6,0-31.9,0-31.9L57.2,0z" fill="none" stroke="{border}" stroke-width="2" /></svg>""",
+    },
+    "2": {
+        "name": "Round Crown Shield",
+        "svg": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><path d="m814.1 159.6.9-2.1c-112.4 43.1-209.4 21-300.6-57.6L500 87.5l-14.4 12.4c-91.2 78.6-188.2 100.7-300.6 57.6 52.8 125.4-2.8 215.4-46.8 343.2-12.5 36.4-11.3 96.2 4.8 131 70.6 153 354.6 270.8 354.6 270.8s287.8-115 359-269.2c16-34.9 17.4-94.7 5-131-43.7-127.5-99.8-217.8-47.5-342.7Z" fill="{primary}"/></svg>""",
+    },
+    "3": {
+        "name": "Tall Heritage Shield",
+        "svg": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><path d="M800 147.5c-97.7 43.1-208.2 21-287.5-57.6L500 77.5l-12.5 12.4c-79.3 78.6-189.8 100.7-287.5 57.6v427.8c0 188.4 134 346 298 347.2 166.6 1.3 302-153.7 302-345v-430Z" fill="{primary}"/></svg>""",
+    },
+    "4": {
+        "name": "Tower Shield",
+        "svg": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><path d="M500 70 150 175.3v217.1C150 785 500 930 500 930s350-145 350-537.6V175.2L500 70Z" fill="{primary}"/></svg>""",
+    },
+}
+
+DEFAULT_CLUB_BADGES = {
+    "A": {"template_id": "1", "primary": "#C62828", "secondary": "#F5F5F5", "border": "#F5F5F5"},
+    "B": {"template_id": "1", "primary": "#F5F5F5", "secondary": "#A61C1C", "border": "#F5F5F5"},
+    "C": {"template_id": "2", "primary": "#2457C5", "secondary": "#F5F5F5", "border": "#F5F5F5"},
+    "D": {"template_id": "3", "primary": "#2E6FD8", "secondary": "#F5F5F5", "border": "#F5F5F5"},
 }
 
 DEFAULT_APP_OPTIONS = {
@@ -132,6 +165,22 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (club_id) REFERENCES clubs(id)
         );
 
+        CREATE TABLE IF NOT EXISTS badge_templates (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            svg TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS club_badges (
+            club_id TEXT PRIMARY KEY,
+            template_id TEXT NOT NULL,
+            primary_color TEXT NOT NULL,
+            secondary_color TEXT NOT NULL,
+            border_color TEXT NOT NULL,
+            FOREIGN KEY (club_id) REFERENCES clubs(id),
+            FOREIGN KEY (template_id) REFERENCES badge_templates(id)
+        );
+
         CREATE TABLE IF NOT EXISTS players (
             id TEXT PRIMARY KEY,
             club_id TEXT NOT NULL,
@@ -220,9 +269,55 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
 
 def bootstrap_database(conn: sqlite3.Connection) -> None:
     initialize_schema(conn)
+    _ensure_default_badges(conn)
     _ensure_default_league(conn)
     _ensure_default_options(conn)
     conn.commit()
+
+
+def _ensure_default_badges(conn: sqlite3.Connection) -> None:
+    conn.executemany(
+        """
+        INSERT INTO badge_templates (id, name, svg) VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name,
+            svg=excluded.svg
+        """,
+        [(template_id, template["name"], template["svg"]) for template_id, template in BADGE_TEMPLATES.items()],
+    )
+    club_rows = conn.execute("SELECT id FROM clubs ORDER BY id").fetchall()
+    if not club_rows:
+        return
+    color_rows = conn.execute("SELECT club_id, key, value FROM club_colors").fetchall()
+    colors_by_club: Dict[str, Dict[str, str]] = {}
+    for row in color_rows:
+        colors_by_club.setdefault(str(row["club_id"]), dict(DEFAULT_COLORS))[str(row["key"])] = str(row["value"])
+    badge_rows = conn.execute("SELECT club_id FROM club_badges").fetchall()
+    existing = {str(row["club_id"]) for row in badge_rows}
+    next_template = 1
+    for row in club_rows:
+        club_id = str(row["id"])
+        if club_id in existing:
+            continue
+        defaults = dict(DEFAULT_CLUB_BADGES.get(club_id, {}))
+        colors = colors_by_club.get(club_id, DEFAULT_COLORS)
+        template_id = defaults.get("template_id")
+        if template_id is None:
+            template_id = str(next_template)
+            next_template = 1 + (next_template % len(BADGE_TEMPLATES))
+        conn.execute(
+            """
+            INSERT INTO club_badges (club_id, template_id, primary_color, secondary_color, border_color)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                club_id,
+                str(template_id),
+                str(defaults.get("primary", colors.get("primary", DEFAULT_BADGE["primary"]))),
+                str(defaults.get("secondary", colors.get("secondary", DEFAULT_BADGE["secondary"]))),
+                str(defaults.get("border", DEFAULT_BADGE["border"])),
+            ),
+        )
 
 
 def _ensure_default_league(conn: sqlite3.Connection) -> None:
@@ -280,6 +375,12 @@ def load_clubs_from_db(conn: sqlite3.Connection) -> Dict[str, Club]:
     club_rows = conn.execute("SELECT id, name FROM clubs ORDER BY id").fetchall()
     tactic_rows = conn.execute("SELECT club_id, key, value FROM club_tactics").fetchall()
     color_rows = conn.execute("SELECT club_id, key, value FROM club_colors").fetchall()
+    badge_rows = conn.execute(
+        """
+        SELECT club_id, template_id, primary_color, secondary_color, border_color
+        FROM club_badges
+        """
+    ).fetchall()
     player_rows = conn.execute(
         """
         SELECT p.id, p.club_id, p.name, p.position, p.ovr, pc.current_stamina
@@ -297,6 +398,15 @@ def load_clubs_from_db(conn: sqlite3.Connection) -> Dict[str, Club]:
     colors_by_club: Dict[str, Dict[str, str]] = {}
     for row in color_rows:
         colors_by_club.setdefault(str(row["club_id"]), dict(DEFAULT_COLORS))[str(row["key"])] = str(row["value"])
+
+    badges_by_club: Dict[str, Dict[str, str]] = {}
+    for row in badge_rows:
+        badges_by_club[str(row["club_id"])] = {
+            "template_id": str(row["template_id"]),
+            "primary": str(row["primary_color"]),
+            "secondary": str(row["secondary_color"]),
+            "border": str(row["border_color"]),
+        }
 
     attrs_by_player: Dict[str, Dict[str, float]] = {}
     for row in attribute_rows:
@@ -326,6 +436,7 @@ def load_clubs_from_db(conn: sqlite3.Connection) -> Dict[str, Club]:
             players=list(players_by_club.get(club_id, [])),
             tactics=dict(tactics_by_club.get(club_id, DEFAULT_TACTICS)),
             colors=dict(colors_by_club.get(club_id, DEFAULT_COLORS)),
+            badge=dict(badges_by_club.get(club_id, DEFAULT_BADGE)),
         )
     return clubs
 
@@ -339,14 +450,18 @@ def list_league_clubs(conn: sqlite3.Connection, league_id: str) -> List[dict]:
     rows = conn.execute(
         """
         SELECT c.id, c.name, cc.value AS primary_color, cs.value AS secondary_color,
+               cb.template_id, cb.primary_color AS badge_primary, cb.secondary_color AS badge_secondary,
+               cb.border_color AS badge_border,
                COUNT(p.id) AS players_count, ROUND(AVG(p.ovr), 1) AS avg_ovr
         FROM league_clubs lc
         JOIN clubs c ON c.id = lc.club_id
         LEFT JOIN club_colors cc ON cc.club_id = c.id AND cc.key = 'primary'
         LEFT JOIN club_colors cs ON cs.club_id = c.id AND cs.key = 'secondary'
+        LEFT JOIN club_badges cb ON cb.club_id = c.id
         LEFT JOIN players p ON p.club_id = c.id
         WHERE lc.league_id = ?
-        GROUP BY c.id, c.name, lc.display_order, cc.value, cs.value
+        GROUP BY c.id, c.name, lc.display_order, cc.value, cs.value,
+                 cb.template_id, cb.primary_color, cb.secondary_color, cb.border_color
         ORDER BY lc.display_order, c.name
         """,
         (league_id,),
@@ -359,6 +474,10 @@ def list_league_clubs(conn: sqlite3.Connection, league_id: str) -> List[dict]:
                 "name": str(row["name"]),
                 "primary_color": str(row["primary_color"] or DEFAULT_COLORS["primary"]),
                 "secondary_color": str(row["secondary_color"] or DEFAULT_COLORS["secondary"]),
+                "badge_template_id": str(row["template_id"] or DEFAULT_BADGE["template_id"]),
+                "badge_primary": str(row["badge_primary"] or row["primary_color"] or DEFAULT_BADGE["primary"]),
+                "badge_secondary": str(row["badge_secondary"] or row["secondary_color"] or DEFAULT_BADGE["secondary"]),
+                "badge_border": str(row["badge_border"] or DEFAULT_BADGE["border"]),
                 "players_count": int(row["players_count"] or 0),
                 "avg_ovr": float(row["avg_ovr"] or 0.0),
             }

@@ -168,6 +168,13 @@ def arc_points(center: Tuple[int, int], radius: int, start_deg: float, end_deg: 
     return points
 
 
+def scale_points(points: list[Tuple[float, float]], rect: pygame.Rect) -> list[Tuple[int, int]]:
+    return [
+        (rect.x + int(px * rect.width), rect.y + int(py * rect.height))
+        for px, py in points
+    ]
+
+
 class Renderer:
     @staticmethod
     def hex_to_rgb_static(value: str, fallback: Tuple[int, int, int]) -> Tuple[int, int, int]:
@@ -230,6 +237,58 @@ class Renderer:
             if rect.collidepoint(pos):
                 return action
         return None
+
+    def _draw_club_badge(self, badge: dict | None, rect: pygame.Rect) -> None:
+        badge = badge or {}
+        template_id = str(badge.get("template_id", "1"))
+        primary = hex_to_rgb(str(badge.get("primary", "#2E3A6A")), (46, 58, 106))
+        secondary = hex_to_rgb(str(badge.get("secondary", "#F5F5F5")), (245, 245, 245))
+        border = hex_to_rgb(str(badge.get("border", "#F5F5F5")), (245, 245, 245))
+
+        silhouettes = {
+            "1": [(0.5, 0.02), (0.12, 0.1), (0.12, 0.44), (0.18, 0.68), (0.32, 0.88), (0.5, 0.98), (0.68, 0.88), (0.82, 0.68), (0.88, 0.44), (0.88, 0.1)],
+            "2": [(0.5, 0.06), (0.16, 0.14), (0.1, 0.36), (0.16, 0.72), (0.32, 0.9), (0.5, 0.98), (0.68, 0.9), (0.84, 0.72), (0.9, 0.36), (0.84, 0.14)],
+            "3": [(0.5, 0.05), (0.18, 0.14), (0.18, 0.72), (0.3, 0.88), (0.5, 0.98), (0.7, 0.88), (0.82, 0.72), (0.82, 0.14)],
+            "4": [(0.5, 0.04), (0.18, 0.14), (0.18, 0.58), (0.26, 0.78), (0.5, 0.98), (0.74, 0.78), (0.82, 0.58), (0.82, 0.14)],
+        }
+        points = scale_points(silhouettes.get(template_id, silhouettes["1"]), rect)
+
+        badge_surface = pygame.Surface(rect.size, pygame.SRCALPHA)
+        local_rect = badge_surface.get_rect()
+        local_points = [(x - rect.x, y - rect.y) for x, y in points]
+        pygame.draw.polygon(badge_surface, primary, local_points)
+
+        if template_id == "1":
+            badge_surface.set_clip(pygame.Rect(local_rect.width // 2, 0, local_rect.width // 2, local_rect.height))
+            pygame.draw.polygon(badge_surface, secondary, local_points)
+        elif template_id == "2":
+            stripe_w = max(8, local_rect.width // 4)
+            badge_surface.set_clip(pygame.Rect((local_rect.width - stripe_w) // 2, 0, stripe_w, local_rect.height))
+            pygame.draw.polygon(badge_surface, secondary, local_points)
+        elif template_id == "3":
+            band = [
+                (int(local_rect.width * 0.18), int(local_rect.height * 0.2)),
+                (int(local_rect.width * 0.36), int(local_rect.height * 0.1)),
+                (int(local_rect.width * 0.82), int(local_rect.height * 0.78)),
+                (int(local_rect.width * 0.64), int(local_rect.height * 0.88)),
+            ]
+            pygame.draw.polygon(badge_surface, secondary, band)
+        else:
+            inner = pygame.Rect(0, 0, max(10, int(local_rect.width * 0.42)), max(12, int(local_rect.height * 0.5)))
+            inner.center = (local_rect.centerx, int(local_rect.height * 0.48))
+            inner_points = [
+                (inner.centerx, inner.top),
+                (inner.left, inner.top + inner.height // 5),
+                (inner.left, inner.centery + inner.height // 7),
+                (inner.centerx, inner.bottom),
+                (inner.right, inner.centery + inner.height // 7),
+                (inner.right, inner.top + inner.height // 5),
+            ]
+            pygame.draw.polygon(badge_surface, secondary, inner_points)
+
+        badge_surface.set_clip(None)
+        self.screen.blit(badge_surface, rect.topleft)
+        pygame.draw.polygon(self.screen, border, points, width=max(2, rect.width // 18))
 
     def draw(
         self,
@@ -978,13 +1037,24 @@ class Renderer:
 
         top = pygame.Rect(0, 0, SCREEN_W, 62)
         pygame.draw.rect(self.screen, (12, 12, 16), top)
-        brand = pygame.Rect(0, 0, 260, 62)
+        brand = pygame.Rect(0, 0, 318, 62)
         pygame.draw.rect(self.screen, primary, brand)
-        draw_text(self.screen, overview.get("club_name", "CLUB"), 18, 12, secondary, scale=2)
+        selected_club = next((club for club in clubs if club["id"] == overview.get("club_id")), None)
+        badge_rect = pygame.Rect(14, 8, 38, 46)
+        self._draw_club_badge(
+            {
+                "template_id": selected_club.get("badge_template_id", "1") if selected_club else "1",
+                "primary": selected_club.get("badge_primary", "#2E3A6A") if selected_club else "#2E3A6A",
+                "secondary": selected_club.get("badge_secondary", "#F5F5F5") if selected_club else "#F5F5F5",
+                "border": selected_club.get("badge_border", "#F5F5F5") if selected_club else "#F5F5F5",
+            },
+            badge_rect,
+        )
+        draw_text(self.screen, overview.get("club_name", "CLUB"), 64, 12, secondary, scale=2)
         manager_name = overview.get("manager_name", "MANAGER")
-        draw_text(self.screen, manager_name, 18, 36, secondary, scale=1)
+        draw_text(self.screen, manager_name, 64, 36, secondary, scale=1)
         nav_items = ["OVERVIEW", "SQUAD", "MATCHES", "TRANSFERS", "SCOUTING"]
-        x = 280
+        x = brand.right + 20
         for idx, item in enumerate(nav_items):
             color = (248, 187, 32) if idx == 0 else (220, 220, 224)
             draw_text(self.screen, item, x, 20, color, scale=2)
