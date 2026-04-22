@@ -28,6 +28,23 @@ PLAYER_OUTER_RADIUS = 14
 PLAYER_INNER_RADIUS = 11
 PLAYER_HAS_BALL_RADIUS = 18
 
+
+def configure_display_metrics(width: int, height: int) -> None:
+    global SCREEN_W, SCREEN_H, VIEWPORT_H, SIDE_PANEL_W, PANEL_GAP, SIDE_PANEL, PITCH_PANEL, VIEWPORT_PAD_X, PITCH_X, PITCH_Y, PITCH_W, PITCH_H
+
+    SCREEN_W = int(width)
+    SCREEN_H = int(height)
+    VIEWPORT_H = SCREEN_H - TOP_BAR_H - BOTTOM_TICKER_H
+    SIDE_PANEL_W = max(300, int(SCREEN_W * 0.2))
+    PANEL_GAP = max(14, SCREEN_W // 120)
+    SIDE_PANEL = pygame.Rect(0, VIEWPORT_Y, SIDE_PANEL_W, VIEWPORT_H)
+    PITCH_PANEL = pygame.Rect(SIDE_PANEL_W + PANEL_GAP, VIEWPORT_Y, SCREEN_W - SIDE_PANEL_W - PANEL_GAP, VIEWPORT_H)
+    VIEWPORT_PAD_X = max(28, SCREEN_W // 56)
+    PITCH_X = PITCH_PANEL.x + 62
+    PITCH_Y = VIEWPORT_Y
+    PITCH_W = max(900, PITCH_PANEL.width - 124)
+    PITCH_H = max(560, VIEWPORT_H - 56)
+
 GLYPHS = {
     'A': ["01110","10001","10001","11111","10001","10001","10001"],
     'B': ["11110","10001","10001","11110","10001","10001","11110"],
@@ -152,10 +169,13 @@ def arc_points(center: Tuple[int, int], radius: int, start_deg: float, end_deg: 
 
 
 class Renderer:
-    def __init__(self) -> None:
+    def __init__(self, width: int = 1560, height: int = 900, fullscreen: bool = False) -> None:
         pygame.init()
         pygame.display.set_caption("FM-Style Match Engine Prototype")
-        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
+        self.ui_click_targets: dict[str, pygame.Rect] = {}
+        self.fullscreen = fullscreen
+        self.screen = pygame.Surface((1, 1))
+        self.set_display_mode(width, height, fullscreen)
         self.clock = pygame.time.Clock()
         self.speed_menu_open = False
         self.speed_rect = pygame.Rect(0, 0, 0, 0)
@@ -164,6 +184,12 @@ class Renderer:
 
     def tick(self) -> float:
         return self.clock.tick(60) / 1000.0
+
+    def set_display_mode(self, width: int, height: int, fullscreen: bool) -> None:
+        configure_display_metrics(width, height)
+        self.fullscreen = fullscreen
+        flags = pygame.FULLSCREEN if fullscreen else 0
+        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), flags)
 
     def handle_click(self, pos: Tuple[int, int]) -> str | None:
         if self.start_rect.collidepoint(pos):
@@ -177,6 +203,12 @@ class Renderer:
                     self.speed_menu_open = False
                     return f"speed:{label}"
             self.speed_menu_open = False
+        return None
+
+    def handle_ui_click(self, pos: Tuple[int, int]) -> str | None:
+        for action, rect in self.ui_click_targets.items():
+            if rect.collidepoint(pos):
+                return action
         return None
 
     def draw(
@@ -659,3 +691,284 @@ class Renderer:
             elif idx > 0:
                 pygame.draw.line(self.screen, (60, 60, 66), (option_rect.x + 8, option_rect.y), (option_rect.right - 8, option_rect.y), 1)
             draw_text(self.screen, label, option_rect.x + 16, option_rect.y + 8, (245, 245, 245), scale=2)
+
+    def draw_app_view(self, view: dict) -> None:
+        self.ui_click_targets = {}
+        self.screen.fill((20, 22, 18))
+        screen = view.get("screen", "menu")
+        if screen == "overview":
+            self._draw_overview_background(view)
+        else:
+            self._draw_app_background()
+        if screen == "menu":
+            self._draw_main_menu(view)
+        elif screen == "new_game_name":
+            self._draw_manager_setup(view)
+        elif screen == "select_league":
+            self._draw_league_select(view)
+        elif screen == "select_club":
+            self._draw_club_select(view)
+        elif screen == "options":
+            self._draw_options_screen(view)
+        elif screen == "load_game":
+            self._draw_load_game_screen(view)
+        elif screen == "overview":
+            self._draw_overview_screen(view)
+        pygame.display.flip()
+
+    def _draw_app_background(self) -> None:
+        sky = pygame.Rect(0, 0, SCREEN_W, max(120, SCREEN_H // 5))
+        pitch = pygame.Rect(0, sky.bottom - 10, SCREEN_W, SCREEN_H - sky.height + 10)
+        pygame.draw.rect(self.screen, (22, 24, 28), sky)
+        pygame.draw.rect(self.screen, (108, 142, 63), pitch)
+        stripe_h = max(70, pitch.height // 6)
+        for idx in range(6):
+            color = (112, 146, 67) if idx % 2 == 0 else (104, 139, 60)
+            pygame.draw.rect(self.screen, color, (0, pitch.y + idx * stripe_h, SCREEN_W, stripe_h + 2))
+
+    def _draw_overview_background(self, view: dict) -> None:
+        overview = view.get("overview", {})
+        clubs = overview.get("clubs", [])
+        club_id = overview.get("club_id")
+        primary_hex = next((club["primary_color"] for club in clubs if club["id"] == club_id), "#2E3A6A")
+        primary = hex_to_rgb(primary_hex, (46, 58, 106))
+        dark = tuple(max(12, int(channel * 0.28)) for channel in primary)
+        mid = tuple(max(20, int(channel * 0.52)) for channel in primary)
+        self.screen.fill(dark)
+        band_h = max(88, SCREEN_H // 7)
+        for idx in range(8):
+            color = primary if idx % 2 == 0 else mid
+            pygame.draw.rect(self.screen, color, (0, idx * band_h, SCREEN_W, band_h + 2))
+
+    def _register_ui(self, action: str, rect: pygame.Rect) -> None:
+        self.ui_click_targets[action] = rect
+
+    def _draw_ui_button(
+        self,
+        rect: pygame.Rect,
+        label: str,
+        fill: Tuple[int, int, int],
+        text: Tuple[int, int, int],
+        action: str | None = None,
+        scale: int = 2,
+    ) -> None:
+        pygame.draw.rect(self.screen, fill, rect, border_radius=6)
+        pygame.draw.rect(self.screen, (22, 22, 26), rect, 2, border_radius=6)
+        draw_text(
+            self.screen,
+            label,
+            rect.x + (rect.width - text_width(label, scale)) // 2,
+            rect.y + (rect.height - 7 * scale) // 2,
+            text,
+            scale=scale,
+        )
+        if action:
+            self._register_ui(action, rect)
+
+    def _draw_panel(
+        self,
+        rect: pygame.Rect,
+        title: str | None = None,
+        accent: Tuple[int, int, int] = (248, 187, 32),
+        title_color: Tuple[int, int, int] = (24, 24, 28),
+    ) -> None:
+        pygame.draw.rect(self.screen, (16, 18, 20), rect, border_radius=8)
+        pygame.draw.rect(self.screen, (46, 48, 54), rect, 2, border_radius=8)
+        if title:
+            header = pygame.Rect(rect.x, rect.y, rect.width, 34)
+            pygame.draw.rect(self.screen, accent, header, border_top_left_radius=8, border_top_right_radius=8)
+            draw_text(self.screen, title, rect.x + 12, rect.y + 10, title_color, scale=2)
+
+    def _draw_main_menu(self, view: dict) -> None:
+        title = "TOUCHLINE STORIES"
+        subtitle = "SOCCER MANAGER PROTOTYPE"
+        title_x = (SCREEN_W - text_width(title, 4)) // 2
+        draw_text(self.screen, title, title_x, 92, (245, 245, 245), scale=4)
+        draw_text(self.screen, subtitle, (SCREEN_W - text_width(subtitle, 2)) // 2, 140, (248, 187, 32), scale=2)
+
+        card = pygame.Rect((SCREEN_W - 420) // 2, 214, 420, 360)
+        self._draw_panel(card)
+        buttons = [
+            ("NEW GAME", "menu:new_game"),
+            ("LOAD GAME", "menu:load_game"),
+            ("OPTIONS", "menu:options"),
+            ("QUIT", "menu:quit"),
+        ]
+        for idx, (label, action) in enumerate(buttons):
+            button_rect = pygame.Rect(card.x + 48, card.y + 46 + idx * 74, card.width - 96, 52)
+            fill = (220, 52, 52) if idx == 0 else (248, 187, 32) if idx == 2 else (36, 52, 96)
+            text = (250, 250, 250) if idx != 2 else (24, 24, 28)
+            self._draw_ui_button(button_rect, label, fill, text, action)
+
+        footer = view.get("footer_text", "Build your club. Shape the table.")
+        draw_text(self.screen, footer, (SCREEN_W - text_width(footer, 2)) // 2, SCREEN_H - 84, (245, 245, 245), scale=2)
+
+    def _draw_manager_setup(self, view: dict) -> None:
+        panel = pygame.Rect((SCREEN_W - 560) // 2, 170, 560, 300)
+        self._draw_panel(panel, "NEW GAME", (220, 52, 52))
+        prompt = "ENTER MANAGER NAME"
+        draw_text(self.screen, prompt, panel.x + 28, panel.y + 72, (245, 245, 245), scale=2)
+        field = pygame.Rect(panel.x + 28, panel.y + 112, panel.width - 56, 58)
+        pygame.draw.rect(self.screen, (28, 30, 34), field, border_radius=6)
+        pygame.draw.rect(self.screen, (248, 187, 32), field, 2, border_radius=6)
+        value = view.get("manager_name", "")
+        shown = value if value else "TYPE HERE"
+        color = (245, 245, 245) if value else (160, 160, 166)
+        draw_text(self.screen, shown, field.x + 16, field.y + 19, color, scale=2)
+        error_text = view.get("error")
+        if error_text:
+            draw_text(self.screen, error_text[:42], panel.x + 28, panel.y + 184, (240, 108, 108), scale=1)
+        self._draw_ui_button(pygame.Rect(panel.x + 28, panel.bottom - 68, 144, 44), "BACK", (36, 52, 96), (245, 245, 245), "back:menu")
+        self._draw_ui_button(pygame.Rect(panel.right - 172, panel.bottom - 68, 144, 44), "CONTINUE", (248, 187, 32), (24, 24, 28), "new_game:continue")
+
+    def _draw_league_select(self, view: dict) -> None:
+        leagues = view.get("leagues", [])
+        panel = pygame.Rect((SCREEN_W - 680) // 2, 144, 680, max(280, 150 + len(leagues) * 82))
+        self._draw_panel(panel, "SELECT LEAGUE", (248, 187, 32))
+        for idx, league in enumerate(leagues):
+            rect = pygame.Rect(panel.x + 28, panel.y + 62 + idx * 78, panel.width - 56, 56)
+            self._draw_ui_button(rect, league["name"], (220, 52, 52), (245, 245, 245), f"league:{league['id']}")
+        self._draw_ui_button(pygame.Rect(panel.x + 28, panel.bottom - 60, 128, 40), "BACK", (36, 52, 96), (245, 245, 245), "back:new_game_name")
+
+    def _draw_club_select(self, view: dict) -> None:
+        clubs = view.get("clubs", [])
+        panel = pygame.Rect(100, 110, SCREEN_W - 200, SCREEN_H - 210)
+        self._draw_panel(panel, "SELECT CLUB", (248, 187, 32))
+        columns = 2
+        card_w = (panel.width - 78) // columns
+        card_h = 138
+        for idx, club in enumerate(clubs):
+            row = idx // columns
+            col = idx % columns
+            x = panel.x + 26 + col * (card_w + 26)
+            y = panel.y + 58 + row * (card_h + 26)
+            rect = pygame.Rect(x, y, card_w, card_h)
+            fill = hex_to_rgb(club.get("primary_color", "#2E3A6A"), (46, 58, 106))
+            text = hex_to_rgb(club.get("secondary_color", "#F5F5F5"), (245, 245, 245))
+            pygame.draw.rect(self.screen, fill, rect, border_radius=10)
+            pygame.draw.rect(self.screen, (16, 18, 22), rect, 2, border_radius=10)
+            draw_text(self.screen, club["name"], rect.x + 18, rect.y + 18, text, scale=2)
+            meta = f"OVR {club['avg_ovr']:.1f}"
+            squad = f"PLAYERS {club['players_count']}"
+            draw_text(self.screen, meta, rect.x + 18, rect.y + 58, text, scale=2)
+            draw_text(self.screen, squad, rect.x + 18, rect.y + 86, text, scale=2)
+            self._register_ui(f"club:{club['id']}", rect)
+        self._draw_ui_button(pygame.Rect(panel.x + 26, panel.bottom - 54, 128, 40), "BACK", (36, 52, 96), (245, 245, 245), "back:select_league")
+
+    def _draw_options_screen(self, view: dict) -> None:
+        options = view.get("options", {})
+        choices = view.get("choices", {})
+        panel = pygame.Rect(120, 96, SCREEN_W - 240, SCREEN_H - 160)
+        self._draw_panel(panel, "OPTIONS", (248, 187, 32))
+        sections = [
+            ("DISPLAY RESOLUTION", "resolution"),
+            ("WINDOW MODE", "window_mode"),
+            ("LANGUAGE", "language"),
+        ]
+        y = panel.y + 66
+        for label, key in sections:
+            draw_text(self.screen, label, panel.x + 28, y, (245, 245, 245), scale=2)
+            y += 34
+            row = choices.get(key, [])
+            x = panel.x + 28
+            for option in row:
+                active = options.get(key) == option["value"]
+                width = max(150, text_width(option["label"], 2) + 32)
+                rect = pygame.Rect(x, y, width, 42)
+                fill = (248, 187, 32) if active else (36, 52, 96)
+                text = (24, 24, 28) if active else (245, 245, 245)
+                self._draw_ui_button(rect, option["label"], fill, text, f"option:{key}:{option['value']}")
+                x += width + 14
+            y += 84
+        self._draw_ui_button(pygame.Rect(panel.x + 28, panel.bottom - 56, 128, 40), "BACK", (36, 52, 96), (245, 245, 245), "back:menu")
+
+    def _draw_load_game_screen(self, view: dict) -> None:
+        saves = view.get("saves", [])
+        panel = pygame.Rect(120, 110, SCREEN_W - 240, SCREEN_H - 190)
+        self._draw_panel(panel, "LOAD GAME", (36, 52, 96))
+        helper = "PLACEHOLDER SCREEN. EXISTING SAVES CAN STILL BE OPENED."
+        draw_text(self.screen, helper, panel.x + 28, panel.y + 54, (245, 245, 245), scale=2)
+        y = panel.y + 96
+        if not saves:
+            draw_text(self.screen, "NO SAVES YET", panel.x + 28, y, (248, 187, 32), scale=2)
+        for save in saves[:8]:
+            rect = pygame.Rect(panel.x + 28, y, panel.width - 56, 48)
+            self._draw_ui_button(rect, f"{save['manager_name']} - {save['club_name']}", (220, 52, 52), (245, 245, 245), f"load:{save['id']}")
+            y += 58
+        self._draw_ui_button(pygame.Rect(panel.x + 28, panel.bottom - 54, 128, 40), "BACK", (36, 52, 96), (245, 245, 245), "back:menu")
+
+    def _draw_overview_screen(self, view: dict) -> None:
+        overview = view.get("overview", {})
+        selected_club_id = view.get("selected_club_id", overview.get("club_id"))
+        clubs = overview.get("clubs", [])
+        players_by_club = overview.get("players_by_club", {})
+        standings = overview.get("standings", [])
+        fixtures = overview.get("fixtures", [])
+
+        primary = hex_to_rgb(next((club["primary_color"] for club in clubs if club["id"] == overview.get("club_id")), "#D03434"), (208, 52, 52))
+        secondary = hex_to_rgb(next((club["secondary_color"] for club in clubs if club["id"] == overview.get("club_id")), "#F5F5F5"), (245, 245, 245))
+
+        top = pygame.Rect(0, 0, SCREEN_W, 62)
+        pygame.draw.rect(self.screen, (12, 12, 16), top)
+        brand = pygame.Rect(0, 0, 260, 62)
+        pygame.draw.rect(self.screen, primary, brand)
+        draw_text(self.screen, overview.get("club_name", "CLUB"), 18, 20, secondary, scale=2)
+        nav_items = ["OVERVIEW", "SQUAD", "MATCHES", "TRANSFERS", "SCOUTING"]
+        x = 280
+        for idx, item in enumerate(nav_items):
+            color = (248, 187, 32) if idx == 0 else (220, 220, 224)
+            draw_text(self.screen, item, x, 20, color, scale=2)
+            x += text_width(item, 2) + 26
+        info = f"{overview.get('manager_name', 'MANAGER')}  DAY {overview.get('current_day', 0)}"
+        draw_text(self.screen, info, SCREEN_W - text_width(info, 2) - 22, 20, (245, 245, 245), scale=2)
+
+        left = pygame.Rect(20, 84, 294, SCREEN_H - 142)
+        middle = pygame.Rect(left.right + 18, 84, 350, SCREEN_H - 142)
+        right = pygame.Rect(middle.right + 18, 84, SCREEN_W - middle.right - 38, SCREEN_H - 142)
+        self._draw_panel(left, "LEAGUE CLUBS", primary, (245, 245, 245))
+        self._draw_panel(middle, "PLAYERS", primary, (245, 245, 245))
+        self._draw_panel(right, "TABLE / FIXTURES", primary, (245, 245, 245))
+
+        y = left.y + 48
+        for club in clubs:
+            club_rect = pygame.Rect(left.x + 16, y, left.width - 32, 44)
+            fill = hex_to_rgb(club["primary_color"], (46, 58, 106)) if club["id"] == selected_club_id else (26, 28, 32)
+            text = hex_to_rgb(club["secondary_color"], (245, 245, 245)) if club["id"] == selected_club_id else (238, 238, 240)
+            self._draw_ui_button(club_rect, club["name"], fill, text, f"overview_club:{club['id']}")
+            y += 54
+
+        players = players_by_club.get(selected_club_id, [])
+        y = middle.y + 48
+        headers = "POS   PLAYER        OVR   STM"
+        draw_text(self.screen, headers, middle.x + 16, y, (170, 170, 176), scale=1)
+        y += 20
+        for player in players[:18]:
+            line = f"{player['position']:<3}   {short_display_name(player['name'], 10):<10}  {player['ovr']:>2}   {int(player['current_stamina']):>3}"
+            draw_text(self.screen, line, middle.x + 16, y, (245, 245, 245), scale=1)
+            y += 18
+
+        draw_text(self.screen, "TABLE", right.x + 16, right.y + 48, (248, 187, 32), scale=2)
+        y = right.y + 78
+        for idx, row in enumerate(standings[:8], start=1):
+            line = f"{idx:>2} {short_display_name(row['club_name'], 12):<12}  P{row['played']:>2}  {row['points']:>2}"
+            color = (245, 245, 245) if row["club_id"] != overview.get("club_id") else (248, 187, 32)
+            draw_text(self.screen, line, right.x + 16, y, color, scale=1)
+            y += 18
+
+        y += 18
+        draw_text(self.screen, "OPENING FIXTURES", right.x + 16, y, (248, 187, 32), scale=2)
+        y += 30
+        for fixture in fixtures[:6]:
+            score = "--" if fixture["home_goals"] is None else f"{fixture['home_goals']}-{fixture['away_goals']}"
+            line = f"MD{fixture['match_day']:>2} {short_display_name(fixture['home_name'], 8)} {score} {short_display_name(fixture['away_name'], 8)}"
+            draw_text(self.screen, line, right.x + 16, y, (245, 245, 245), scale=1)
+            y += 18
+
+        next_fixture = overview.get("next_fixture")
+        if next_fixture:
+            play_rect = pygame.Rect(right.right - 196, right.bottom - 56, 176, 40)
+            self._draw_ui_button(play_rect, "PLAY MATCH", primary, secondary, "overview:play_next_match")
+            subtitle = f"MD{next_fixture['match_day']} {short_display_name(next_fixture['home_name'], 8)} VS {short_display_name(next_fixture['away_name'], 8)}"
+            draw_text(self.screen, subtitle, right.x + 16, right.bottom - 48, (245, 245, 245), scale=1)
+
+        self._draw_ui_button(pygame.Rect(SCREEN_W - 168, SCREEN_H - 56, 148, 40), "MAIN MENU", (36, 52, 96), (245, 245, 245), "back:menu")

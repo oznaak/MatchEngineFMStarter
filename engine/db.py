@@ -6,7 +6,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List
 
-from .loader import merge_player_attributes
 from .models import Club, PlayerProfile
 
 DEFAULT_TACTICS = {
@@ -22,6 +21,32 @@ DEFAULT_TACTICS = {
 DEFAULT_COLORS = {
     "primary": "#2E3A6A",
     "secondary": "#F5F5F5",
+}
+
+DEFAULT_LEAGUE = {
+    "id": "ENG1",
+    "name": "England Division I",
+}
+
+DEFAULT_APP_OPTIONS = {
+    "resolution": "1560x900",
+    "window_mode": "windowed",
+    "language": "english",
+}
+
+DEFAULT_OPTION_CHOICES = {
+    "resolution": [
+        ("1280x720", "1280 x 720", 1),
+        ("1560x900", "1560 x 900", 2),
+        ("1920x1080", "1920 x 1080", 3),
+    ],
+    "window_mode": [
+        ("windowed", "Windowed", 1),
+        ("fullscreen", "Fullscreen", 2),
+    ],
+    "language": [
+        ("english", "English", 1),
+    ],
 }
 
 
@@ -93,102 +118,125 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             updated_day INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (player_id) REFERENCES players(id)
         );
+
+        CREATE TABLE IF NOT EXISTS leagues (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS league_clubs (
+            league_id TEXT NOT NULL,
+            club_id TEXT NOT NULL,
+            display_order INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (league_id, club_id),
+            FOREIGN KEY (league_id) REFERENCES leagues(id),
+            FOREIGN KEY (club_id) REFERENCES clubs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS managers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS saves (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manager_id INTEGER NOT NULL,
+            league_id TEXT NOT NULL,
+            club_id TEXT NOT NULL,
+            current_day INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (manager_id) REFERENCES managers(id),
+            FOREIGN KEY (league_id) REFERENCES leagues(id),
+            FOREIGN KEY (club_id) REFERENCES clubs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS fixtures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            save_id INTEGER NOT NULL,
+            match_day INTEGER NOT NULL,
+            home_club_id TEXT NOT NULL,
+            away_club_id TEXT NOT NULL,
+            played INTEGER NOT NULL DEFAULT 0,
+            home_goals INTEGER,
+            away_goals INTEGER,
+            FOREIGN KEY (save_id) REFERENCES saves(id),
+            FOREIGN KEY (home_club_id) REFERENCES clubs(id),
+            FOREIGN KEY (away_club_id) REFERENCES clubs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS app_options (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS option_choices (
+            option_key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            label TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (option_key, value)
+        );
         """
     )
     conn.commit()
 
 
-def db_has_seed_data(conn: sqlite3.Connection) -> bool:
-    row = conn.execute("SELECT COUNT(*) AS count FROM clubs").fetchone()
-    return row is not None and int(row["count"]) > 0
+def bootstrap_database(conn: sqlite3.Connection) -> None:
+    initialize_schema(conn)
+    _ensure_default_league(conn)
+    _ensure_default_options(conn)
+    conn.commit()
 
 
-def import_league_json_to_db(conn: sqlite3.Connection, json_path: Path, *, seed_conditions: bool) -> None:
-    raw = json.loads(json_path.read_text(encoding="utf-8"))
-    club_rows = []
-    tactic_rows = []
-    color_rows = []
-    player_rows = []
-    attribute_rows = []
-    condition_rows = []
-
-    for club_data in raw["clubs"]:
-        club_id = club_data["id"].upper()
-        club_rows.append((club_id, club_data["name"]))
-
-        tactics = dict(DEFAULT_TACTICS)
-        tactics.update({k: float(v) for k, v in club_data.get("tactics", {}).items() if k in DEFAULT_TACTICS})
-        for key, value in tactics.items():
-            tactic_rows.append((club_id, key, float(value)))
-
-        colors = dict(DEFAULT_COLORS)
-        colors.update({k: v for k, v in club_data.get("colors", {}).items() if k in DEFAULT_COLORS and isinstance(v, str) and v})
-        for key, value in colors.items():
-            color_rows.append((club_id, key, value))
-
-        for player in club_data["players"]:
-            player_id = player["id"]
-            player_rows.append((player_id, club_id, player["name"], player["position"], int(player["ovr"])))
-            attributes = merge_player_attributes(int(player["ovr"]), player["position"], player.get("attributes"))
-            for key, value in attributes.items():
-                attribute_rows.append((player_id, key, float(value)))
-            if seed_conditions:
-                condition_rows.append((player_id, float(player.get("current_stamina", 100.0)), 0))
-
-    conn.executemany(
-        "INSERT INTO clubs (id, name) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name",
-        club_rows,
-    )
-    conn.executemany(
+def _ensure_default_league(conn: sqlite3.Connection) -> None:
+    club_rows = conn.execute("SELECT id FROM clubs ORDER BY id").fetchall()
+    if not club_rows:
+        return
+    conn.execute(
         """
-        INSERT INTO club_tactics (club_id, key, value) VALUES (?, ?, ?)
-        ON CONFLICT(club_id, key) DO UPDATE SET value=excluded.value
+        INSERT INTO leagues (id, name) VALUES (?, ?)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name
         """,
-        tactic_rows,
+        (DEFAULT_LEAGUE["id"], DEFAULT_LEAGUE["name"]),
     )
-    conn.executemany(
-        """
-        INSERT INTO club_colors (club_id, key, value) VALUES (?, ?, ?)
-        ON CONFLICT(club_id, key) DO UPDATE SET value=excluded.value
-        """,
-        color_rows,
-    )
-    conn.executemany(
-        """
-        INSERT INTO players (id, club_id, name, position, ovr)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            club_id=excluded.club_id,
-            name=excluded.name,
-            position=excluded.position,
-            ovr=excluded.ovr
-        """,
-        player_rows,
-    )
-    conn.executemany(
-        """
-        INSERT INTO player_attributes (player_id, key, value) VALUES (?, ?, ?)
-        ON CONFLICT(player_id, key) DO UPDATE SET value=excluded.value
-        """,
-        attribute_rows,
-    )
-    if condition_rows:
+    current = conn.execute(
+        "SELECT COUNT(*) AS count FROM league_clubs WHERE league_id = ?",
+        (DEFAULT_LEAGUE["id"],),
+    ).fetchone()
+    if current is None or int(current["count"]) == 0:
         conn.executemany(
             """
-            INSERT INTO player_condition (player_id, current_stamina, updated_day)
+            INSERT INTO league_clubs (league_id, club_id, display_order)
             VALUES (?, ?, ?)
-            ON CONFLICT(player_id) DO UPDATE SET
-                current_stamina=excluded.current_stamina,
-                updated_day=excluded.updated_day
+            ON CONFLICT(league_id, club_id) DO UPDATE SET display_order=excluded.display_order
             """,
-            condition_rows,
+            [
+                (DEFAULT_LEAGUE["id"], str(row["id"]), idx)
+                for idx, row in enumerate(club_rows, start=1)
+            ],
         )
-    conn.commit()
 
 
-def bootstrap_database(conn: sqlite3.Connection, json_path: Path) -> None:
-    initialize_schema(conn)
-    import_league_json_to_db(conn, json_path, seed_conditions=not db_has_seed_data(conn))
+def _ensure_default_options(conn: sqlite3.Connection) -> None:
+    for key, value in DEFAULT_APP_OPTIONS.items():
+        conn.execute(
+            """
+            INSERT INTO app_options (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO NOTHING
+            """,
+            (key, value),
+        )
+    for option_key, choices in DEFAULT_OPTION_CHOICES.items():
+        conn.executemany(
+            """
+            INSERT INTO option_choices (option_key, value, label, sort_order)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(option_key, value) DO UPDATE SET
+                label=excluded.label,
+                sort_order=excluded.sort_order
+            """,
+            [(option_key, value, label, sort_order) for value, label, sort_order in choices],
+        )
 
 
 def load_clubs_from_db(conn: sqlite3.Connection) -> Dict[str, Club]:
@@ -245,6 +293,108 @@ def load_clubs_from_db(conn: sqlite3.Connection) -> Dict[str, Club]:
     return clubs
 
 
+def list_leagues(conn: sqlite3.Connection) -> List[dict]:
+    rows = conn.execute("SELECT id, name FROM leagues ORDER BY name").fetchall()
+    return [{"id": str(row["id"]), "name": str(row["name"])} for row in rows]
+
+
+def list_league_clubs(conn: sqlite3.Connection, league_id: str) -> List[dict]:
+    rows = conn.execute(
+        """
+        SELECT c.id, c.name, cc.value AS primary_color, cs.value AS secondary_color,
+               COUNT(p.id) AS players_count, ROUND(AVG(p.ovr), 1) AS avg_ovr
+        FROM league_clubs lc
+        JOIN clubs c ON c.id = lc.club_id
+        LEFT JOIN club_colors cc ON cc.club_id = c.id AND cc.key = 'primary'
+        LEFT JOIN club_colors cs ON cs.club_id = c.id AND cs.key = 'secondary'
+        LEFT JOIN players p ON p.club_id = c.id
+        WHERE lc.league_id = ?
+        GROUP BY c.id, c.name, lc.display_order, cc.value, cs.value
+        ORDER BY lc.display_order, c.name
+        """,
+        (league_id,),
+    ).fetchall()
+    clubs: List[dict] = []
+    for row in rows:
+        clubs.append(
+            {
+                "id": str(row["id"]),
+                "name": str(row["name"]),
+                "primary_color": str(row["primary_color"] or DEFAULT_COLORS["primary"]),
+                "secondary_color": str(row["secondary_color"] or DEFAULT_COLORS["secondary"]),
+                "players_count": int(row["players_count"] or 0),
+                "avg_ovr": float(row["avg_ovr"] or 0.0),
+            }
+        )
+    return clubs
+
+
+def list_club_players(conn: sqlite3.Connection, club_id: str) -> List[dict]:
+    rows = conn.execute(
+        """
+        SELECT p.id, p.name, p.position, p.ovr, pc.current_stamina
+        FROM players p
+        LEFT JOIN player_condition pc ON pc.player_id = p.id
+        WHERE p.club_id = ?
+        ORDER BY CASE p.position
+            WHEN 'GK' THEN 1
+            WHEN 'LB' THEN 2
+            WHEN 'CB' THEN 3
+            WHEN 'RB' THEN 4
+            WHEN 'DM' THEN 5
+            WHEN 'CM' THEN 6
+            WHEN 'AM' THEN 7
+            WHEN 'LW' THEN 8
+            WHEN 'ST' THEN 9
+            WHEN 'RW' THEN 10
+            ELSE 99
+        END, p.id
+        """,
+        (club_id,),
+    ).fetchall()
+    return [
+        {
+            "id": str(row["id"]),
+            "name": str(row["name"]),
+            "position": str(row["position"]),
+            "ovr": int(row["ovr"]),
+            "current_stamina": float(row["current_stamina"]) if row["current_stamina"] is not None else 100.0,
+        }
+        for row in rows
+    ]
+
+
+def load_app_options(conn: sqlite3.Connection) -> Dict[str, str]:
+    rows = conn.execute("SELECT key, value FROM app_options").fetchall()
+    options = dict(DEFAULT_APP_OPTIONS)
+    for row in rows:
+        options[str(row["key"])] = str(row["value"])
+    return options
+
+
+def list_option_choices(conn: sqlite3.Connection, option_key: str) -> List[dict]:
+    rows = conn.execute(
+        """
+        SELECT value, label
+        FROM option_choices
+        WHERE option_key = ?
+        ORDER BY sort_order, label
+        """,
+        (option_key,),
+    ).fetchall()
+    return [{"value": str(row["value"]), "label": str(row["label"])} for row in rows]
+
+
+def save_app_option(conn: sqlite3.Connection, option_key: str, value: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO app_options (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+        (option_key, value),
+    )
+
+
 def get_current_day(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT value FROM metadata WHERE key = 'current_day'").fetchone()
     if row is None:
@@ -253,14 +403,24 @@ def get_current_day(conn: sqlite3.Connection) -> int:
 
 
 def set_current_day(conn: sqlite3.Connection, current_day: int) -> None:
+    set_metadata(conn, "current_day", str(int(current_day)))
+
+
+def get_metadata(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        return None
+    return str(row["value"])
+
+
+def set_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute(
         """
-        INSERT INTO metadata (key, value) VALUES ('current_day', ?)
+        INSERT INTO metadata (key, value) VALUES (?, ?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value
         """,
-        (str(int(current_day)),),
+        (key, value),
     )
-    conn.commit()
 
 
 def load_player_condition(conn: sqlite3.Connection, player_id: str) -> float | None:
@@ -300,3 +460,319 @@ def maybe_migrate_legacy_condition_json(conn: sqlite3.Connection, json_path: Pat
     set_current_day(conn, current_day)
     conn.commit()
     return True
+
+
+def list_save_games(conn: sqlite3.Connection) -> List[dict]:
+    rows = conn.execute(
+        """
+        SELECT s.id, m.name AS manager_name, l.name AS league_name, c.name AS club_name, s.created_at
+        FROM saves s
+        JOIN managers m ON m.id = s.manager_id
+        JOIN leagues l ON l.id = s.league_id
+        JOIN clubs c ON c.id = s.club_id
+        ORDER BY s.id DESC
+        """
+    ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "manager_name": str(row["manager_name"]),
+            "league_name": str(row["league_name"]),
+            "club_name": str(row["club_name"]),
+            "created_at": str(row["created_at"]),
+        }
+        for row in rows
+    ]
+
+
+def create_save_game(conn: sqlite3.Connection, manager_name: str, league_id: str, club_id: str) -> int:
+    cursor = conn.execute("INSERT INTO managers (name) VALUES (?)", (manager_name.strip(),))
+    manager_id = int(cursor.lastrowid)
+    cursor = conn.execute(
+        """
+        INSERT INTO saves (manager_id, league_id, club_id, current_day)
+        VALUES (?, ?, ?, 0)
+        """,
+        (manager_id, league_id, club_id),
+    )
+    save_id = int(cursor.lastrowid)
+    _seed_fixtures_for_save(conn, save_id, league_id)
+    set_metadata(conn, "active_save_id", str(save_id))
+    conn.commit()
+    return save_id
+
+
+def load_active_save_id(conn: sqlite3.Connection) -> int | None:
+    value = get_metadata(conn, "active_save_id")
+    if value is None:
+        return None
+    return int(value)
+
+
+def set_active_save_id(conn: sqlite3.Connection, save_id: int) -> None:
+    set_metadata(conn, "active_save_id", str(int(save_id)))
+
+
+def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
+    save_row = conn.execute(
+        """
+        SELECT s.id, s.current_day, m.name AS manager_name, l.id AS league_id, l.name AS league_name,
+               c.id AS club_id, c.name AS club_name
+        FROM saves s
+        JOIN managers m ON m.id = s.manager_id
+        JOIN leagues l ON l.id = s.league_id
+        JOIN clubs c ON c.id = s.club_id
+        WHERE s.id = ?
+        """,
+        (save_id,),
+    ).fetchone()
+    if save_row is None:
+        return None
+    league_id = str(save_row["league_id"])
+    club_id = str(save_row["club_id"])
+    clubs = list_league_clubs(conn, league_id)
+    players_by_club = {club["id"]: list_club_players(conn, club["id"]) for club in clubs}
+    next_fixture = get_next_fixture_for_save(conn, save_id, club_id)
+    return {
+        "save_id": int(save_row["id"]),
+        "current_day": int(save_row["current_day"]),
+        "manager_name": str(save_row["manager_name"]),
+        "league_id": league_id,
+        "league_name": str(save_row["league_name"]),
+        "club_id": club_id,
+        "club_name": str(save_row["club_name"]),
+        "clubs": clubs,
+        "players_by_club": players_by_club,
+        "standings": load_save_standings(conn, save_id),
+        "fixtures": list_save_fixtures(conn, save_id),
+        "next_fixture": next_fixture,
+    }
+
+
+def list_save_fixtures(conn: sqlite3.Connection, save_id: int) -> List[dict]:
+    rows = conn.execute(
+        """
+        SELECT f.id, f.match_day, hc.name AS home_name, ac.name AS away_name,
+               f.played, f.home_goals, f.away_goals
+        FROM fixtures f
+        JOIN clubs hc ON hc.id = f.home_club_id
+        JOIN clubs ac ON ac.id = f.away_club_id
+        WHERE f.save_id = ?
+        ORDER BY f.match_day, f.id
+        """,
+        (save_id,),
+    ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "match_day": int(row["match_day"]),
+            "home_name": str(row["home_name"]),
+            "away_name": str(row["away_name"]),
+            "played": bool(row["played"]),
+            "home_goals": None if row["home_goals"] is None else int(row["home_goals"]),
+            "away_goals": None if row["away_goals"] is None else int(row["away_goals"]),
+        }
+        for row in rows
+    ]
+
+
+def get_next_fixture_for_save(conn: sqlite3.Connection, save_id: int, club_id: str) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT f.id, f.match_day, f.home_club_id, f.away_club_id, hc.name AS home_name, ac.name AS away_name
+        FROM fixtures f
+        JOIN clubs hc ON hc.id = f.home_club_id
+        JOIN clubs ac ON ac.id = f.away_club_id
+        WHERE f.save_id = ?
+          AND f.played = 0
+          AND (f.home_club_id = ? OR f.away_club_id = ?)
+        ORDER BY f.match_day, f.id
+        LIMIT 1
+        """,
+        (save_id, club_id, club_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "match_day": int(row["match_day"]),
+        "home_club_id": str(row["home_club_id"]),
+        "away_club_id": str(row["away_club_id"]),
+        "home_name": str(row["home_name"]),
+        "away_name": str(row["away_name"]),
+    }
+
+
+def list_matchday_fixtures(conn: sqlite3.Connection, save_id: int, match_day: int) -> List[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, home_club_id, away_club_id
+        FROM fixtures
+        WHERE save_id = ? AND match_day = ?
+        ORDER BY id
+        """,
+        (save_id, match_day),
+    ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "home_club_id": str(row["home_club_id"]),
+            "away_club_id": str(row["away_club_id"]),
+        }
+        for row in rows
+    ]
+
+
+def save_fixture_result(
+    conn: sqlite3.Connection,
+    fixture_id: int,
+    home_goals: int,
+    away_goals: int,
+) -> None:
+    conn.execute(
+        """
+        UPDATE fixtures
+        SET played = 1,
+            home_goals = ?,
+            away_goals = ?
+        WHERE id = ?
+        """,
+        (int(home_goals), int(away_goals), int(fixture_id)),
+    )
+
+
+def set_save_current_day(conn: sqlite3.Connection, save_id: int, current_day: int) -> None:
+    conn.execute(
+        """
+        UPDATE saves
+        SET current_day = ?
+        WHERE id = ?
+        """,
+        (int(current_day), int(save_id)),
+    )
+
+
+def load_save_standings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
+    save_row = conn.execute("SELECT league_id FROM saves WHERE id = ?", (save_id,)).fetchone()
+    if save_row is None:
+        return []
+    clubs = list_league_clubs(conn, str(save_row["league_id"]))
+    table = {
+        club["id"]: {
+            "club_id": club["id"],
+            "club_name": club["name"],
+            "played": 0,
+            "wins": 0,
+            "draws": 0,
+            "losses": 0,
+            "goals_for": 0,
+            "goals_against": 0,
+            "goal_difference": 0,
+            "points": 0,
+        }
+        for club in clubs
+    }
+
+    rows = conn.execute(
+        """
+        SELECT home_club_id, away_club_id, home_goals, away_goals
+        FROM fixtures
+        WHERE save_id = ? AND played = 1
+        """,
+        (save_id,),
+    ).fetchall()
+    for row in rows:
+        home_id = str(row["home_club_id"])
+        away_id = str(row["away_club_id"])
+        home_goals = int(row["home_goals"] or 0)
+        away_goals = int(row["away_goals"] or 0)
+        home = table[home_id]
+        away = table[away_id]
+        home["played"] += 1
+        away["played"] += 1
+        home["goals_for"] += home_goals
+        home["goals_against"] += away_goals
+        away["goals_for"] += away_goals
+        away["goals_against"] += home_goals
+        if home_goals > away_goals:
+            home["wins"] += 1
+            away["losses"] += 1
+            home["points"] += 3
+        elif away_goals > home_goals:
+            away["wins"] += 1
+            home["losses"] += 1
+            away["points"] += 3
+        else:
+            home["draws"] += 1
+            away["draws"] += 1
+            home["points"] += 1
+            away["points"] += 1
+
+    standings = list(table.values())
+    for row in standings:
+        row["goal_difference"] = row["goals_for"] - row["goals_against"]
+    standings.sort(
+        key=lambda row: (
+            -row["points"],
+            -row["goal_difference"],
+            -row["goals_for"],
+            row["club_name"],
+        )
+    )
+    return standings
+
+
+def _seed_fixtures_for_save(conn: sqlite3.Connection, save_id: int, league_id: str) -> None:
+    club_rows = conn.execute(
+        """
+        SELECT club_id
+        FROM league_clubs
+        WHERE league_id = ?
+        ORDER BY display_order, club_id
+        """,
+        (league_id,),
+    ).fetchall()
+    club_ids = [str(row["club_id"]) for row in club_rows]
+    match_day = 1
+    fixture_rows: List[tuple[int, int, str, str]] = []
+    for home_id, away_id in _generate_double_round_robin(club_ids):
+        fixture_rows.append((save_id, match_day, home_id, away_id))
+        if len(fixture_rows) % (max(1, len(club_ids) // 2)) == 0:
+            match_day += 1
+    conn.executemany(
+        """
+        INSERT INTO fixtures (save_id, match_day, home_club_id, away_club_id)
+        VALUES (?, ?, ?, ?)
+        """,
+        fixture_rows,
+    )
+
+
+def _generate_double_round_robin(club_ids: List[str]) -> List[tuple[str, str]]:
+    if len(club_ids) < 2:
+        return []
+    ids = list(club_ids)
+    if len(ids) % 2 == 1:
+        ids.append("_BYE_")
+    pairings: List[List[tuple[str, str]]] = []
+    rotating = ids[:]
+    rounds = len(rotating) - 1
+    half = len(rotating) // 2
+    for round_index in range(rounds):
+        matchups: List[tuple[str, str]] = []
+        left = rotating[:half]
+        right = list(reversed(rotating[half:]))
+        for idx, (home_id, away_id) in enumerate(zip(left, right)):
+            if "_BYE_" in (home_id, away_id):
+                continue
+            if round_index % 2 == 0:
+                matchups.append((home_id, away_id))
+            else:
+                matchups.append((away_id, home_id))
+        pairings.append(matchups)
+        rotating = [rotating[0]] + [rotating[-1]] + rotating[1:-1]
+    second_leg = [[(away_id, home_id) for home_id, away_id in round_pair] for round_pair in pairings]
+    flat: List[tuple[str, str]] = []
+    for round_pair in pairings + second_leg:
+        flat.extend(round_pair)
+    return flat

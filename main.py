@@ -1,17 +1,35 @@
 from __future__ import annotations
+
 import argparse
-import sys
 from pathlib import Path
 
 import pygame
 
-from engine.db import bootstrap_database, db_session, get_current_day, load_clubs_from_db
-from engine.condition import advance_condition_days, apply_post_match_condition, load_condition_state, save_condition_state
+from engine.condition import advance_condition_days, apply_post_match_condition, load_condition_state, save_condition_state, save_condition_state_to_conn
+from engine.db import (
+    bootstrap_database,
+    create_save_game,
+    db_session,
+    get_current_day,
+    get_next_fixture_for_save,
+    list_league_clubs,
+    list_leagues,
+    list_matchday_fixtures,
+    list_option_choices,
+    list_save_games,
+    load_active_save_id,
+    load_app_options,
+    load_clubs_from_db,
+    load_save_overview,
+    save_fixture_result,
+    save_app_option,
+    set_save_current_day,
+    set_active_save_id,
+)
 from engine.match_engine import MatchEngine
 from engine.render import Renderer
 
 ROOT = Path(__file__).resolve().parent
-LEAGUE_FILE = ROOT / "data" / "league.json"
 DB_FILE = ROOT / "data" / "game.db"
 SPEED_MULTIPLIERS = {
     "X1": 2.0,
@@ -20,27 +38,25 @@ SPEED_MULTIPLIERS = {
 }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="FM-style match viewer")
-    parser.add_argument("home_id")
-    parser.add_argument("away_id")
-    parser.add_argument("--days", type=int, default=0, help="Advance squad recovery by this many days before kickoff")
-    args = parser.parse_args()
+def parse_resolution(value: str) -> tuple[int, int]:
+    try:
+        width_text, height_text = value.lower().split("x", 1)
+        width = max(960, int(width_text))
+        height = max(640, int(height_text))
+        return width, height
+    except (ValueError, AttributeError):
+        return 1560, 900
 
-    home_id = args.home_id.strip().upper()
-    away_id = args.away_id.strip().upper()
-    if home_id == away_id:
-        print("Home and away clubs must be different.")
-        return 1
 
+def run_match_viewer(home_id: str, away_id: str, days: int) -> int:
     with db_session(DB_FILE) as conn:
-        bootstrap_database(conn, LEAGUE_FILE)
+        bootstrap_database(conn)
         clubs = load_clubs_from_db(conn)
         current_day = get_current_day(conn)
     current_day = load_condition_state(DB_FILE, clubs)
-    if args.days > 0:
-        advance_condition_days(clubs, args.days)
-        current_day += args.days
+    if days > 0:
+        advance_condition_days(clubs, days)
+        current_day += days
         save_condition_state(DB_FILE, clubs, current_day)
     if home_id not in clubs or away_id not in clubs:
         print(f"Unknown club id. Available: {', '.join(sorted(clubs.keys()))}")
@@ -103,6 +119,362 @@ def main() -> int:
 
     pygame.quit()
     return 0
+
+
+class ManagerGameApp:
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+        with db_session(self.db_path) as conn:
+            bootstrap_database(conn)
+            options = load_app_options(conn)
+        width, height = parse_resolution(options.get("resolution", "1560x900"))
+        fullscreen = options.get("window_mode", "windowed") == "fullscreen"
+        self.renderer = Renderer(width, height, fullscreen)
+        self.running = True
+        self.screen = "menu"
+        self.manager_name = ""
+        self.selected_league_id: str | None = None
+        self.selected_club_id: str | None = None
+        self.error_message: str | None = None
+        self.options = options
+        self.option_choices: dict[str, list[dict]] = {}
+        self.leagues: list[dict] = []
+        self.club_choices: list[dict] = []
+        self.saves: list[dict] = []
+        self.active_save_id: int | None = None
+        self.overview: dict | None = None
+        self.overview_club_id: str | None = None
+        self.match_engine: MatchEngine | None = None
+        self.match_fixture: dict | None = None
+        self.match_clubs: dict | None = None
+        self.match_speed_label = "X1"
+        self.match_paused = False
+        self.match_condition_saved = False
+        self.match_current_day = 0
+        self.match_finish_timer = 0.0
+        self._reload_state()
+
+    def _reload_state(self) -> None:
+        with db_session(self.db_path) as conn:
+            bootstrap_database(conn)
+            self.options = load_app_options(conn)
+            self.option_choices = {
+                key: list_option_choices(conn, key)
+                for key in ("resolution", "window_mode", "language")
+            }
+            self.leagues = list_leagues(conn)
+            self.saves = list_save_games(conn)
+            self.active_save_id = load_active_save_id(conn)
+            if self.active_save_id is not None:
+                self.overview = load_save_overview(conn, self.active_save_id)
+                if self.overview and not self.overview_club_id:
+                    self.overview_club_id = self.overview["club_id"]
+            else:
+                self.overview = None
+        self._apply_renderer_options()
+
+    def _apply_renderer_options(self) -> None:
+        width, height = parse_resolution(self.options.get("resolution", "1560x900"))
+        fullscreen = self.options.get("window_mode", "windowed") == "fullscreen"
+        self.renderer.set_display_mode(width, height, fullscreen)
+
+    def _load_league_clubs(self) -> None:
+        if not self.selected_league_id:
+            self.club_choices = []
+            return
+        with db_session(self.db_path) as conn:
+            self.club_choices = list_league_clubs(conn, self.selected_league_id)
+
+    def _load_save(self, save_id: int) -> None:
+        with db_session(self.db_path) as conn:
+            set_active_save_id(conn, save_id)
+            conn.commit()
+            self.overview = load_save_overview(conn, save_id)
+        self.active_save_id = save_id
+        if self.overview:
+            self.overview_club_id = self.overview["club_id"]
+            self.screen = "overview"
+
+    def _create_new_save(self) -> None:
+        if not self.manager_name.strip():
+            self.error_message = "Manager name required."
+            return
+        if not self.selected_league_id or not self.selected_club_id:
+            return
+        with db_session(self.db_path) as conn:
+            save_id = create_save_game(conn, self.manager_name, self.selected_league_id, self.selected_club_id)
+            self.overview = load_save_overview(conn, save_id)
+        self.active_save_id = self.overview["save_id"] if self.overview else None
+        self.overview_club_id = self.selected_club_id
+        self.saves = []
+        self.screen = "overview"
+
+    def _save_option(self, key: str, value: str) -> None:
+        with db_session(self.db_path) as conn:
+            save_app_option(conn, key, value)
+            conn.commit()
+        self._reload_state()
+
+    def _start_next_match(self) -> None:
+        if self.active_save_id is None or not self.overview:
+            return
+        fixture = self.overview.get("next_fixture")
+        if not fixture:
+            return
+        with db_session(self.db_path) as conn:
+            bootstrap_database(conn)
+            clubs = load_clubs_from_db(conn)
+            current_day = get_current_day(conn)
+        current_day = load_condition_state(self.db_path, clubs)
+        home_id = fixture["home_club_id"]
+        away_id = fixture["away_club_id"]
+        if home_id not in clubs or away_id not in clubs:
+            return
+        self.match_engine = MatchEngine(clubs[home_id], clubs[away_id], seed=hash((self.active_save_id, fixture["id"])) & 0xFFFFFFFF)
+        self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
+        self.match_fixture = fixture
+        self.match_clubs = clubs
+        self.match_current_day = current_day
+        self.match_paused = False
+        self.match_condition_saved = False
+        self.screen = "match"
+        self.match_finish_timer = 0.0
+
+    def _finish_matchday(self) -> None:
+        if not self.match_engine or not self.match_fixture or not self.match_clubs or self.active_save_id is None:
+            return
+        managed_clubs = self.match_clubs
+        fixture = self.match_fixture
+        with db_session(self.db_path) as conn:
+            save_fixture_result(
+                conn,
+                fixture["id"],
+                self.match_engine.state.home_score,
+                self.match_engine.state.away_score,
+            )
+            match_day = fixture["match_day"]
+            same_day = list_matchday_fixtures(conn, self.active_save_id, match_day)
+            db_clubs = load_clubs_from_db(conn)
+            for other in same_day:
+                if other["id"] == fixture["id"]:
+                    continue
+                row = conn.execute("SELECT played FROM fixtures WHERE id = ?", (other["id"],)).fetchone()
+                if row is not None and int(row["played"]) == 1:
+                    continue
+                engine = MatchEngine(
+                    db_clubs[other["home_club_id"]],
+                    db_clubs[other["away_club_id"]],
+                    seed=hash((self.active_save_id, other["id"])) & 0xFFFFFFFF,
+                )
+                engine.set_speed(SPEED_MULTIPLIERS["X4"])
+                engine.start_match_flow()
+                safety = 0
+                while not engine.state.is_finished and safety < 12000:
+                    engine.update(1.0 / 30.0)
+                    safety += 1
+                save_fixture_result(conn, other["id"], engine.state.home_score, engine.state.away_score)
+            next_day = self.match_current_day + 4
+            advance_condition_days(managed_clubs, 4)
+            save_condition_state_to_conn(conn, managed_clubs, next_day)
+            set_save_current_day(conn, self.active_save_id, next_day)
+            conn.commit()
+        self.match_condition_saved = True
+        self.match_engine = None
+        self.match_fixture = None
+        self.match_clubs = None
+        self.match_finish_timer = 0.0
+        self.screen = "overview"
+        self._reload_state()
+
+    def _handle_action(self, action: str | None) -> None:
+        if not action:
+            return
+        if action == "menu:quit":
+            self.running = False
+            return
+        if action == "menu:new_game":
+            self.screen = "new_game_name"
+            self.error_message = None
+            self.manager_name = ""
+            return
+        if action == "menu:load_game":
+            self.screen = "load_game"
+            self._reload_state()
+            return
+        if action == "menu:options":
+            self.screen = "options"
+            self._reload_state()
+            return
+        if action == "back:menu":
+            self.screen = "menu"
+            self.error_message = None
+            return
+        if action == "back:new_game_name":
+            self.screen = "new_game_name"
+            return
+        if action == "back:select_league":
+            self.screen = "select_league"
+            return
+        if action == "new_game:continue":
+            if not self.manager_name.strip():
+                self.error_message = "Please enter a manager name."
+            else:
+                self.error_message = None
+                self.screen = "select_league"
+            return
+        if action.startswith("league:"):
+            self.selected_league_id = action.split(":", 1)[1]
+            self._load_league_clubs()
+            self.screen = "select_club"
+            return
+        if action.startswith("club:"):
+            self.selected_club_id = action.split(":", 1)[1]
+            self._create_new_save()
+            return
+        if action.startswith("option:"):
+            _, key, value = action.split(":", 2)
+            self._save_option(key, value)
+            return
+        if action.startswith("load:"):
+            self._load_save(int(action.split(":", 1)[1]))
+            return
+        if action.startswith("overview_club:"):
+            self.overview_club_id = action.split(":", 1)[1]
+            return
+        if action == "overview:play_next_match":
+            self._start_next_match()
+
+    def _handle_keydown(self, event: pygame.event.Event) -> None:
+        if self.screen == "match":
+            if not self.match_engine:
+                return
+            if event.key == pygame.K_ESCAPE:
+                if self.match_engine.state.is_finished:
+                    self._finish_matchday()
+                return
+            if event.key == pygame.K_SPACE:
+                if not self.match_engine.state.awaiting_start and not self.match_engine.state.is_finished:
+                    self.match_paused = not self.match_paused
+                return
+            if event.key == pygame.K_1:
+                self.match_speed_label = "X1"
+                self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
+                return
+            if event.key == pygame.K_2:
+                self.match_speed_label = "X2"
+                self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
+                return
+            if event.key == pygame.K_4:
+                self.match_speed_label = "X4"
+                self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
+                return
+        if self.screen != "new_game_name":
+            if event.key == pygame.K_ESCAPE and self.screen != "menu":
+                self.screen = "menu"
+            return
+        if event.key == pygame.K_ESCAPE:
+            self.screen = "menu"
+            return
+        if event.key == pygame.K_BACKSPACE:
+            self.manager_name = self.manager_name[:-1]
+            return
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self._handle_action("new_game:continue")
+            return
+        if event.unicode and event.unicode.isprintable() and len(self.manager_name) < 24:
+            self.manager_name += event.unicode
+
+    def _build_view(self) -> dict:
+        footer_text = "New saves, leagues, fixtures, standings, and options are all DB-backed."
+        if self.screen == "menu":
+            count = len(self.saves)
+            if count:
+                footer_text = f"{count} save{'s' if count != 1 else ''} available in database."
+            return {"screen": "menu", "footer_text": footer_text}
+        if self.screen == "new_game_name":
+            return {"screen": "new_game_name", "manager_name": self.manager_name, "error": self.error_message}
+        if self.screen == "select_league":
+            return {"screen": "select_league", "leagues": self.leagues}
+        if self.screen == "select_club":
+            return {"screen": "select_club", "clubs": self.club_choices}
+        if self.screen == "options":
+            return {"screen": "options", "options": self.options, "choices": self.option_choices}
+        if self.screen == "load_game":
+            return {"screen": "load_game", "saves": self.saves}
+        if self.screen == "overview":
+            return {
+                "screen": "overview",
+                "overview": self.overview or {},
+                "selected_club_id": self.overview_club_id,
+            }
+        return {"screen": "menu", "footer_text": footer_text}
+
+    def run(self) -> int:
+        while self.running:
+            dt = self.renderer.tick()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    self._handle_keydown(event)
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if self.screen == "match" and self.match_engine:
+                        action = self.renderer.handle_click(event.pos)
+                        if action == "start":
+                            if self.match_engine.start_match_flow():
+                                self.match_paused = False
+                        elif action and action.startswith("speed:"):
+                            self.match_speed_label = action.split(":", 1)[1]
+                            self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
+                        else:
+                            self._handle_action(self.renderer.handle_ui_click(event.pos))
+                    else:
+                        action = self.renderer.handle_ui_click(event.pos)
+                        self._handle_action(action)
+            if self.screen == "match" and self.match_engine:
+                if not self.match_paused:
+                    self.match_engine.update(dt)
+                if self.match_engine.state.is_finished and not self.match_condition_saved:
+                    apply_post_match_condition(self.match_engine.state)
+                    self.match_condition_saved = True
+                if self.match_engine.state.is_finished and self.match_condition_saved:
+                    self.match_finish_timer += dt
+                    if self.match_finish_timer >= 1.25:
+                        self._finish_matchday()
+                        continue
+                fixture_label = f"{self.match_engine.state.home.name} vs {self.match_engine.state.away.name}"
+                self.renderer.draw(
+                    self.match_engine.state,
+                    fixture_label,
+                    self.match_paused,
+                    alpha=self.match_engine.slice_progress(),
+                    speed_label=self.match_speed_label,
+                    clock_seconds=self.match_engine.display_clock_seconds(),
+                )
+                continue
+            self.renderer.draw_app_view(self._build_view())
+        pygame.quit()
+        return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Touchline Stories desktop prototype")
+    parser.add_argument("clubs", nargs="*", help="Optional legacy match viewer club ids: HOME AWAY")
+    parser.add_argument("--days", type=int, default=0, help="Advance squad recovery by this many days before kickoff")
+    args = parser.parse_args()
+
+    if len(args.clubs) == 2:
+        home_id = args.clubs[0].strip().upper()
+        away_id = args.clubs[1].strip().upper()
+        if home_id == away_id:
+            print("Home and away clubs must be different.")
+            return 1
+        return run_match_viewer(home_id, away_id, args.days)
+    if args.clubs:
+        print("Usage: python main.py HOME AWAY  or  python main.py")
+        return 1
+    app = ManagerGameApp(DB_FILE)
+    return app.run()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Dict
 
@@ -44,11 +45,15 @@ def load_condition_state(path: Path, clubs: Dict[str, Club]) -> int:
 def save_condition_state(path: Path, clubs: Dict[str, Club], current_day: int) -> None:
     with db_session(path) as conn:
         initialize_schema(conn)
-        set_current_day(conn, current_day)
-        for club in clubs.values():
-            for player in club.players:
-                save_player_condition(conn, player.id, round(player.current_stamina, 2), current_day)
+        save_condition_state_to_conn(conn, clubs, current_day)
         conn.commit()
+
+
+def save_condition_state_to_conn(conn: sqlite3.Connection, clubs: Dict[str, Club], current_day: int) -> None:
+    set_current_day(conn, current_day)
+    for club in clubs.values():
+        for player in club.players:
+            save_player_condition(conn, player.id, round(player.current_stamina, 2), current_day)
 
 
 def advance_condition_days(clubs: Dict[str, Club], days: int) -> None:
