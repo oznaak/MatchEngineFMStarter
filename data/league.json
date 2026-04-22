@@ -4,6 +4,10 @@
     {
       "id": "A",
       "name": "Arsenal",
+      "colors": {
+        "primary": "#C62828",
+        "secondary": "#F5F5F5"
+      },
       "tactics": {
         "tempo": 46,
         "width": 66,
@@ -34,6 +38,10 @@
     {
       "id": "B",
       "name": "Manchester United",
+      "colors": {
+        "primary": "#A61C1C",
+        "secondary": "#F5F5F5"
+      },
       "tactics": {
         "tempo": 57,
         "width": 52,
@@ -64,6 +72,10 @@
     {
       "id": "C",
       "name": "Chelsea",
+      "colors": {
+        "primary": "#2457C5",
+        "secondary": "#F5F5F5"
+      },
       "players": [
         {"id":"C01","name":"Robert Sanchez","position":"GK","ovr":73},
         {"id":"C02","name":"Ben Chilwell","position":"LB","ovr":71},
@@ -85,6 +97,10 @@
     {
       "id": "D",
       "name": "Manchester City",
+      "colors": {
+        "primary": "#2E6FD8",
+        "secondary": "#F5F5F5"
+      },
       "players": [
         {"id":"D01","name":"Ederson","position":"GK","ovr":67},
         {"id":"D02","name":"Josko Gvardiol","position":"LB","ovr":65},

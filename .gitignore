@@ -5,3 +5,4 @@ tests
 .venv
 __pycache__
 docs.md
+data/game.db

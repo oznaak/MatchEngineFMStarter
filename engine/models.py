@@ -3,6 +3,19 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 
+def stamina_ratio_for_player(stamina: float, fatigue: float) -> float:
+    usable_capacity = 8.5 + stamina * 0.16
+    return max(0.08, min(1.0, 1.0 - (fatigue / usable_capacity)))
+
+
+def fatigue_from_current_stamina(current_stamina: float) -> float:
+    return max(0.0, (100.0 - max(0.0, min(100.0, current_stamina))) / 3.0)
+
+
+def current_stamina_from_fatigue(fatigue: float) -> float:
+    return max(0.0, min(100.0, 100.0 - fatigue * 3.0))
+
+
 @dataclass
 class PlayerProfile:
     id: str
@@ -10,6 +23,7 @@ class PlayerProfile:
     position: str
     ovr: int
     attributes: Dict[str, float]
+    current_stamina: float = 100.0
 
 
 @dataclass
@@ -18,6 +32,7 @@ class Club:
     name: str
     players: List[PlayerProfile]
     tactics: Dict[str, float] = field(default_factory=dict)
+    colors: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -159,3 +174,6 @@ class MatchState:
     referee_strictness: float = 52.0
     restart_taker_id: Optional[str] = None
     fouled_player_id: Optional[str] = None
+    player_goals: Dict[str, int] = field(default_factory=dict)
+    player_assists: Dict[str, int] = field(default_factory=dict)
+    assist_candidate_id: Optional[str] = None

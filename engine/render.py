@@ -5,15 +5,18 @@ from typing import Tuple
 import pygame
 
 from .match_engine import PITCH_LENGTH, PITCH_WIDTH
-from .models import MatchState
+from .models import MatchState, stamina_ratio_for_player
 
-SCREEN_W = 1280
-SCREEN_H = 820
+SCREEN_W = 1560
+SCREEN_H = 900
 TOP_BAR_H = 40
 BOTTOM_TICKER_H = 44
 VIEWPORT_Y = TOP_BAR_H
 VIEWPORT_H = SCREEN_H - TOP_BAR_H - BOTTOM_TICKER_H
-PITCH_PANEL = pygame.Rect(0, VIEWPORT_Y, SCREEN_W, VIEWPORT_H)
+SIDE_PANEL_W = 308
+PANEL_GAP = 14
+SIDE_PANEL = pygame.Rect(0, VIEWPORT_Y, SIDE_PANEL_W, VIEWPORT_H)
+PITCH_PANEL = pygame.Rect(SIDE_PANEL_W + PANEL_GAP, VIEWPORT_Y, SCREEN_W - SIDE_PANEL_W - PANEL_GAP, VIEWPORT_H)
 VIEWPORT_PAD_X = 28
 PITCH_X = 62
 PITCH_Y = VIEWPORT_Y
@@ -101,6 +104,28 @@ def compact_team_name(name: str) -> str:
     return name[:10]
 
 
+def short_display_name(name: str, max_len: int = 14) -> str:
+    parts = name.split()
+    if not parts:
+        return name[:max_len]
+    label = parts[-1]
+    if len(label) <= max_len:
+        return label
+    return label[:max_len]
+
+
+def hex_to_rgb(value: str, fallback: Tuple[int, int, int]) -> Tuple[int, int, int]:
+    if not isinstance(value, str):
+        return fallback
+    text = value.strip().lstrip("#")
+    if len(text) != 6:
+        return fallback
+    try:
+        return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
+    except ValueError:
+        return fallback
+
+
 def world_to_screen(x: float, y: float) -> Tuple[int, int]:
     sx = int(PITCH_X + (x / PITCH_LENGTH) * PITCH_W)
     sy = int(PITCH_Y + (y / PITCH_WIDTH) * PITCH_H)
@@ -165,6 +190,7 @@ class Renderer:
     ) -> None:
         self.screen.fill((18, 18, 22))
         self._layout_pitch()
+        self._draw_side_panel(state)
         pygame.draw.rect(self.screen, (108, 142, 63), PITCH_PANEL)
         self._draw_pitch()
         self._draw_players_and_ball(state, alpha)
@@ -177,8 +203,8 @@ class Renderer:
     def _layout_pitch(self) -> None:
         global PITCH_X, PITCH_Y, PITCH_W, PITCH_H
 
-        max_height = VIEWPORT_H
-        max_width = SCREEN_W - VIEWPORT_PAD_X * 2 - 2 * 28
+        max_height = VIEWPORT_H - 32
+        max_width = PITCH_PANEL.width - VIEWPORT_PAD_X * 2 - 2 * 28
         pitch_ratio = PITCH_LENGTH / PITCH_WIDTH
 
         pitch_h = max_height
@@ -189,13 +215,141 @@ class Renderer:
 
         goal_depth = int((2.2 / PITCH_LENGTH) * pitch_w)
         total_width = pitch_w + goal_depth * 2
-        pitch_x = max(VIEWPORT_PAD_X + goal_depth, (SCREEN_W - total_width) // 2 + goal_depth)
-        pitch_y = VIEWPORT_Y
+        pitch_x = max(PITCH_PANEL.x + VIEWPORT_PAD_X + goal_depth, PITCH_PANEL.x + (PITCH_PANEL.width - total_width) // 2 + goal_depth)
+        pitch_y = VIEWPORT_Y + (VIEWPORT_H - pitch_h) // 2
 
         PITCH_X = pitch_x
         PITCH_Y = pitch_y
         PITCH_W = pitch_w
         PITCH_H = pitch_h
+
+    def _draw_side_panel(self, state: MatchState) -> None:
+        panel = SIDE_PANEL.inflate(-10, -10)
+        pygame.draw.rect(self.screen, (12, 12, 14), panel, border_radius=4)
+        pygame.draw.rect(self.screen, (44, 44, 48), panel, 1, border_radius=4)
+        mid_y = panel.y + 8
+        section_h = (panel.height - 22) // 2
+        self._draw_team_squad_section(
+            state.home,
+            state,
+            pygame.Rect(panel.x + 8, mid_y, panel.width - 16, section_h - 6),
+        )
+        self._draw_team_squad_section(
+            state.away,
+            state,
+            pygame.Rect(panel.x + 8, mid_y + section_h + 6, panel.width - 16, section_h - 6),
+        )
+
+    def _draw_team_squad_section(
+        self,
+        team,
+        state: MatchState,
+        rect: pygame.Rect,
+    ) -> None:
+        primary = hex_to_rgb(team.club.colors.get("primary", "#2E3A6A"), (46, 58, 106))
+        secondary = hex_to_rgb(team.club.colors.get("secondary", "#F5F5F5"), (245, 245, 245))
+        pygame.draw.rect(self.screen, (18, 18, 22), rect, border_radius=4)
+        pygame.draw.rect(self.screen, primary, (rect.x, rect.y, rect.width, 28), border_radius=4)
+        draw_text(self.screen, compact_team_name(team.name), rect.x + 10, rect.y + 8, secondary, scale=2)
+
+        col_name = rect.x + 10
+        col_avg = rect.right - 106
+        col_stam = rect.right - 72
+        y = rect.y + 36
+        draw_text(self.screen, "XI", col_name, y + 2, (245, 245, 245), scale=1)
+        draw_text(self.screen, "AVG", col_avg, y, (180, 180, 186), scale=1)
+        draw_text(self.screen, "STM", col_stam, y, (180, 180, 186), scale=1)
+        y += 18
+
+        for player in team.xi:
+            self._draw_squad_row(
+                rect,
+                y,
+                player.profile.name,
+                player.profile.id,
+                6.8,
+                stamina_ratio_for_player(player.profile.attributes.get("stamina", 70.0), player.fatigue),
+                player.yellow_cards,
+                player.red_card,
+                state.player_goals.get(player.profile.id, 0),
+                state.player_assists.get(player.profile.id, 0),
+            )
+            y += 18
+
+        y += 4
+        draw_text(self.screen, "BENCH", col_name, y + 2, (245, 245, 245), scale=1)
+        y += 18
+        for bench_player in team.bench[:7]:
+            self._draw_squad_row(
+                rect,
+                y,
+                bench_player.name,
+                bench_player.id,
+                6.8,
+                max(0.08, min(1.0, bench_player.current_stamina / 100.0)),
+                0,
+                False,
+                state.player_goals.get(bench_player.id, 0),
+                state.player_assists.get(bench_player.id, 0),
+            )
+            y += 18
+
+    def _draw_squad_row(
+        self,
+        rect: pygame.Rect,
+        y: int,
+        name: str,
+        player_id: str,
+        avg_score: float,
+        stamina_ratio: float,
+        yellow_cards: int,
+        red_card: bool,
+        goals: int,
+        assists: int,
+    ) -> None:
+        shirt_number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "0"
+        draw_text(self.screen, shirt_number.rjust(2, "0"), rect.x + 8, y + 2, (168, 168, 174), scale=1)
+        label = short_display_name(name, 11)
+        draw_text(self.screen, label, rect.x + 28, y + 2, (238, 238, 240), scale=1)
+
+        icon_x = rect.right - 132
+        if goals > 0:
+            self._draw_goal_icon(icon_x, y + 8)
+            if goals > 1:
+                draw_text(self.screen, str(goals), icon_x + 8, y + 2, (240, 240, 240), scale=1)
+            icon_x += 14
+        if assists > 0:
+            self._draw_assist_icon(icon_x, y + 8)
+            if assists > 1:
+                draw_text(self.screen, str(assists), icon_x + 8, y + 2, (240, 240, 240), scale=1)
+
+        avg_text = f"{avg_score:.1f}"
+        draw_text(self.screen, avg_text, rect.right - 102, y + 2, (220, 220, 224), scale=1)
+
+        bar_rect = pygame.Rect(rect.right - 66, y + 3, 38, 8)
+        pygame.draw.rect(self.screen, (38, 38, 42), bar_rect)
+        fill_w = max(4, int(bar_rect.width * max(0.0, min(1.0, stamina_ratio))))
+        bar_color = (116, 208, 120) if stamina_ratio > 0.55 else (232, 190, 72) if stamina_ratio > 0.3 else (220, 96, 96)
+        pygame.draw.rect(self.screen, bar_color, (bar_rect.x, bar_rect.y, fill_w, bar_rect.height))
+        pygame.draw.rect(self.screen, (68, 68, 74), bar_rect, 1)
+
+        badge_x = rect.right - 22
+        if red_card:
+            pygame.draw.rect(self.screen, (206, 54, 54), (badge_x, y + 1, 12, 14))
+            draw_text(self.screen, "R", badge_x + 2, y + 4, (255, 255, 255), scale=1)
+        elif yellow_cards > 0:
+            pygame.draw.rect(self.screen, (236, 202, 56), (badge_x, y + 1, 12, 14))
+            draw_text(self.screen, "Y", badge_x + 2, y + 4, (28, 28, 28), scale=1)
+
+    def _draw_goal_icon(self, x: int, y: int) -> None:
+        pygame.draw.circle(self.screen, (244, 244, 244), (x, y), 5)
+        pygame.draw.circle(self.screen, (18, 18, 22), (x, y), 5, 1)
+        pygame.draw.circle(self.screen, (18, 18, 22), (x, y), 2)
+
+    def _draw_assist_icon(self, x: int, y: int) -> None:
+        pygame.draw.line(self.screen, (236, 236, 236), (x - 4, y + 3), (x + 3, y - 4), 2)
+        pygame.draw.line(self.screen, (236, 236, 236), (x + 1, y - 5), (x + 5, y - 1), 2)
+        pygame.draw.line(self.screen, (236, 236, 236), (x + 5, y - 1), (x + 3, y + 2), 2)
 
     def _draw_pitch(self) -> None:
         pitch = pygame.Rect(PITCH_X, PITCH_Y, PITCH_W, PITCH_H)
@@ -272,9 +426,7 @@ class Renderer:
 
         bx = state.ball.prev_x + (state.ball.x - state.ball.prev_x) * alpha
         by = state.ball.prev_y + (state.ball.y - state.ball.prev_y) * alpha
-        sx, sy = world_to_screen(bx, by)
-        pygame.draw.circle(self.screen, (245, 245, 245), (sx, sy), 6)
-        pygame.draw.circle(self.screen, (20, 20, 20), (sx, sy), 6, 1)
+        self._draw_ball(bx, by)
 
     def _draw_player(
         self,
@@ -305,15 +457,40 @@ class Renderer:
         pygame.draw.circle(self.screen, (245, 245, 245), (sx, sy), PLAYER_OUTER_RADIUS)
         pygame.draw.circle(self.screen, color, (sx, sy), PLAYER_INNER_RADIUS)
         if math.hypot(facing_x, facing_y) > 0.1:
-            start = (int(sx + facing_x * 16), int(sy + facing_y * 16))
-            end = (int(sx + facing_x * 25), int(sy + facing_y * 25))
-            pygame.draw.line(self.screen, (255, 255, 255), start, end, 2)
+            self._draw_facing_arrow(sx, sy, facing_x, facing_y)
         if has_ball:
             pygame.draw.circle(self.screen, (255, 232, 122), (sx, sy), PLAYER_HAS_BALL_RADIUS, 2)
         shirt_number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "0"
         draw_text(self.screen, shirt_number, sx - text_width(shirt_number, 1) // 2, sy - 5, (255, 255, 255), scale=1)
         label = (name.split()[-1] if name.split() else name)[:12]
         draw_text(self.screen, label, sx - text_width(label, 1) // 2, sy + 22, (18, 18, 18), scale=1)
+
+    def _draw_facing_arrow(self, sx: int, sy: int, facing_x: float, facing_y: float) -> None:
+        mag = math.hypot(facing_x, facing_y)
+        if mag < 0.1:
+            return
+        ux = facing_x / mag
+        uy = facing_y / mag
+        tip_x = sx + ux * 24
+        tip_y = sy + uy * 24
+        base_x = sx + ux * 17
+        base_y = sy + uy * 17
+        perp_x = -uy
+        perp_y = ux
+        left = (int(base_x + perp_x * 4), int(base_y + perp_y * 4))
+        right = (int(base_x - perp_x * 4), int(base_y - perp_y * 4))
+        tip = (int(tip_x), int(tip_y))
+        pygame.draw.polygon(self.screen, (255, 255, 255), [tip, left, right])
+
+    def _draw_ball(self, x: float, y: float) -> None:
+        sx, sy = world_to_screen(x, y)
+        pygame.draw.circle(self.screen, (245, 245, 245), (sx, sy), 6)
+        pygame.draw.circle(self.screen, (20, 20, 20), (sx, sy), 6, 1)
+        pygame.draw.circle(self.screen, (20, 20, 20), (sx, sy), 2)
+        pygame.draw.circle(self.screen, (20, 20, 20), (sx - 3, sy - 1), 1)
+        pygame.draw.circle(self.screen, (20, 20, 20), (sx + 3, sy - 1), 1)
+        pygame.draw.circle(self.screen, (20, 20, 20), (sx - 2, sy + 3), 1)
+        pygame.draw.circle(self.screen, (20, 20, 20), (sx + 2, sy + 3), 1)
 
     def _draw_pitch_overlay(self, state: MatchState, fixture_label: str) -> None:
         if state.phase == "pre_match" and state.awaiting_start:
@@ -379,7 +556,9 @@ class Renderer:
         ticker_x = icon_box.right + 14
         ticker_w = right_icon_box.x - ticker_x - 14
         ticker = pygame.Rect(ticker_x, SCREEN_H - BOTTOM_TICKER_H + 4, ticker_w, BOTTOM_TICKER_H - 8)
-        pygame.draw.rect(self.screen, (248, 187, 32), ticker)
+        home_primary = hex_to_rgb(state.home.club.colors.get("primary", "#F8BB20"), (248, 187, 32))
+        home_secondary = hex_to_rgb(state.home.club.colors.get("secondary", "#1C1C1C"), (28, 28, 28))
+        pygame.draw.rect(self.screen, home_primary, ticker)
         latest = state.events[0] if state.events else None
         ticker_text = "Kick off"
         if latest:
@@ -389,7 +568,7 @@ class Renderer:
             ticker_text,
             ticker.x + max(16, (ticker.width - text_width(ticker_text, 2)) // 2),
             ticker.y + 11,
-            (28, 28, 28),
+            home_secondary,
             scale=2,
         )
 
@@ -411,22 +590,27 @@ class Renderer:
         home_box = pygame.Rect(time_box.right, 0, 138, TOP_BAR_H)
         score_box = pygame.Rect(home_box.right, 0, 116, TOP_BAR_H)
         away_box = pygame.Rect(score_box.right, 0, 138, TOP_BAR_H)
-        pause_box = pygame.Rect(SCREEN_W - 172, 0, 172, TOP_BAR_H)
+        pause_box = pygame.Rect(SCREEN_W - 142, 0, 142, TOP_BAR_H)
+
+        home_primary = hex_to_rgb(state.home.club.colors.get("primary", "#F3B729"), (243, 183, 41))
+        home_secondary = hex_to_rgb(state.home.club.colors.get("secondary", "#281E0E"), (40, 30, 14))
+        away_primary = hex_to_rgb(state.away.club.colors.get("primary", "#2C3A68"), (44, 58, 104))
+        away_secondary = hex_to_rgb(state.away.club.colors.get("secondary", "#ECCF61"), (236, 207, 97))
 
         pygame.draw.rect(self.screen, (10, 10, 12), menu_box)
         pygame.draw.rect(self.screen, (10, 10, 12), time_box)
-        pygame.draw.rect(self.screen, (243, 183, 41), home_box)
+        pygame.draw.rect(self.screen, home_primary, home_box)
         pygame.draw.rect(self.screen, (10, 10, 12), score_box)
-        pygame.draw.rect(self.screen, (44, 58, 104), away_box)
-        pygame.draw.rect(self.screen, (120, 108, 242), pause_box)
+        pygame.draw.rect(self.screen, away_primary, away_box)
+        pygame.draw.rect(self.screen, (248, 187, 32), pause_box)
 
         draw_text(self.screen, "=", 24, 11, (245, 245, 245), scale=2)
         draw_text(self.screen, minute_text, time_box.x + 18, 11, (245, 245, 245), scale=2)
 
         home_name = compact_team_name(state.home.name)
         away_name = compact_team_name(state.away.name)
-        draw_text(self.screen, home_name, home_box.x + 16, 11, (40, 30, 14), scale=2)
-        draw_text(self.screen, away_name, away_box.x + 16, 11, (236, 207, 97), scale=2)
+        draw_text(self.screen, home_name, home_box.x + 16, 11, home_secondary, scale=2)
+        draw_text(self.screen, away_name, away_box.x + 16, 11, away_secondary, scale=2)
 
         home_score = str(state.home_score)
         away_score = str(state.away_score)
@@ -434,21 +618,14 @@ class Renderer:
         draw_text(self.screen, home_score, score_box.x + 28, score_y, (250, 250, 250), scale=2)
         draw_text(self.screen, away_score, score_box.x + 74, score_y, (250, 250, 250), scale=2)
 
-        indicator_y = TOP_BAR_H // 2
-        indicator_start = SCREEN_W // 2 + 80
-        for idx in range(6):
-            color = (245, 245, 245) if idx == 0 else (110, 110, 114)
-            pygame.draw.circle(self.screen, color, (indicator_start + idx * 24, indicator_y), 3)
-
         speed_w = 84
         speed_h = 28
-        speed_x = pause_box.x - 102
+        speed_x = pause_box.x - 96
         speed_y = 6
         self.speed_rect = pygame.Rect(speed_x, speed_y, speed_w, speed_h)
         pygame.draw.rect(self.screen, (14, 14, 16), self.speed_rect)
         pygame.draw.rect(self.screen, (78, 78, 84), self.speed_rect, 1)
-        draw_text(self.screen, speed_label, speed_x + 16, 11, (245, 245, 245), scale=2)
-        draw_text(self.screen, "V" if self.speed_menu_open else "/", speed_x + 56, 11, (190, 190, 196), scale=1)
+        draw_text(self.screen, speed_label, speed_x + (speed_w - text_width(speed_label, 2)) // 2, 11, (245, 245, 245), scale=2)
         if state.awaiting_start:
             status_text = "START"
             status_color = (255, 250, 215)
@@ -458,7 +635,7 @@ class Renderer:
         else:
             status_text = "LIVE"
             status_color = (230, 245, 255)
-        draw_text(self.screen, status_text, pause_box.x + 42, 11, status_color, scale=2)
+        draw_text(self.screen, status_text, pause_box.x + (pause_box.width - text_width(status_text, 2)) // 2, 11, status_color, scale=2)
         self.start_rect = pause_box
         self._draw_speed_menu(speed_label)
 

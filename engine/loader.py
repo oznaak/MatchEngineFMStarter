@@ -30,6 +30,11 @@ DEFAULT_TACTICS = {
     "counter": 50.0,
 }
 
+DEFAULT_COLORS = {
+    "primary": "#2E3A6A",
+    "secondary": "#F5F5F5",
+}
+
 
 def attribute_map_from_ovr(ovr: int, pos: str) -> Dict[str, float]:
     base = float(ovr)
@@ -120,6 +125,17 @@ def merge_team_tactics(custom: Dict[str, float] | None) -> Dict[str, float]:
     return tactics
 
 
+def merge_team_colors(custom: Dict[str, str] | None) -> Dict[str, str]:
+    colors = dict(DEFAULT_COLORS)
+    if not custom:
+        return colors
+    for key in DEFAULT_COLORS:
+        value = custom.get(key)
+        if isinstance(value, str) and value:
+            colors[key] = value
+    return colors
+
+
 def load_league(path: Path) -> Dict[str, Club]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     clubs: Dict[str, Club] = {}
@@ -133,6 +149,7 @@ def load_league(path: Path) -> Dict[str, Club]:
                     position=p["position"],
                     ovr=int(p["ovr"]),
                     attributes=merge_player_attributes(int(p["ovr"]), p["position"], p.get("attributes")),
+                    current_stamina=max(0.0, min(100.0, float(p.get("current_stamina", 100.0)))),
                 )
             )
         clubs[club_data["id"].upper()] = Club(
@@ -140,6 +157,7 @@ def load_league(path: Path) -> Dict[str, Club]:
             name=club_data["name"],
             players=players,
             tactics=merge_team_tactics(club_data.get("tactics")),
+            colors=merge_team_colors(club_data.get("colors")),
         )
     return clubs
 
