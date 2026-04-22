@@ -31,7 +31,14 @@ DEFAULT_LEAGUE = {
 DEFAULT_APP_OPTIONS = {
     "resolution": "1560x900",
     "window_mode": "windowed",
+    "display": "0",
     "language": "english",
+    "bind_menu": "escape",
+    "bind_pause": "space",
+    "bind_start": "enter",
+    "bind_speed_x1": "1",
+    "bind_speed_x2": "2",
+    "bind_speed_x4": "4",
 }
 
 DEFAULT_OPTION_CHOICES = {
@@ -46,6 +53,36 @@ DEFAULT_OPTION_CHOICES = {
     ],
     "language": [
         ("english", "English", 1),
+    ],
+    "bind_menu": [
+        ("escape", "Esc", 1),
+        ("tab", "Tab", 2),
+        ("m", "M", 3),
+    ],
+    "bind_pause": [
+        ("space", "Space", 1),
+        ("p", "P", 2),
+        ("enter", "Enter", 3),
+    ],
+    "bind_start": [
+        ("enter", "Enter", 1),
+        ("space", "Space", 2),
+        ("s", "S", 3),
+    ],
+    "bind_speed_x1": [
+        ("1", "1", 1),
+        ("q", "Q", 2),
+        ("z", "Z", 3),
+    ],
+    "bind_speed_x2": [
+        ("2", "2", 1),
+        ("w", "W", 2),
+        ("x", "X", 3),
+    ],
+    "bind_speed_x4": [
+        ("4", "4", 1),
+        ("e", "E", 2),
+        ("c", "C", 3),
     ],
 }
 

@@ -20,7 +20,7 @@ POST_MATCH_RECOVERY = 10.0
 
 def _daily_recovery(profile: PlayerProfile) -> float:
     natural_stamina = profile.attributes.get("stamina", 70.0)
-    return 6.5 + natural_stamina / 18.0
+    return 1.6 + natural_stamina / 42.0
 
 
 def load_condition_state(path: Path, clubs: Dict[str, Club]) -> int:

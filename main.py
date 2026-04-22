@@ -36,6 +36,24 @@ SPEED_MULTIPLIERS = {
     "X2": 2.5,
     "X4": 5.0,
 }
+KEY_BINDINGS = {
+    "escape": pygame.K_ESCAPE,
+    "tab": pygame.K_TAB,
+    "m": pygame.K_m,
+    "space": pygame.K_SPACE,
+    "p": pygame.K_p,
+    "enter": pygame.K_RETURN,
+    "s": pygame.K_s,
+    "1": pygame.K_1,
+    "2": pygame.K_2,
+    "4": pygame.K_4,
+    "q": pygame.K_q,
+    "w": pygame.K_w,
+    "e": pygame.K_e,
+    "z": pygame.K_z,
+    "x": pygame.K_x,
+    "c": pygame.K_c,
+}
 
 
 def parse_resolution(value: str) -> tuple[int, int]:
@@ -152,16 +170,30 @@ class ManagerGameApp:
         self.match_condition_saved = False
         self.match_current_day = 0
         self.match_finish_timer = 0.0
-        self._reload_state()
+        self.modal: dict | None = None
+        self.options_return_screen: str | None = None
+        self.modal_paused_match = False
+        self._reload_state(apply_display=True)
 
-    def _reload_state(self) -> None:
+    def _reload_state(self, apply_display: bool = False) -> None:
         with db_session(self.db_path) as conn:
             bootstrap_database(conn)
             self.options = load_app_options(conn)
             self.option_choices = {
                 key: list_option_choices(conn, key)
-                for key in ("resolution", "window_mode", "language")
+                for key in (
+                    "resolution",
+                    "window_mode",
+                    "language",
+                    "bind_menu",
+                    "bind_pause",
+                    "bind_start",
+                    "bind_speed_x1",
+                    "bind_speed_x2",
+                    "bind_speed_x4",
+                )
             }
+            self.option_choices["display"] = self.renderer.available_displays()
             self.leagues = list_leagues(conn)
             self.saves = list_save_games(conn)
             self.active_save_id = load_active_save_id(conn)
@@ -171,12 +203,14 @@ class ManagerGameApp:
                     self.overview_club_id = self.overview["club_id"]
             else:
                 self.overview = None
-        self._apply_renderer_options()
+        if apply_display:
+            self._apply_renderer_options()
 
     def _apply_renderer_options(self) -> None:
         width, height = parse_resolution(self.options.get("resolution", "1560x900"))
         fullscreen = self.options.get("window_mode", "windowed") == "fullscreen"
-        self.renderer.set_display_mode(width, height, fullscreen)
+        display_index = int(self.options.get("display", "0") or 0)
+        self.renderer.set_display_mode(width, height, fullscreen, display_index)
 
     def _load_league_clubs(self) -> None:
         if not self.selected_league_id:
@@ -213,7 +247,16 @@ class ManagerGameApp:
         with db_session(self.db_path) as conn:
             save_app_option(conn, key, value)
             conn.commit()
-        self._reload_state()
+        self._reload_state(apply_display=key in {"resolution", "window_mode", "display"})
+
+    def _is_bound(self, event: pygame.event.Event, option_key: str, fallback: str) -> bool:
+        value = self.options.get(option_key, fallback)
+        key = KEY_BINDINGS.get(value, KEY_BINDINGS[fallback])
+        if event.key == key:
+            return True
+        if key == pygame.K_RETURN and event.key == pygame.K_KP_ENTER:
+            return True
+        return False
 
     def _start_next_match(self) -> None:
         if self.active_save_id is None or not self.overview:
@@ -241,16 +284,24 @@ class ManagerGameApp:
         self.match_finish_timer = 0.0
 
     def _finish_matchday(self) -> None:
+        self._finish_matchday_with_score(None)
+
+    def _finish_matchday_with_score(self, score_override: tuple[int, int] | None) -> None:
         if not self.match_engine or not self.match_fixture or not self.match_clubs or self.active_save_id is None:
             return
         managed_clubs = self.match_clubs
         fixture = self.match_fixture
+        if score_override is None:
+            home_goals = self.match_engine.state.home_score
+            away_goals = self.match_engine.state.away_score
+        else:
+            home_goals, away_goals = score_override
         with db_session(self.db_path) as conn:
             save_fixture_result(
                 conn,
                 fixture["id"],
-                self.match_engine.state.home_score,
-                self.match_engine.state.away_score,
+                home_goals,
+                away_goals,
             )
             match_day = fixture["match_day"]
             same_day = list_matchday_fixtures(conn, self.active_save_id, match_day)
@@ -286,8 +337,101 @@ class ManagerGameApp:
         self.screen = "overview"
         self._reload_state()
 
+    def _forfeit_current_match(self) -> None:
+        if not self.match_engine or not self.match_fixture or not self.overview:
+            return
+        managed_club_id = self.overview["club_id"]
+        fixture = self.match_fixture
+        if fixture["home_club_id"] == managed_club_id:
+            score = (0, 3)
+        else:
+            score = (3, 0)
+        self._finish_matchday_with_score(score)
+
+    def _open_escape_modal(self) -> None:
+        if self.modal:
+            return
+        if self.screen == "match" and self.match_engine and not self.match_engine.state.is_finished:
+            self.match_paused = True
+            self.modal_paused_match = True
+        buttons = []
+        if self.screen == "match" and self.match_engine and not self.match_engine.state.is_finished:
+            buttons.append({"label": "FORFEIT", "action": "modal:confirm_forfeit", "fill": (206, 54, 54)})
+        buttons.extend(
+            [
+                {"label": "OPTIONS", "action": "modal:options"},
+                {"label": "MAIN MENU", "action": "modal:confirm_menu"},
+                {"label": "QUIT", "action": "modal:confirm_quit", "fill": (248, 187, 32), "text_color": (24, 24, 28)},
+                {"label": "CANCEL", "action": "modal:close"},
+            ]
+        )
+        self.modal = {
+            "title": "PAUSE MENU",
+            "message": "CHOOSE AN ACTION",
+            "buttons": buttons,
+        }
+
+    def _open_confirmation_modal(self, action: str) -> None:
+        in_live_match = self.screen == "match" and self.match_engine and not self.match_engine.state.is_finished
+        labels = {
+            "forfeit": "FORFEIT MATCH",
+            "menu": "FORFEIT + MAIN MENU" if in_live_match else "MAIN MENU",
+            "quit": "FORFEIT + QUIT" if in_live_match else "QUIT",
+        }
+        self.modal = {
+            "title": "ARE YOU SURE?",
+            "message": labels[action],
+            "buttons": [
+                {"label": "YES", "action": f"modal:do_{action}", "fill": (206, 54, 54) if action == "forfeit" else (248, 187, 32), "text_color": (24, 24, 28) if action != "forfeit" else (245, 245, 245)},
+                {"label": "NO", "action": "modal:close"},
+            ],
+        }
+
     def _handle_action(self, action: str | None) -> None:
         if not action:
+            return
+        if action == "modal:close":
+            self.modal = None
+            if self.modal_paused_match and self.screen == "match" and self.match_engine and not self.match_engine.state.is_finished:
+                self.match_paused = False
+            self.modal_paused_match = False
+            return
+        if action == "modal:confirm_forfeit":
+            self._open_confirmation_modal("forfeit")
+            return
+        if action == "modal:confirm_menu":
+            self._open_confirmation_modal("menu")
+            return
+        if action == "modal:confirm_quit":
+            self._open_confirmation_modal("quit")
+            return
+        if action == "modal:options":
+            self.modal = None
+            self.options_return_screen = self.screen
+            self.screen = "options"
+            self._reload_state()
+            return
+        if action == "modal:do_forfeit":
+            self.modal = None
+            self.modal_paused_match = False
+            self._forfeit_current_match()
+            return
+        if action == "modal:do_menu":
+            self.modal = None
+            self.modal_paused_match = False
+            if self.screen == "match" and self.match_engine and not self.match_engine.state.is_finished:
+                self._forfeit_current_match()
+                self.screen = "menu"
+                return
+            self.screen = "menu"
+            self.error_message = None
+            return
+        if action == "modal:do_quit":
+            self.modal = None
+            self.modal_paused_match = False
+            if self.screen == "match" and self.match_engine and not self.match_engine.state.is_finished:
+                self._forfeit_current_match()
+            self.running = False
             return
         if action == "menu:quit":
             self.running = False
@@ -302,11 +446,18 @@ class ManagerGameApp:
             self._reload_state()
             return
         if action == "menu:options":
+            self.options_return_screen = None
             self.screen = "options"
             self._reload_state()
             return
         if action == "back:menu":
-            self.screen = "menu"
+            if self.screen == "options" and self.options_return_screen:
+                self.screen = self.options_return_screen
+                if self.options_return_screen == "match" and self.match_engine and not self.match_engine.state.is_finished:
+                    self.match_paused = False
+                self.options_return_screen = None
+            else:
+                self.screen = "menu"
             self.error_message = None
             return
         if action == "back:new_game_name":
@@ -345,35 +496,49 @@ class ManagerGameApp:
             self._start_next_match()
 
     def _handle_keydown(self, event: pygame.event.Event) -> None:
+        if self.modal:
+            if self._is_bound(event, "bind_menu", "escape"):
+                self.modal = None
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                buttons = self.modal.get("buttons", [])
+                if buttons:
+                    self._handle_action(buttons[0].get("action"))
+            return
         if self.screen == "match":
             if not self.match_engine:
                 return
-            if event.key == pygame.K_ESCAPE:
-                if self.match_engine.state.is_finished:
-                    self._finish_matchday()
+            if self._is_bound(event, "bind_menu", "escape"):
+                self._open_escape_modal()
                 return
-            if event.key == pygame.K_SPACE:
+            if self.match_engine.state.awaiting_start and self._is_bound(event, "bind_start", "enter"):
+                if self.match_engine.start_match_flow():
+                    self.match_paused = False
+                return
+            if self._is_bound(event, "bind_pause", "space"):
                 if not self.match_engine.state.awaiting_start and not self.match_engine.state.is_finished:
                     self.match_paused = not self.match_paused
                 return
-            if event.key == pygame.K_1:
+            if self._is_bound(event, "bind_speed_x1", "1"):
                 self.match_speed_label = "X1"
                 self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
                 return
-            if event.key == pygame.K_2:
+            if self._is_bound(event, "bind_speed_x2", "2"):
                 self.match_speed_label = "X2"
                 self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
                 return
-            if event.key == pygame.K_4:
+            if self._is_bound(event, "bind_speed_x4", "4"):
                 self.match_speed_label = "X4"
                 self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
                 return
         if self.screen != "new_game_name":
-            if event.key == pygame.K_ESCAPE and self.screen != "menu":
-                self.screen = "menu"
+            if self.screen == "options" and self._is_bound(event, "bind_menu", "escape"):
+                self._handle_action("back:menu")
+                return
+            if self._is_bound(event, "bind_menu", "escape") and self.screen != "menu":
+                self._open_escape_modal()
             return
-        if event.key == pygame.K_ESCAPE:
-            self.screen = "menu"
+        if self._is_bound(event, "bind_menu", "escape"):
+            self._open_escape_modal()
             return
         if event.key == pygame.K_BACKSPACE:
             self.manager_name = self.manager_name[:-1]
@@ -418,6 +583,9 @@ class ManagerGameApp:
                 elif event.type == pygame.KEYDOWN:
                     self._handle_keydown(event)
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if self.modal:
+                        self._handle_action(self.renderer.handle_ui_click(event.pos))
+                        continue
                     if self.screen == "match" and self.match_engine:
                         action = self.renderer.handle_click(event.pos)
                         if action == "start":
@@ -426,8 +594,6 @@ class ManagerGameApp:
                         elif action and action.startswith("speed:"):
                             self.match_speed_label = action.split(":", 1)[1]
                             self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
-                        else:
-                            self._handle_action(self.renderer.handle_ui_click(event.pos))
                     else:
                         action = self.renderer.handle_ui_click(event.pos)
                         self._handle_action(action)
@@ -450,11 +616,30 @@ class ManagerGameApp:
                     alpha=self.match_engine.slice_progress(),
                     speed_label=self.match_speed_label,
                     clock_seconds=self.match_engine.display_clock_seconds(),
+                    commentary_colors=self._managed_club_colors(),
+                    present=not self.modal,
                 )
+                if self.modal:
+                    self.renderer.draw_modal(self.modal)
+                    pygame.display.flip()
                 continue
-            self.renderer.draw_app_view(self._build_view())
+            self.renderer.draw_app_view(self._build_view(), present=not self.modal)
+            if self.modal:
+                self.renderer.draw_modal(self.modal)
+                pygame.display.flip()
         pygame.quit()
         return 0
+
+    def _managed_club_colors(self) -> tuple[tuple[int, int, int], tuple[int, int, int]] | None:
+        if not self.overview or not self.match_clubs:
+            return None
+        managed_club = self.match_clubs.get(self.overview["club_id"])
+        if not managed_club:
+            return None
+        return (
+            Renderer.hex_to_rgb_static(managed_club.colors.get("primary", "#F8BB20"), (248, 187, 32)),
+            Renderer.hex_to_rgb_static(managed_club.colors.get("secondary", "#1C1C1C"), (28, 28, 28)),
+        )
 
 
 def main() -> int:

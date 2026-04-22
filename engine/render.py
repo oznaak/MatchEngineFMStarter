@@ -169,13 +169,18 @@ def arc_points(center: Tuple[int, int], radius: int, start_deg: float, end_deg: 
 
 
 class Renderer:
+    @staticmethod
+    def hex_to_rgb_static(value: str, fallback: Tuple[int, int, int]) -> Tuple[int, int, int]:
+        return hex_to_rgb(value, fallback)
+
     def __init__(self, width: int = 1560, height: int = 900, fullscreen: bool = False) -> None:
         pygame.init()
         pygame.display.set_caption("FM-Style Match Engine Prototype")
         self.ui_click_targets: dict[str, pygame.Rect] = {}
         self.fullscreen = fullscreen
+        self.display_index = 0
         self.screen = pygame.Surface((1, 1))
-        self.set_display_mode(width, height, fullscreen)
+        self.set_display_mode(width, height, fullscreen, 0)
         self.clock = pygame.time.Clock()
         self.speed_menu_open = False
         self.speed_rect = pygame.Rect(0, 0, 0, 0)
@@ -185,11 +190,26 @@ class Renderer:
     def tick(self) -> float:
         return self.clock.tick(60) / 1000.0
 
-    def set_display_mode(self, width: int, height: int, fullscreen: bool) -> None:
+    def set_display_mode(self, width: int, height: int, fullscreen: bool, display_index: int = 0) -> None:
         configure_display_metrics(width, height)
         self.fullscreen = fullscreen
+        display_count = max(1, pygame.display.get_num_displays())
+        self.display_index = max(0, min(display_count - 1, int(display_index)))
         flags = pygame.FULLSCREEN if fullscreen else 0
-        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), flags)
+        self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), flags, display=self.display_index)
+
+    def available_displays(self) -> list[dict]:
+        count = max(1, pygame.display.get_num_displays())
+        sizes = pygame.display.get_desktop_sizes() or []
+        choices: list[dict] = []
+        for idx in range(count):
+            if idx < len(sizes):
+                width, height = sizes[idx]
+                label = f"Monitor {idx + 1} ({width}x{height})"
+            else:
+                label = f"Monitor {idx + 1}"
+            choices.append({"value": str(idx), "label": label})
+        return choices
 
     def handle_click(self, pos: Tuple[int, int]) -> str | None:
         if self.start_rect.collidepoint(pos):
@@ -219,7 +239,10 @@ class Renderer:
         alpha: float = 1.0,
         speed_label: str = "x1",
         clock_seconds: float | None = None,
+        commentary_colors: tuple[Tuple[int, int, int], Tuple[int, int, int]] | None = None,
+        present: bool = True,
     ) -> None:
+        self.ui_click_targets = {}
         self.screen.fill((18, 18, 22))
         self._layout_pitch()
         self._draw_side_panel(state)
@@ -228,9 +251,10 @@ class Renderer:
         self._draw_players_and_ball(state, alpha)
         self._draw_pitch_overlay(state, fixture_label)
         self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds)
-        self._draw_events(state)
+        self._draw_events(state, commentary_colors)
         self._draw_goal_banner(state)
-        pygame.display.flip()
+        if present:
+            pygame.display.flip()
 
     def _layout_pitch(self) -> None:
         global PITCH_X, PITCH_Y, PITCH_W, PITCH_H
@@ -573,7 +597,7 @@ class Renderer:
         minute_text = f"{minute:02d}:{second:02d}"
         self._draw_top_bar(state, minute_text, paused, speed_label)
 
-    def _draw_events(self, state: MatchState) -> None:
+    def _draw_events(self, state: MatchState, commentary_colors: tuple[Tuple[int, int, int], Tuple[int, int, int]] | None = None) -> None:
         panel = pygame.Rect(0, SCREEN_H - BOTTOM_TICKER_H, SCREEN_W, BOTTOM_TICKER_H)
         pygame.draw.rect(self.screen, (12, 12, 14), panel)
         left_pad = 14
@@ -588,9 +612,12 @@ class Renderer:
         ticker_x = icon_box.right + 14
         ticker_w = right_icon_box.x - ticker_x - 14
         ticker = pygame.Rect(ticker_x, SCREEN_H - BOTTOM_TICKER_H + 4, ticker_w, BOTTOM_TICKER_H - 8)
-        home_primary = hex_to_rgb(state.home.club.colors.get("primary", "#F8BB20"), (248, 187, 32))
-        home_secondary = hex_to_rgb(state.home.club.colors.get("secondary", "#1C1C1C"), (28, 28, 28))
-        pygame.draw.rect(self.screen, home_primary, ticker)
+        if commentary_colors is None:
+            ticker_primary = hex_to_rgb(state.home.club.colors.get("primary", "#F8BB20"), (248, 187, 32))
+            ticker_secondary = hex_to_rgb(state.home.club.colors.get("secondary", "#1C1C1C"), (28, 28, 28))
+        else:
+            ticker_primary, ticker_secondary = commentary_colors
+        pygame.draw.rect(self.screen, ticker_primary, ticker)
         latest = state.events[0] if state.events else None
         ticker_text = "Kick off"
         if latest:
@@ -600,7 +627,7 @@ class Renderer:
             ticker_text,
             ticker.x + max(16, (ticker.width - text_width(ticker_text, 2)) // 2),
             ticker.y + 11,
-            home_secondary,
+            ticker_secondary,
             scale=2,
         )
 
@@ -617,8 +644,7 @@ class Renderer:
         draw_text(self.screen, state.goal_banner_text, x + 18, y + 18, (255, 240, 120), scale=2)
 
     def _draw_top_bar(self, state: MatchState, minute_text: str, paused: bool, speed_label: str) -> None:
-        menu_box = pygame.Rect(0, 0, 62, TOP_BAR_H)
-        time_box = pygame.Rect(menu_box.right, 0, 96, TOP_BAR_H)
+        time_box = pygame.Rect(14, 0, 96, TOP_BAR_H)
         home_box = pygame.Rect(time_box.right, 0, 138, TOP_BAR_H)
         score_box = pygame.Rect(home_box.right, 0, 116, TOP_BAR_H)
         away_box = pygame.Rect(score_box.right, 0, 138, TOP_BAR_H)
@@ -629,15 +655,13 @@ class Renderer:
         away_primary = hex_to_rgb(state.away.club.colors.get("primary", "#2C3A68"), (44, 58, 104))
         away_secondary = hex_to_rgb(state.away.club.colors.get("secondary", "#ECCF61"), (236, 207, 97))
 
-        pygame.draw.rect(self.screen, (10, 10, 12), menu_box)
         pygame.draw.rect(self.screen, (10, 10, 12), time_box)
         pygame.draw.rect(self.screen, home_primary, home_box)
         pygame.draw.rect(self.screen, (10, 10, 12), score_box)
         pygame.draw.rect(self.screen, away_primary, away_box)
         pygame.draw.rect(self.screen, (248, 187, 32), pause_box)
 
-        draw_text(self.screen, "=", 24, 11, (245, 245, 245), scale=2)
-        draw_text(self.screen, minute_text, time_box.x + 18, 11, (245, 245, 245), scale=2)
+        draw_text(self.screen, minute_text, time_box.x + 10, 11, (245, 245, 245), scale=2)
 
         home_name = compact_team_name(state.home.name)
         away_name = compact_team_name(state.away.name)
@@ -692,7 +716,7 @@ class Renderer:
                 pygame.draw.line(self.screen, (60, 60, 66), (option_rect.x + 8, option_rect.y), (option_rect.right - 8, option_rect.y), 1)
             draw_text(self.screen, label, option_rect.x + 16, option_rect.y + 8, (245, 245, 245), scale=2)
 
-    def draw_app_view(self, view: dict) -> None:
+    def draw_app_view(self, view: dict, present: bool = True) -> None:
         self.ui_click_targets = {}
         self.screen.fill((20, 22, 18))
         screen = view.get("screen", "menu")
@@ -714,7 +738,8 @@ class Renderer:
             self._draw_load_game_screen(view)
         elif screen == "overview":
             self._draw_overview_screen(view)
-        pygame.display.flip()
+        if present:
+            pygame.display.flip()
 
     def _draw_app_background(self) -> None:
         sky = pygame.Rect(0, 0, SCREEN_W, max(120, SCREEN_H // 5))
@@ -737,7 +762,7 @@ class Renderer:
         self.screen.fill(dark)
         band_h = max(88, SCREEN_H // 7)
         for idx in range(8):
-            color = primary if idx % 2 == 0 else mid
+            color = mid if idx % 2 == 0 else primary
             pygame.draw.rect(self.screen, color, (0, idx * band_h, SCREEN_W, band_h + 2))
 
     def _register_ui(self, action: str, rect: pygame.Rect) -> None:
@@ -858,13 +883,32 @@ class Renderer:
     def _draw_options_screen(self, view: dict) -> None:
         options = view.get("options", {})
         choices = view.get("choices", {})
-        panel = pygame.Rect(120, 96, SCREEN_W - 240, SCREEN_H - 160)
+        panel_w = min(SCREEN_W - 80, 1500)
+        panel_h = min(SCREEN_H - 72, 760)
+        panel = pygame.Rect((SCREEN_W - panel_w) // 2, max(40, (SCREEN_H - panel_h) // 2), panel_w, panel_h)
         self._draw_panel(panel, "OPTIONS", (248, 187, 32))
         sections = [
             ("DISPLAY RESOLUTION", "resolution"),
             ("WINDOW MODE", "window_mode"),
+            ("DISPLAY / MONITOR", "display"),
             ("LANGUAGE", "language"),
         ]
+        normal_sections_h = len(sections) * 118
+        compact_sections_h = len(sections) * 102
+        bind_rows = [
+            ("OPEN MENU", "bind_menu"),
+            ("PAUSE MATCH", "bind_pause"),
+            ("START MATCH", "bind_start"),
+            ("SPEED X1", "bind_speed_x1"),
+            ("SPEED X2", "bind_speed_x2"),
+            ("SPEED X4", "bind_speed_x4"),
+        ]
+        available_h = panel.height - 66 - 56 - 28
+        normal_total_h = normal_sections_h + 34 + len(bind_rows) * 46
+        compact_total_h = compact_sections_h + 34 + ((len(bind_rows) + 1) // 2) * 46
+        compact = normal_total_h > available_h and compact_total_h <= available_h
+        if not compact and normal_total_h > available_h:
+            compact = True
         y = panel.y + 66
         for label, key in sections:
             draw_text(self.screen, label, panel.x + 28, y, (245, 245, 245), scale=2)
@@ -879,7 +923,31 @@ class Renderer:
                 text = (24, 24, 28) if active else (245, 245, 245)
                 self._draw_ui_button(rect, option["label"], fill, text, f"option:{key}:{option['value']}")
                 x += width + 14
-            y += 84
+            y += 68 if compact else 84
+
+        draw_text(self.screen, "KEY BINDS", panel.x + 28, y, (245, 245, 245), scale=2)
+        y += 34
+        bind_cols = 2 if compact else 1
+        bind_col_w = (panel.width - 56 - (bind_cols - 1) * 36) // bind_cols
+        bind_row_h = 46
+        for idx, (label, key) in enumerate(bind_rows):
+            col = idx % bind_cols
+            row_idx = idx // bind_cols
+            row_x = panel.x + 28 + col * (bind_col_w + 36)
+            row_y = y + row_idx * bind_row_h
+            draw_text(self.screen, label, row_x, row_y + 10, (210, 210, 214), scale=1)
+            row = choices.get(key, [])
+            x = row_x + (170 if compact else 240)
+            for option in row:
+                active = options.get(key) == option["value"]
+                width = max(88, text_width(option["label"], 2) + 28)
+                rect = pygame.Rect(x, row_y, width, 34)
+                fill = (248, 187, 32) if active else (36, 52, 96)
+                text = (24, 24, 28) if active else (245, 245, 245)
+                self._draw_ui_button(rect, option["label"], fill, text, f"option:{key}:{option['value']}")
+                x += width + 12
+        bind_rows_used = (len(bind_rows) + bind_cols - 1) // bind_cols
+        y += bind_rows_used * bind_row_h
         self._draw_ui_button(pygame.Rect(panel.x + 28, panel.bottom - 56, 128, 40), "BACK", (36, 52, 96), (245, 245, 245), "back:menu")
 
     def _draw_load_game_screen(self, view: dict) -> None:
@@ -912,47 +980,101 @@ class Renderer:
         pygame.draw.rect(self.screen, (12, 12, 16), top)
         brand = pygame.Rect(0, 0, 260, 62)
         pygame.draw.rect(self.screen, primary, brand)
-        draw_text(self.screen, overview.get("club_name", "CLUB"), 18, 20, secondary, scale=2)
+        draw_text(self.screen, overview.get("club_name", "CLUB"), 18, 12, secondary, scale=2)
+        manager_name = overview.get("manager_name", "MANAGER")
+        draw_text(self.screen, manager_name, 18, 36, secondary, scale=1)
         nav_items = ["OVERVIEW", "SQUAD", "MATCHES", "TRANSFERS", "SCOUTING"]
         x = 280
         for idx, item in enumerate(nav_items):
             color = (248, 187, 32) if idx == 0 else (220, 220, 224)
             draw_text(self.screen, item, x, 20, color, scale=2)
             x += text_width(item, 2) + 26
-        info = f"{overview.get('manager_name', 'MANAGER')}  DAY {overview.get('current_day', 0)}"
-        draw_text(self.screen, info, SCREEN_W - text_width(info, 2) - 22, 20, (245, 245, 245), scale=2)
 
-        left = pygame.Rect(20, 84, 294, SCREEN_H - 142)
-        middle = pygame.Rect(left.right + 18, 84, 350, SCREEN_H - 142)
-        right = pygame.Rect(middle.right + 18, 84, SCREEN_W - middle.right - 38, SCREEN_H - 142)
-        self._draw_panel(left, "LEAGUE CLUBS", primary, (245, 245, 245))
-        self._draw_panel(middle, "PLAYERS", primary, (245, 245, 245))
-        self._draw_panel(right, "TABLE / FIXTURES", primary, (245, 245, 245))
-
-        y = left.y + 48
-        for club in clubs:
-            club_rect = pygame.Rect(left.x + 16, y, left.width - 32, 44)
-            fill = hex_to_rgb(club["primary_color"], (46, 58, 106)) if club["id"] == selected_club_id else (26, 28, 32)
-            text = hex_to_rgb(club["secondary_color"], (245, 245, 245)) if club["id"] == selected_club_id else (238, 238, 240)
-            self._draw_ui_button(club_rect, club["name"], fill, text, f"overview_club:{club['id']}")
-            y += 54
+        next_fixture = overview.get("next_fixture")
+        right_x = SCREEN_W - 20
+        if next_fixture:
+            play_rect = pygame.Rect(right_x - 146, 11, 146, 40)
+            self._draw_ui_button(play_rect, "PLAY MATCH", primary, secondary, "overview:play_next_match")
+            right_x = play_rect.x - 12
+        info = f"DAY {overview.get('current_day', 0)}"
+        draw_text(self.screen, info, right_x - text_width(info, 2), 20, (245, 245, 245), scale=2)
 
         players = players_by_club.get(selected_club_id, [])
+        players_body_h = 20 + min(18, len(players[:18])) * 18
+        players_h = 34 + 14 + players_body_h + 18
+        fixtures_count = min(6, len(fixtures))
+        standings_count = min(8, len(standings))
+        right_body_h = 18 + standings_count * 18 + 18 + 30 + fixtures_count * 18 + (20 if next_fixture else 0)
+        right_h = 34 + 14 + 30 + right_body_h + 18
+        panel_h = max(players_h, right_h)
+        middle = pygame.Rect(20, 84, 350, panel_h)
+        right = pygame.Rect(middle.right + 18, 84, SCREEN_W - middle.right - 38, panel_h)
+        header_fill = (16, 18, 20)
+        self._draw_panel(middle, "PLAYERS", header_fill, (245, 245, 245))
+        self._draw_panel(right, "TABLE / FIXTURES", header_fill, (245, 245, 245))
         y = middle.y + 48
-        headers = "POS   PLAYER        OVR   STM"
-        draw_text(self.screen, headers, middle.x + 16, y, (170, 170, 176), scale=1)
+        col_pos = middle.x + 16
+        col_player = middle.x + 52
+        col_ovr = middle.right - 84
+        col_stm = middle.right - 34
+        draw_text(self.screen, "POS", col_pos, y, (170, 170, 176), scale=1)
+        draw_text(self.screen, "PLAYER", col_player, y, (170, 170, 176), scale=1)
+        draw_text(self.screen, "OVR", col_ovr - text_width("OVR", 1) // 2, y, (170, 170, 176), scale=1)
+        draw_text(self.screen, "STM", col_stm - text_width("STM", 1) // 2, y, (170, 170, 176), scale=1)
         y += 20
         for player in players[:18]:
-            line = f"{player['position']:<3}   {short_display_name(player['name'], 10):<10}  {player['ovr']:>2}   {int(player['current_stamina']):>3}"
-            draw_text(self.screen, line, middle.x + 16, y, (245, 245, 245), scale=1)
+            draw_text(self.screen, player["position"], col_pos, y, (245, 245, 245), scale=1)
+            draw_text(self.screen, short_display_name(player["name"], 14), col_player, y, (245, 245, 245), scale=1)
+            ovr_text = str(player["ovr"])
+            stm_text = str(int(player["current_stamina"]))
+            draw_text(self.screen, ovr_text, col_ovr - text_width(ovr_text, 1) // 2, y, (245, 245, 245), scale=1)
+            draw_text(self.screen, stm_text, col_stm - text_width(stm_text, 1) // 2, y, (245, 245, 245), scale=1)
             y += 18
 
         draw_text(self.screen, "TABLE", right.x + 16, right.y + 48, (248, 187, 32), scale=2)
         y = right.y + 78
+        table_x = right.x + 16
+        col_t_pos = table_x
+        col_t_club = table_x + 24
+        col_t_mp = right.right - 180
+        col_t_w = right.right - 156
+        col_t_d = right.right - 138
+        col_t_l = right.right - 120
+        col_t_gd = right.right - 96
+        col_t_gls = right.right - 62
+        col_t_p = right.right - 18
+        for label, center_x in (
+            ("POS", col_t_pos + 6),
+            ("CLUB", col_t_club),
+            ("MP", col_t_mp),
+            ("W", col_t_w),
+            ("D", col_t_d),
+            ("L", col_t_l),
+            ("GD", col_t_gd),
+            ("GLS", col_t_gls),
+            ("P", col_t_p),
+        ):
+            if label == "CLUB":
+                draw_text(self.screen, label, center_x, y, (170, 170, 176), scale=1)
+            else:
+                draw_text(self.screen, label, center_x - text_width(label, 1) // 2, y, (170, 170, 176), scale=1)
+        y += 18
         for idx, row in enumerate(standings[:8], start=1):
-            line = f"{idx:>2} {short_display_name(row['club_name'], 12):<12}  P{row['played']:>2}  {row['points']:>2}"
+            goals_pair = f"{row['goals_for']}-{row['goals_against']}"
+            gd = f"{row['goal_difference']:+d}"
             color = (245, 245, 245) if row["club_id"] != overview.get("club_id") else (248, 187, 32)
-            draw_text(self.screen, line, right.x + 16, y, color, scale=1)
+            draw_text(self.screen, str(idx), col_t_pos, y, color, scale=1)
+            draw_text(self.screen, short_display_name(row["club_name"], 10), col_t_club, y, color, scale=1)
+            for value, center_x in (
+                (str(row["played"]), col_t_mp),
+                (str(row["wins"]), col_t_w),
+                (str(row["draws"]), col_t_d),
+                (str(row["losses"]), col_t_l),
+                (gd, col_t_gd),
+                (goals_pair, col_t_gls),
+                (str(row["points"]), col_t_p),
+            ):
+                draw_text(self.screen, value, center_x - text_width(value, 1) // 2, y, color, scale=1)
             y += 18
 
         y += 18
@@ -964,11 +1086,36 @@ class Renderer:
             draw_text(self.screen, line, right.x + 16, y, (245, 245, 245), scale=1)
             y += 18
 
-        next_fixture = overview.get("next_fixture")
         if next_fixture:
-            play_rect = pygame.Rect(right.right - 196, right.bottom - 56, 176, 40)
-            self._draw_ui_button(play_rect, "PLAY MATCH", primary, secondary, "overview:play_next_match")
             subtitle = f"MD{next_fixture['match_day']} {short_display_name(next_fixture['home_name'], 8)} VS {short_display_name(next_fixture['away_name'], 8)}"
-            draw_text(self.screen, subtitle, right.x + 16, right.bottom - 48, (245, 245, 245), scale=1)
+            y += 12
+            draw_text(self.screen, subtitle, right.x + 16, y, (245, 245, 245), scale=1)
 
-        self._draw_ui_button(pygame.Rect(SCREEN_W - 168, SCREEN_H - 56, 148, 40), "MAIN MENU", (36, 52, 96), (245, 245, 245), "back:menu")
+    def draw_modal(self, modal: dict) -> None:
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        self.screen.blit(overlay, (0, 0))
+
+        buttons = modal.get("buttons", [])
+        panel_h = max(240, 140 + len(buttons) * 54)
+        panel = pygame.Rect((SCREEN_W - 460) // 2, (SCREEN_H - panel_h) // 2, 460, panel_h)
+        self._draw_panel(panel, None)
+        title = modal.get("title", "CONFIRM")
+        message = modal.get("message", "")
+        draw_text(self.screen, title, panel.x + (panel.width - text_width(title, 3)) // 2, panel.y + 28, (245, 245, 245), scale=3)
+
+        lines = [line for line in message.split("\n") if line]
+        line_y = panel.y + 84
+        for line in lines[:3]:
+            draw_text(self.screen, line, panel.x + (panel.width - text_width(line, 2)) // 2, line_y, (248, 187, 32), scale=2)
+            line_y += 28
+
+        button_w = 200
+        button_h = 40
+        start_x = panel.x + (panel.width - button_w) // 2
+        button_y = line_y + 18
+        for idx, button in enumerate(buttons):
+            rect = pygame.Rect(start_x, button_y + idx * (button_h + 12), button_w, button_h)
+            fill = button.get("fill", (36, 52, 96))
+            text = button.get("text_color", (245, 245, 245))
+            self._draw_ui_button(rect, button["label"], fill, text, button.get("action"))
