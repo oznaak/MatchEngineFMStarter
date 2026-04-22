@@ -143,3 +143,6 @@ class MatchState:
     restart_timer: float = 0.0
     restart_side: Optional[str] = None
     awaiting_start: bool = False
+    throw_ins_count: int = 0
+    corners_count: int = 0
+    offsides_count: int = 0

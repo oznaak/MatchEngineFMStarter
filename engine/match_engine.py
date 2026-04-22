@@ -15,6 +15,9 @@ MATCH_MINUTES = 90
 GOAL_CELEBRATION_SECONDS = 2.8
 KICKOFF_SETUP_SECONDS = 1.8
 GOAL_KICK_SETUP_SECONDS = 1.6
+THROW_IN_SETUP_SECONDS = 1.1
+CORNER_SETUP_SECONDS = 1.3
+OFFSIDE_SETUP_SECONDS = 1.0
 HALF_REAL_SECONDS = 150.0
 MATCH_REAL_SECONDS = HALF_REAL_SECONDS * 2
 
@@ -340,6 +343,11 @@ class MatchEngine:
     def _defending_goal_x(self, side: str) -> float:
         return 0.0 if self._side_forward_sign(side) > 0 else PITCH_LENGTH
 
+    def _goal_line_defending_side(self, x: float) -> str:
+        if x <= 0.0:
+            return "home" if self._defending_goal_x("home") == 0.0 else "away"
+        return "home" if self._defending_goal_x("home") == PITCH_LENGTH else "away"
+
     def _team_state(self, side: str) -> TeamState:
         return self.home if side == "home" else self.away
 
@@ -613,6 +621,7 @@ class MatchEngine:
     def _update_off_ball_targets(self) -> None:
         ball_x, ball_y = self.state.ball.x, self.state.ball.y
         reacting: List[PlayerState] = []
+        reacting_ids: set[str] = set()
         if self.state.ball.mode == "loose":
             by_side = {"home": [], "away": []}
             for player in self.home.xi + self.away.xi:
@@ -623,11 +632,17 @@ class MatchEngine:
                     if p.slot != "GK" or distance((ball_x, ball_y), (self._defending_goal_x(side), PITCH_WIDTH / 2)) < 10.0
                 ]
                 reacting.extend(chasers[:2])
+                reacting_ids.update(p.profile.id for p in chasers[:2])
         if self.state.recent_turnover_seconds > 0:
-            reacting = sorted(
-                self.home.xi + self.away.xi,
-                key=lambda p: distance((p.x, p.y), (ball_x, ball_y)),
-            )[: max(4, len(reacting))]
+            for side in ("home", "away"):
+                chasers = [
+                    p for p in sorted(self.teammates(side), key=lambda p: distance((p.x, p.y), (ball_x, ball_y)))
+                    if p.slot != "GK"
+                ][:2]
+                for chaser in chasers:
+                    if chaser.profile.id not in reacting_ids:
+                        reacting.append(chaser)
+                        reacting_ids.add(chaser.profile.id)
 
         for team in (self.home, self.away):
             attacking = team.side == self.state.possession
@@ -753,22 +768,107 @@ class MatchEngine:
             return defenders[-2].x
         return defenders[1].x
 
-    def _is_player_offside(self, player: PlayerState, passer_x: float) -> bool:
-        sign = self._side_forward_sign(player.side)
-        forward = self._forwardness(player.side, player.x)
-        passer_forward = self._forwardness(player.side, passer_x)
-        line_forward = self._forwardness(player.side, self._offside_line(player.side))
+    def _is_position_offside(self, side: str, x: float, passer_x: float) -> bool:
+        forward = self._forwardness(side, x)
+        passer_forward = self._forwardness(side, passer_x)
+        line_forward = self._forwardness(side, self._offside_line(side))
         if forward <= (PITCH_LENGTH / 2):
             return False
         if forward <= passer_forward + 0.35:
             return False
         return forward > line_forward + 0.2
 
+    def _is_player_offside(self, player: PlayerState, passer_x: float) -> bool:
+        return self._is_position_offside(player.side, player.x, passer_x)
+
+    def _offside_depth(self, side: str, x: float) -> float:
+        return self._forwardness(side, x) - self._forwardness(side, self._offside_line(side))
+
+    def _offside_margin(self, side: str, x: float, passer_x: float) -> float:
+        forward = self._forwardness(side, x)
+        passer_forward = self._forwardness(side, passer_x)
+        line_forward = self._forwardness(side, self._offside_line(side))
+        if forward <= (PITCH_LENGTH / 2):
+            return -999.0
+        return forward - max(line_forward + 0.2, passer_forward + 0.35)
+
+    def _event_frequency_boost(self, kind: str) -> float:
+        elapsed_ratio = clamp(self.state.elapsed_seconds / (MATCH_MINUTES * 60.0), 0.0, 1.0)
+        targets = {
+            "throw_in": 16.0,
+            "corner": 9.0,
+            "offside": 4.0,
+        }
+        currents = {
+            "throw_in": float(self.state.throw_ins_count),
+            "corner": float(self.state.corners_count),
+            "offside": float(self.state.offsides_count),
+        }
+        target = targets.get(kind, 0.0)
+        current = currents.get(kind, 0.0)
+        if target <= 0.0:
+            return 0.0
+        expected = target * elapsed_ratio
+        deficit = expected - current
+        return clamp(deficit / max(1.0, target * 0.18), 0.0, 3.0)
+
+    def _should_flag_offside(self, carrier: PlayerState, receiver: PlayerState, pass_type: str, check_x: float) -> bool:
+        sign = self._side_forward_sign(carrier.side)
+        if (check_x - carrier.x) * sign <= 0:
+            return False
+        margin = self._offside_margin(receiver.side, check_x, carrier.x)
+        if margin > 0.0:
+            return True
+        if pass_type not in ("through_ball", "progressive_ground"):
+            return False
+        if receiver.slot not in ("ST", "LW", "RW"):
+            return False
+        if margin < (-0.8 if pass_type == "through_ball" else -0.35):
+            return False
+
+        boost = self._event_frequency_boost("offside")
+        defenders = [p for p in self.opponents(receiver.side) if p.slot in ("CB", "LB", "RB", "DM")]
+        if defenders:
+            line_discipline = sum(
+                p.profile.attributes["positioning"] + p.profile.attributes.get("anticipation", p.profile.attributes["positioning"])
+                for p in defenders
+            ) / (len(defenders) * 2.0)
+        else:
+            line_discipline = 65.0
+        trap = self._tactic_value("away" if receiver.side == "home" else "home", "offside_trap", 50.0)
+        attacker_timing = (
+            receiver.profile.attributes.get("off_ball", receiver.profile.attributes["positioning"])
+            + receiver.profile.attributes.get("anticipation", receiver.profile.attributes["positioning"])
+            + receiver.profile.attributes["decisions"]
+        ) / 3.0
+        passer_release = (
+            carrier.profile.attributes["vision"]
+            + carrier.profile.attributes["decisions"]
+            + carrier.profile.attributes["passing"]
+        ) / 3.0
+        chance = (
+            0.08
+            + boost * 0.22
+            + clamp((line_discipline - attacker_timing) / 180.0, -0.10, 0.12)
+            + clamp((trap - 50.0) / 220.0, -0.05, 0.08)
+            + clamp((68.0 - passer_release) / 200.0, -0.04, 0.06)
+            + clamp((margin + 0.8) / 6.0, 0.0, 0.10)
+        )
+        return self.rng.random() < clamp(chance, 0.04, 0.50)
+
     def _apply_onside_target_limit(self, player: PlayerState, tx: float, ty: float) -> Tuple[float, float]:
         if player.side != self.state.possession or player.slot in ("GK", "CB", "LB", "RB", "DM"):
             return tx, ty
         sign = self._side_forward_sign(player.side)
-        line = self._offside_line(player.side) - sign * 1.2
+        allowance = -1.0
+        if player.slot in ("LW", "RW", "ST"):
+            if self.state.phase_in_possession in ("final_third", "transition"):
+                allowance = 0.0
+            elif self.state.phase_in_possession == "progression":
+                allowance = -0.1
+        elif player.slot == "AM" and self.state.phase_in_possession in ("final_third", "transition"):
+            allowance = -0.6
+        line = self._offside_line(player.side) + sign * allowance
         if sign > 0:
             tx = min(tx, max(PITCH_LENGTH / 2 + 0.5, line))
         else:
@@ -784,21 +884,7 @@ class MatchEngine:
             defenders,
             key=lambda p: distance((p.x, p.y), (spot_x, spot_y)) + (0.8 if p.slot == "GK" else 0.0),
         )
-        self.state.ball.mode = "loose"
-        self.state.ball.carrier_id = None
-        self.state.ball.target_player_id = None
-        self.state.ball.offside_flag = False
-        self.state.ball.x = spot_x
-        self.state.ball.y = spot_y
-        self.state.ball.prev_x = spot_x
-        self.state.ball.prev_y = spot_y
-        self.state.ball.target_x = spot_x
-        self.state.ball.target_y = spot_y
-        taker.x = lerp(taker.x, spot_x, 0.35)
-        taker.y = lerp(taker.y, spot_y, 0.35)
-        taker.target_x = spot_x
-        taker.target_y = spot_y
-        self._give_ball_to(taker, note=f"Offside against {offender.short_name}", action_type="recovery")
+        self._start_offside_restart(defending_side, taker, spot_x, spot_y, offender.short_name)
 
     def _move_players(self) -> None:
         for p in self.home.xi + self.away.xi:
@@ -877,6 +963,10 @@ class MatchEngine:
         elif pass_type == "cross":
             lead_x += move_x * 0.24 + sign * (1.8 + space * 1.0 + run_quality * 0.4)
             lead_y += (PITCH_WIDTH / 2 - receiver.y) * 0.12 + move_y * 0.18
+            attacking_goal_x = self._attacking_goal_x(carrier.side)
+            min_depth = 6.5
+            if abs(attacking_goal_x - lead_x) < min_depth:
+                lead_x = attacking_goal_x - sign * min_depth
         elif pass_type == "progressive_ground":
             lead_x += move_x * 0.35 + sign * 0.8
             lead_y += move_y * 0.25
@@ -992,14 +1082,20 @@ class MatchEngine:
         if pass_type == "through_ball":
             if forward_angle < 0.45 or moving_into_space == 0.0 or receiver_space < 0.45:
                 return -999.0
-            if self._is_player_offside(receiver, carrier.x):
+            offside_depth = self._offside_depth(receiver.side, receiver.x)
+            if offside_depth > 2.0:
                 return -999.0
+            if self._is_player_offside(receiver, carrier.x):
+                return base - 12.0 - offside_depth * 3.5
             return base + 4.5 - dist * 0.03
         if pass_type == "cross":
             if not self._is_cross_situation(carrier, receiver):
                 return -999.0
-            if self._is_player_offside(receiver, carrier.x):
+            offside_depth = self._offside_depth(receiver.side, receiver.x)
+            if offside_depth > 2.0:
                 return -999.0
+            if self._is_player_offside(receiver, carrier.x):
+                return base - 10.0 - offside_depth * 3.0
             target_box_bonus = max(0.0, self._forwardness(receiver.side, receiver.x) - 74.0) * 1.2
             central_bonus = max(0.0, 16.0 - abs(receiver.y - PITCH_WIDTH / 2)) * 1.1
             aerial_bonus = (
@@ -1008,7 +1104,10 @@ class MatchEngine:
             )
             return base + 10.0 + target_box_bonus + central_bonus + aerial_bonus - abs(progression) * 0.04
         if progression > 0.8 and self._is_player_offside(receiver, carrier.x):
-            return -999.0
+            offside_depth = self._offside_depth(receiver.side, receiver.x)
+            if offside_depth > 1.8:
+                return -999.0
+            return base - 11.0 - offside_depth * 3.2
         if pass_type == "progressive_ground":
             if phase == "final_third" and carrier.slot == "ST" and receiver.slot in ("LW", "RW", "ST"):
                 return base - 6.5
@@ -1045,6 +1144,8 @@ class MatchEngine:
                 ball.y = by
                 ball.target_x = bx
                 ball.target_y = by
+                if self._ball_is_out_of_bounds(ball.x, ball.y):
+                    self._handle_ball_out(carrier.side, ball.x, ball.y)
             return
 
         if ball.mode in ("travelling", "shot"):
@@ -1058,6 +1159,9 @@ class MatchEngine:
             ball.y = lerp(ball.start_y, ball.target_y, t)
 
             if ball.mode == "travelling":
+                if self._ball_is_out_of_bounds(ball.x, ball.y):
+                    self._handle_ball_out(self._ball_last_touch_side(), ball.x, ball.y)
+                    return
                 if self._check_for_interception():
                     return
                 if self._check_for_reception():
@@ -1070,6 +1174,9 @@ class MatchEngine:
                 return
 
         if ball.mode == "loose":
+            if self._ball_is_out_of_bounds(ball.x, ball.y):
+                self._handle_ball_out(self._ball_last_touch_side(), ball.x, ball.y)
+                return
             winner = self._loose_ball_favorite()
             if winner and distance((winner.x, winner.y), (ball.x, ball.y)) < 2.1:
                 self._give_ball_to(winner, action_type="recovery")
@@ -1149,6 +1256,18 @@ class MatchEngine:
             if late_window:
                 chance -= 0.08
             if self.rng.random() < clamp(chance, 0.08, 0.86):
+                attacking_goal_x = self._attacking_goal_x(ball.intended_side)
+                near_goal_line = abs(ball.x - attacking_goal_x) < 4.2
+                in_cross_box = ball.pass_type == "cross" and near_goal_line and 10.0 < ball.y < (PITCH_WIDTH - 10.0)
+                if in_cross_box and self.rng.random() < 0.48:
+                    if self.rng.random() < clamp(0.55 + self._event_frequency_boost("corner") * 0.18, 0.40, 0.88):
+                        out_x = attacking_goal_x + self._side_forward_sign(ball.intended_side) * 1.2
+                        out_y = clamp(ball.y + self.rng.uniform(-2.4, 2.4), 2.0, PITCH_WIDTH - 2.0)
+                        self.state.last_touch_player_id = interceptor.profile.id
+                        self.state.ball.x = out_x
+                        self.state.ball.y = out_y
+                        self._handle_ball_out(interceptor.side, out_x, out_y)
+                        return True
                 interceptor.x = lerp(interceptor.x, ball.x, 0.35)
                 interceptor.y = lerp(interceptor.y, ball.y, 0.35)
                 self._give_ball_to(interceptor, note=f"{interceptor.short_name} intercepts", action_type="interception")
@@ -1191,6 +1310,19 @@ class MatchEngine:
 
         catchable = 1.65 if ball.pass_type == "through_ball" else 1.45
         if receiver_dist < catchable and (receiver_dist <= opp_dist + 0.55 or ball.travel_progress >= 0.9):
+            if ball.pass_type == "cross":
+                attacking_goal_x = self._attacking_goal_x(receiver.side)
+                if (
+                    nearest_opp.slot != "GK"
+                    and abs(ball.x - attacking_goal_x) < 6.0
+                    and opp_dist < min(receiver_dist + 0.35, 2.2)
+                    and self.rng.random() < clamp(0.28 + self._event_frequency_boost("corner") * 0.18, 0.18, 0.72)
+                ):
+                    out_x = attacking_goal_x + self._side_forward_sign(receiver.side) * 1.2
+                    out_y = clamp(ball.y + self.rng.uniform(-2.5, 2.5), 2.0, PITCH_WIDTH - 2.0)
+                    self.state.last_touch_player_id = nearest_opp.profile.id
+                    self._handle_ball_out(nearest_opp.side, out_x, out_y)
+                    return True
             outcome = self._resolve_first_touch(receiver, nearest_opp)
             if outcome == "clean":
                 self._settle_ball_for_reception(receiver)
@@ -1209,11 +1341,21 @@ class MatchEngine:
                 self.state.last_action_type = "recovery"
                 self.add_event(f"{receiver.short_name} under pressure")
             else:
+                if (
+                    ball.pass_type in ("cross", "progressive_ground", "switch")
+                    and (receiver.y < 8.5 or receiver.y > (PITCH_WIDTH - 8.5))
+                    and self.rng.random() < clamp(0.42 + self._event_frequency_boost("throw_in") * 0.20, 0.28, 0.88)
+                ):
+                    out_y = -0.8 if receiver.y < (PITCH_WIDTH / 2) else (PITCH_WIDTH + 0.8)
+                    out_x = clamp(receiver.x + self._side_forward_sign(receiver.side) * 0.8, 1.0, PITCH_LENGTH - 1.0)
+                    self.state.last_touch_player_id = receiver.profile.id
+                    self._handle_ball_out(receiver.side, out_x, out_y)
+                    return True
                 sign = self._side_forward_sign(receiver.side)
                 self.state.ball.mode = "loose"
                 self.state.ball.carrier_id = None
-                self.state.ball.x = clamp(receiver.x + sign * 1.4, 2, PITCH_LENGTH - 2)
-                self.state.ball.y = clamp(receiver.y + self.rng.uniform(-1.4, 1.4), 2, PITCH_WIDTH - 2)
+                self.state.ball.x = clamp(receiver.x + sign * 1.4, -2.5, PITCH_LENGTH + 2.5)
+                self.state.ball.y = clamp(receiver.y + self.rng.uniform(-1.4, 1.4), -2.5, PITCH_WIDTH + 2.5)
                 self.state.ball.loose_owner_bias = nearest_opp.side if opp_dist < receiver_dist else receiver.side
                 self.state.possession = self.state.ball.loose_owner_bias or receiver.side
                 self.state.last_action_type = "recovery"
@@ -1227,6 +1369,20 @@ class MatchEngine:
             if self.state.ball.offside_flag:
                 self._call_offside(receiver)
                 return
+            if self.state.ball.pass_type == "cross":
+                nearest_def = min(self.opponents(receiver.side), key=lambda p: distance((p.x, p.y), (self.state.ball.x, self.state.ball.y)))
+                attacking_goal_x = self._attacking_goal_x(receiver.side)
+                if (
+                    nearest_def.slot != "GK"
+                    and abs(self.state.ball.x - attacking_goal_x) < 5.4
+                    and distance((nearest_def.x, nearest_def.y), (self.state.ball.x, self.state.ball.y)) < 2.6
+                    and self.rng.random() < clamp(0.42 + self._event_frequency_boost("corner") * 0.18, 0.28, 0.86)
+                ):
+                    out_x = attacking_goal_x + self._side_forward_sign(receiver.side) * 1.2
+                    out_y = clamp(self.state.ball.y + self.rng.uniform(-2.5, 2.5), 2.0, PITCH_WIDTH - 2.0)
+                    self.state.last_touch_player_id = nearest_def.profile.id
+                    self._handle_ball_out(nearest_def.side, out_x, out_y)
+                    return
             if distance((receiver.x, receiver.y), (self.state.ball.x, self.state.ball.y)) > 1.9:
                 self.state.ball.mode = "loose"
                 self.state.ball.carrier_id = None
@@ -1274,6 +1430,27 @@ class MatchEngine:
             return
         if outcome == "save":
             self._give_ball_to(keeper, note=f"{keeper.short_name} saves", action_type="recovery")
+            return
+        if outcome == "save_out":
+            out_x = self._attacking_goal_x(shooter.side) + self._side_forward_sign(shooter.side) * 1.2
+            out_y = clamp(self.state.ball.target_y + self.rng.uniform(-2.0, 2.0), 2.0, PITCH_WIDTH - 2.0)
+            self.state.last_touch_player_id = keeper.profile.id
+            self._handle_ball_out(keeper.side, out_x, out_y)
+            return
+        defenders = [p for p in self.teammates(defending_side) if p.slot != "GK"]
+        nearest_defender = min(defenders, key=lambda p: distance((p.x, p.y), (shooter.x, shooter.y)))
+        attack_sign = self._side_forward_sign(shooter.side)
+        if (
+            self._goal_distance(shooter) < 24.0
+            and self._pressure_on_player(shooter) > 0.32
+            and distance((nearest_defender.x, nearest_defender.y), (shooter.x, shooter.y)) < 8.0
+            and (nearest_defender.x - shooter.x) * attack_sign > -1.5
+            and self.rng.random() < clamp(0.34 + self._event_frequency_boost("corner") * 0.18, 0.22, 0.76)
+        ):
+            out_x = self._attacking_goal_x(shooter.side) + self._side_forward_sign(shooter.side) * 1.2
+            out_y = clamp(self.state.ball.target_y, 2.0, PITCH_WIDTH - 2.0)
+            self.state.last_touch_player_id = nearest_defender.profile.id
+            self._handle_ball_out(nearest_defender.side, out_x, out_y)
             return
         self._start_goal_kick_setup(defending_side, shot_out_position=(self.state.ball.target_x, self.state.ball.target_y))
 
@@ -1333,6 +1510,15 @@ class MatchEngine:
         elif self.state.restart_mode == "goal_kick_setup":
             self._snap_players_to_targets()
             self._execute_goal_kick()
+        elif self.state.restart_mode == "throw_in_setup":
+            self._snap_players_to_targets()
+            self._execute_throw_in()
+        elif self.state.restart_mode == "corner_setup":
+            self._snap_players_to_targets()
+            self._execute_corner()
+        elif self.state.restart_mode == "offside_restart_setup":
+            self._snap_players_to_targets()
+            self._execute_offside_restart()
 
     def _start_kickoff_setup(self, kickoff_side: str, opening: bool = False, immediate: bool = False) -> None:
         if immediate:
@@ -1617,6 +1803,227 @@ class MatchEngine:
                 p.commit_target_x = None
                 p.commit_target_y = None
 
+    def _reset_ball_for_restart(self, x: float, y: float) -> None:
+        self.state.ball.mode = "loose"
+        self.state.ball.carrier_id = None
+        self.state.ball.target_player_id = None
+        self.state.ball.offside_flag = False
+        self.state.ball.x = x
+        self.state.ball.y = y
+        self.state.ball.prev_x = x
+        self.state.ball.prev_y = y
+        self.state.ball.target_x = x
+        self.state.ball.target_y = y
+
+    def _restart_taker_candidates(self, side: str) -> List[PlayerState]:
+        return [p for p in self.teammates(side) if p.slot != "GK"] or self.teammates(side)
+
+    def _pick_restart_receiver(self, side: str, taker: PlayerState, allowed_slots: Tuple[str, ...]) -> PlayerState:
+        options = [p for p in self.teammates(side) if p.profile.id != taker.profile.id and p.slot in allowed_slots]
+        if not options:
+            options = [p for p in self.teammates(side) if p.profile.id != taker.profile.id]
+        return max(
+            options,
+            key=lambda p: self._receiver_space(p) + p.profile.attributes["first_touch"] / 25.0,
+        )
+
+    def _start_offside_restart(self, defending_side: str, taker: PlayerState, x: float, y: float, offender_name: str) -> None:
+        self._prepare_players_for_restart_motion()
+        self.state.restart_mode = "offside_restart_setup"
+        self.state.restart_timer = OFFSIDE_SETUP_SECONDS
+        self.state.restart_side = defending_side
+        self.state.offsides_count += 1
+        x = clamp(x, 5.0, PITCH_LENGTH - 5.0)
+        y = clamp(y, 5.0, PITCH_WIDTH - 5.0)
+        self._reset_ball_for_restart(x, y)
+        taker.target_x = x
+        taker.target_y = y
+        self._set_render_state(taker, "restart", "offside")
+        sign = self._side_forward_sign(defending_side)
+        for teammate in self.teammates(defending_side):
+            if teammate.profile.id == taker.profile.id:
+                continue
+            teammate.target_x = clamp(teammate.home_x + sign * 2.0, 2, PITCH_LENGTH - 2)
+            teammate.target_y = teammate.home_y
+            self._set_render_state(teammate, "restart", "offside_shape")
+        for opp in self.opponents(defending_side):
+            opp.target_x = clamp(opp.home_x - sign * 3.5, 2, PITCH_LENGTH - 2)
+            opp.target_y = opp.home_y
+            self._set_render_state(opp, "restart", "offside_retreat")
+        self.add_event(f"Offside against {offender_name}")
+
+    def _execute_offside_restart(self) -> None:
+        side = self.state.restart_side or "home"
+        spot = (self.state.ball.x, self.state.ball.y)
+        taker = min(self.teammates(side), key=lambda p: distance((p.x, p.y), spot))
+        receiver = self._pick_restart_receiver(side, taker, ("DM", "CB", "LB", "RB", "CM"))
+        self.state.restart_mode = None
+        self.state.restart_timer = 0.0
+        self.state.restart_side = None
+        self._give_ball_to(taker, note="Offside free kick", action_type="recovery")
+        self._start_pass(taker, receiver, "offside restart", "short_ground")
+
+    def _start_throw_in_setup(self, side: str, x: float, y: float) -> None:
+        self._prepare_players_for_restart_motion()
+        self.state.restart_mode = "throw_in_setup"
+        self.state.restart_timer = THROW_IN_SETUP_SECONDS
+        self.state.restart_side = side
+        self.state.throw_ins_count += 1
+        y = 1.0 if y < PITCH_WIDTH / 2 else PITCH_WIDTH - 1.0
+        x = clamp(x, 3.0, PITCH_LENGTH - 3.0)
+        self._reset_ball_for_restart(x, y)
+        taker = min(self._restart_taker_candidates(side), key=lambda p: distance((p.x, p.y), (x, y)))
+        taker.target_x = x
+        taker.target_y = y
+        self._set_render_state(taker, "restart", "throw_in")
+        sign = self._side_forward_sign(side)
+        close_options = sorted(
+            [p for p in self.teammates(side) if p.profile.id != taker.profile.id and p.slot != "GK"],
+            key=lambda p: (
+                p.slot not in ("LB", "RB", "CM", "DM", "LW", "RW"),
+                distance((p.home_x, p.home_y), (x, y)),
+            ),
+        )[:3]
+        close_ids = {p.profile.id for p in close_options}
+        for teammate in self.teammates(side):
+            if teammate.profile.id == taker.profile.id:
+                continue
+            if teammate.profile.id in close_ids:
+                lane_bias = -4.0 if teammate.home_y < PITCH_WIDTH / 2 else 4.0
+                depth_bias = 5.0 + abs(teammate.home_x - x) * 0.08
+                teammate.target_x = clamp(x + sign * depth_bias, 2, PITCH_LENGTH - 2)
+                teammate.target_y = clamp(y + lane_bias, 3.0, PITCH_WIDTH - 3.0)
+                self._set_render_state(teammate, "restart", "throw_in_option")
+            elif teammate.slot == "GK":
+                teammate.target_x = teammate.home_x
+                teammate.target_y = teammate.home_y
+                self._set_render_state(teammate, "restart", "throw_in_reset")
+            else:
+                teammate.target_x = clamp(lerp(teammate.home_x, x, 0.12), 2, PITCH_LENGTH - 2)
+                teammate.target_y = clamp(lerp(teammate.home_y, y, 0.08), 3.0, PITCH_WIDTH - 3.0)
+                self._set_render_state(teammate, "restart", "throw_in_shape")
+        for opp in self.opponents(side):
+            opp.target_x = clamp(opp.home_x - sign * 2.5, 2, PITCH_LENGTH - 2)
+            opp.target_y = clamp(lerp(opp.home_y, y, 0.15), 2, PITCH_WIDTH - 2)
+            self._set_render_state(opp, "restart", "throw_in_mark")
+        self.add_event(f"{self._team_state(side).name} throw in")
+
+    def _execute_throw_in(self) -> None:
+        side = self.state.restart_side or "home"
+        spot = (self.state.ball.x, self.state.ball.y)
+        taker = min(self.teammates(side), key=lambda p: distance((p.x, p.y), spot))
+        receiver = self._pick_restart_receiver(side, taker, ("CM", "AM", "DM", "LW", "RW", "ST", "LB", "RB"))
+        self.state.restart_mode = None
+        self.state.restart_timer = 0.0
+        self.state.restart_side = None
+        self._give_ball_to(taker, note="Throw in", action_type="recovery")
+        self._start_pass(taker, receiver, "throw in", "short_ground")
+
+    def _start_corner_setup(self, attacking_side: str, x: float, y: float) -> None:
+        self._prepare_players_for_restart_motion()
+        self.state.restart_mode = "corner_setup"
+        self.state.restart_timer = CORNER_SETUP_SECONDS
+        self.state.restart_side = attacking_side
+        self.state.corners_count += 1
+        x = 0.5 if self._attacking_goal_x(attacking_side) == 0.0 else PITCH_LENGTH - 0.5
+        y = 0.5 if y < PITCH_WIDTH / 2 else PITCH_WIDTH - 0.5
+        self._reset_ball_for_restart(x, y)
+        wide_candidates = [p for p in self._restart_taker_candidates(attacking_side) if p.slot in ("LW", "RW", "LB", "RB", "AM")]
+        taker_pool = wide_candidates or self._restart_taker_candidates(attacking_side)
+        taker = min(taker_pool, key=lambda p: distance((p.x, p.y), (x, y)))
+        taker.target_x = x
+        taker.target_y = y
+        self._set_render_state(taker, "restart", "corner")
+        attack_sign = self._side_forward_sign(attacking_side)
+        corner_from_top = y < PITCH_WIDTH / 2
+        box_x = self._attacking_goal_x(attacking_side) - attack_sign * 8.0
+        attackers = [p for p in self.teammates(attacking_side) if p.profile.id != taker.profile.id and p.slot != "GK"]
+        stay_back_slots = {"LB", "RB", "DM"}
+        stay_back = [p for p in attackers if p.slot in stay_back_slots]
+        attack_group = [p for p in attackers if p.profile.id not in {p2.profile.id for p2 in stay_back}]
+        priority_y = [PITCH_WIDTH / 2 - 6.0, PITCH_WIDTH / 2, PITCH_WIDTH / 2 + 6.0, PITCH_WIDTH / 2 - 11.0, PITCH_WIDTH / 2 + 11.0]
+        priority_x = [box_x - attack_sign * 1.5, box_x, box_x + attack_sign * 1.5, box_x - attack_sign * 4.0, box_x - attack_sign * 6.0]
+        ordered = sorted(attack_group, key=lambda p: (p.slot not in ("ST", "AM", "CB"), -p.profile.attributes["positioning"]))
+        for idx, teammate in enumerate(ordered):
+            tx = clamp(priority_x[min(idx, len(priority_x) - 1)], 2, PITCH_LENGTH - 2)
+            ty = clamp(priority_y[min(idx, len(priority_y) - 1)] + (-2.0 if corner_from_top else 2.0) * (0.4 if idx > 2 else 0.0), 4.0, PITCH_WIDTH - 4.0)
+            teammate.target_x = tx
+            teammate.target_y = ty
+            self._set_render_state(teammate, "restart", "corner_attack")
+        safety_x = box_x - attack_sign * 22.0
+        safety_y = PITCH_WIDTH / 2
+        for idx, teammate in enumerate(sorted(stay_back, key=lambda p: p.home_y)):
+            teammate.target_x = clamp(safety_x - attack_sign * (idx * 4.0), 8.0, PITCH_LENGTH - 8.0)
+            teammate.target_y = clamp(safety_y + (-8.0 + idx * 8.0), 8.0, PITCH_WIDTH - 8.0)
+            self._set_render_state(teammate, "restart", "corner_cover")
+        atk_gk = self._goalkeeper(attacking_side)
+        atk_gk.target_x = clamp(self._defending_goal_x(attacking_side) + self._side_forward_sign(attacking_side) * 3.5, 4.0, PITCH_LENGTH - 4.0)
+        atk_gk.target_y = PITCH_WIDTH / 2
+        self._set_render_state(atk_gk, "restart", "corner_reset")
+        defenders = self.opponents(attacking_side)
+        for idx, defender in enumerate(sorted(defenders, key=lambda p: p.slot == "GK")):
+            if defender.slot == "GK":
+                defender.target_x = clamp(self._defending_goal_x(defender.side) + self._side_forward_sign(defender.side) * 2.5, 2, PITCH_LENGTH - 2)
+                defender.target_y = PITCH_WIDTH / 2
+            else:
+                defender.target_x = clamp(box_x - attack_sign * (2.0 + (idx % 3) * 1.5), 2, PITCH_LENGTH - 2)
+                defender.target_y = clamp((PITCH_WIDTH / 2) + (-7.0 + idx * 3.2), 4, PITCH_WIDTH - 4)
+            self._set_render_state(defender, "restart", "corner_defend")
+        self.add_event(f"{self._team_state(attacking_side).name} corner")
+
+    def _execute_corner(self) -> None:
+        side = self.state.restart_side or "home"
+        taker = min(self.teammates(side), key=lambda p: distance((p.x, p.y), (self.state.ball.x, self.state.ball.y)))
+        short_pool = [
+            p for p in self.teammates(side)
+            if p.profile.id != taker.profile.id and p.slot in ("LW", "RW", "LB", "RB", "AM")
+            and distance((p.x, p.y), (self.state.ball.x, self.state.ball.y)) < 18.0
+        ]
+        target_pool = [p for p in self.teammates(side) if p.profile.id != taker.profile.id and p.slot in ("ST", "AM", "CB", "CM")]
+        if not target_pool:
+            target_pool = [p for p in self.teammates(side) if p.profile.id != taker.profile.id and p.slot != "GK"]
+        receiver = max(target_pool, key=lambda p: p.profile.attributes["positioning"] + self._receiver_space(p) * 20.0)
+        short_chance = 0.18 + max(0.0, (self._tactic_value(side, "crossing") - 55.0) / -220.0)
+        use_short = bool(short_pool) and self.rng.random() < clamp(short_chance, 0.10, 0.28)
+        if use_short:
+            receiver = max(
+                short_pool,
+                key=lambda p: p.profile.attributes["first_touch"] + p.profile.attributes["passing"] + self._receiver_space(p) * 18.0,
+            )
+        self.state.restart_mode = None
+        self.state.restart_timer = 0.0
+        self.state.restart_side = None
+        self._give_ball_to(taker, note="Corner", action_type="recovery")
+        if use_short:
+            self._start_pass(taker, receiver, "short corner", "short_ground")
+        else:
+            self._start_pass(taker, receiver, "corner", "cross")
+
+    def _ball_last_touch_side(self) -> Optional[str]:
+        player = self.find_player(self.state.last_touch_player_id)
+        return player.side if player else None
+
+    def _ball_is_out_of_bounds(self, x: float, y: float) -> bool:
+        return x < 0.0 or x > PITCH_LENGTH or y < 0.0 or y > PITCH_WIDTH
+
+    def _handle_ball_out(self, last_touch_side: Optional[str], x: float, y: float) -> None:
+        if last_touch_side is None:
+            last_touch_side = self.state.possession
+        self.state.ball.mode = "loose"
+        self.state.ball.carrier_id = None
+        self.state.ball.target_player_id = None
+        if y < 0.0 or y > PITCH_WIDTH:
+            restart_side = "away" if last_touch_side == "home" else "home"
+            self._start_throw_in_setup(restart_side, clamp(x, 1.0, PITCH_LENGTH - 1.0), y)
+            return
+        if x < 0.0 or x > PITCH_LENGTH:
+            defending_side = self._goal_line_defending_side(x)
+            if last_touch_side == defending_side:
+                attacking_side = "away" if defending_side == "home" else "home"
+                self._start_corner_setup(attacking_side, x, clamp(y, 1.0, PITCH_WIDTH - 1.0))
+            else:
+                self._start_goal_kick_setup(defending_side, shot_out_position=(x, clamp(y, 1.0, PITCH_WIDTH - 1.0)))
+
     def _snap_players_to_targets(self) -> None:
         for player in self.home.xi + self.away.xi:
             player.x = player.target_x
@@ -1674,7 +2081,17 @@ class MatchEngine:
         if self._success_roll(goal):
             return "goal"
         save = 0.45 + keeper.profile.attributes["positioning"] / 260.0
-        if self.rng.random() < clamp(save, 0.2, 0.95):
+        save_roll = self.rng.random()
+        if save_roll < clamp(save, 0.2, 0.95):
+            parry = (
+                0.12
+                + pressure * 0.10
+                + max(0.0, 22.0 - goal_dist) / 120.0
+                - keeper.profile.attributes.get("handling", keeper.profile.attributes["positioning"]) / 420.0
+                + self._event_frequency_boost("corner") * 0.10
+            )
+            if save_roll < clamp(parry, 0.06, 0.40):
+                return "save_out"
             return "save"
         return "off_target"
 
@@ -1929,8 +2346,21 @@ class MatchEngine:
             mag = math.hypot(direction_x, direction_y) or 1.0
             direction_x /= mag
             direction_y /= mag
-            target_x = clamp(target_x + direction_x * self.rng.uniform(-2.0, 5.5), 2, PITCH_LENGTH - 2)
-            target_y = clamp(target_y + direction_y * self.rng.uniform(-2.5, 2.5) + self.rng.uniform(-2.0, 2.0), 2, PITCH_WIDTH - 2)
+            target_x = clamp(target_x + direction_x * self.rng.uniform(-2.0, 5.5), -4.0, PITCH_LENGTH + 4.0)
+            target_y = clamp(target_y + direction_y * self.rng.uniform(-2.5, 2.5) + self.rng.uniform(-2.0, 2.0), -4.0, PITCH_WIDTH + 4.0)
+            wide_carrier = carrier.y < 9.5 or carrier.y > (PITCH_WIDTH - 9.5)
+            final_third = self._forwardness(carrier.side, carrier.x) > 73.0
+            nearest_touchline = -1.8 if carrier.y < (PITCH_WIDTH / 2) else (PITCH_WIDTH + 1.8)
+            if pass_type == "cross":
+                if wide_carrier and self.rng.random() < 0.80:
+                    if label != "corner":
+                        target_y = nearest_touchline
+                elif final_third and self.rng.random() < 0.58:
+                    target_x = self._attacking_goal_x(carrier.side) + self._side_forward_sign(carrier.side) * self.rng.uniform(1.4, 4.8)
+            elif wide_carrier and self.rng.random() < 0.46:
+                target_y = nearest_touchline
+            elif pressure > 0.62 and carrier.slot in ("LB", "RB", "CB") and self.rng.random() < 0.16:
+                target_y = nearest_touchline if abs(carrier.y - PITCH_WIDTH / 2) > 12.0 else target_y
 
         travel_dist = distance((carrier.x, carrier.y), (target_x, target_y))
         self.state.ball.mode = "travelling"
@@ -1946,7 +2376,19 @@ class MatchEngine:
         self.state.ball.target_y = target_y
         self.state.ball.travel_progress = 0.0
         self.state.ball.pass_type = pass_type
-        self.state.ball.offside_flag = self._is_player_offside(receiver, carrier.x) if (receiver.x - carrier.x) * self._side_forward_sign(carrier.side) > 0 else False
+        sign = self._side_forward_sign(carrier.side)
+        projected_x = receiver.x
+        if (receiver.target_x - receiver.x) * sign > 0.6:
+            if pass_type == "through_ball":
+                projected_x = lerp(receiver.x, receiver.target_x, 0.42)
+            elif (
+                pass_type == "progressive_ground"
+                and receiver.slot in ("ST", "LW", "RW")
+                and self.state.phase_in_possession in ("progression", "final_third")
+            ):
+                projected_x = lerp(receiver.x, receiver.target_x, 0.26)
+        check_x = projected_x if pass_type in ("through_ball", "progressive_ground") else receiver.x
+        self.state.ball.offside_flag = self._should_flag_offside(carrier, receiver, pass_type, check_x)
         self.state.ball.travel_time = max(0.24, travel_dist / PASS_SPEEDS[pass_type])
         self.state.ball.speed = PASS_SPEEDS[pass_type]
         self.state.ball.lead_player_id = carrier.profile.id
@@ -1997,9 +2439,16 @@ class MatchEngine:
             return
         ball.mode = "loose"
         ball.carrier_id = None
-        ball.x = clamp((carrier.x + defender.x) / 2 + self.rng.uniform(-0.9, 0.9), 2, PITCH_LENGTH - 2)
-        ball.y = clamp((carrier.y + defender.y) / 2 + self.rng.uniform(-0.9, 0.9), 2, PITCH_WIDTH - 2)
+        if (carrier.y < 6.5 or carrier.y > (PITCH_WIDTH - 6.5)) and self.rng.random() < clamp(0.52 + self._event_frequency_boost("throw_in") * 0.20, 0.36, 0.90):
+            out_y = -0.8 if carrier.y < (PITCH_WIDTH / 2) else (PITCH_WIDTH + 0.8)
+            out_x = clamp((carrier.x + defender.x) / 2, 1.0, PITCH_LENGTH - 1.0)
+            self.state.last_touch_player_id = defender.profile.id
+            self._handle_ball_out(defender.side, out_x, out_y)
+            return
+        ball.x = clamp((carrier.x + defender.x) / 2 + self.rng.uniform(-0.9, 0.9), -2.5, PITCH_LENGTH + 2.5)
+        ball.y = clamp((carrier.y + defender.y) / 2 + self.rng.uniform(-0.9, 0.9), -2.5, PITCH_WIDTH + 2.5)
         ball.loose_owner_bias = carrier.side if margin > -6.0 else defender.side
+        self.state.last_touch_player_id = defender.profile.id
         self.state.last_action_type = "recovery"
         self.add_event(f"{defender.short_name} gets a touch")
 
