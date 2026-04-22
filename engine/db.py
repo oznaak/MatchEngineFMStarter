@@ -669,6 +669,31 @@ def set_active_save_id(conn: sqlite3.Connection, save_id: int) -> None:
     set_metadata(conn, "active_save_id", str(int(save_id)))
 
 
+def clear_active_save_id(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM metadata WHERE key = 'active_save_id'")
+
+
+def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
+    row = conn.execute(
+        "SELECT manager_id FROM saves WHERE id = ?",
+        (int(save_id),),
+    ).fetchone()
+    if row is None:
+        return
+    manager_id = int(row["manager_id"])
+    conn.execute("DELETE FROM fixtures WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM saves WHERE id = ?", (int(save_id),))
+    remaining = conn.execute(
+        "SELECT COUNT(*) AS count FROM saves WHERE manager_id = ?",
+        (manager_id,),
+    ).fetchone()
+    if remaining is not None and int(remaining["count"]) == 0:
+        conn.execute("DELETE FROM managers WHERE id = ?", (manager_id,))
+    active_save_id = get_metadata(conn, "active_save_id")
+    if active_save_id is not None and int(active_save_id) == int(save_id):
+        clear_active_save_id(conn)
+
+
 def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     save_row = conn.execute(
         """

@@ -9,6 +9,7 @@ from engine.condition import advance_condition_days, apply_post_match_condition,
 from engine.db import (
     bootstrap_database,
     create_save_game,
+    delete_save_game,
     db_session,
     get_current_day,
     get_next_fixture_for_save,
@@ -159,6 +160,7 @@ class ManagerGameApp:
         self.leagues: list[dict] = []
         self.club_choices: list[dict] = []
         self.saves: list[dict] = []
+        self.selected_save_id: int | None = None
         self.active_save_id: int | None = None
         self.overview: dict | None = None
         self.overview_club_id: str | None = None
@@ -196,6 +198,8 @@ class ManagerGameApp:
             self.option_choices["display"] = self.renderer.available_displays()
             self.leagues = list_leagues(conn)
             self.saves = list_save_games(conn)
+            if self.selected_save_id is not None and not any(save["id"] == self.selected_save_id for save in self.saves):
+                self.selected_save_id = None
             self.active_save_id = load_active_save_id(conn)
             if self.active_save_id is not None:
                 self.overview = load_save_overview(conn, self.active_save_id)
@@ -433,6 +437,34 @@ class ManagerGameApp:
                 self._forfeit_current_match()
             self.running = False
             return
+        if action == "modal:confirm_delete_save":
+            if self.selected_save_id is None:
+                return
+            self.modal = {
+                "title": "ARE YOU SURE?",
+                "message": "DELETE THIS SAVE?\nALL RELATED RECORDS WILL BE REMOVED",
+                "buttons": [
+                    {"label": "YES", "action": "modal:do_delete_save", "fill": (206, 54, 54)},
+                    {"label": "NO", "action": "modal:close"},
+                ],
+            }
+            return
+        if action == "modal:do_delete_save":
+            if self.selected_save_id is None:
+                self.modal = None
+                return
+            with db_session(self.db_path) as conn:
+                delete_save_game(conn, self.selected_save_id)
+                conn.commit()
+            if self.active_save_id == self.selected_save_id:
+                self.active_save_id = None
+                self.overview = None
+                self.overview_club_id = None
+            self.selected_save_id = None
+            self.modal = None
+            self._reload_state()
+            self.screen = "load_game"
+            return
         if action == "menu:quit":
             self.running = False
             return
@@ -442,6 +474,7 @@ class ManagerGameApp:
             self.manager_name = ""
             return
         if action == "menu:load_game":
+            self.selected_save_id = None
             self.screen = "load_game"
             self._reload_state()
             return
@@ -488,6 +521,17 @@ class ManagerGameApp:
             return
         if action.startswith("load:"):
             self._load_save(int(action.split(":", 1)[1]))
+            return
+        if action.startswith("select_save:"):
+            self.selected_save_id = int(action.split(":", 1)[1])
+            return
+        if action == "load_game:load_selected":
+            if self.selected_save_id is not None:
+                self._load_save(self.selected_save_id)
+            return
+        if action == "load_game:delete_selected":
+            if self.selected_save_id is not None:
+                self._handle_action("modal:confirm_delete_save")
             return
         if action.startswith("overview_club:"):
             self.overview_club_id = action.split(":", 1)[1]
@@ -565,7 +609,7 @@ class ManagerGameApp:
         if self.screen == "options":
             return {"screen": "options", "options": self.options, "choices": self.option_choices}
         if self.screen == "load_game":
-            return {"screen": "load_game", "saves": self.saves}
+            return {"screen": "load_game", "saves": self.saves, "selected_save_id": self.selected_save_id}
         if self.screen == "overview":
             return {
                 "screen": "overview",

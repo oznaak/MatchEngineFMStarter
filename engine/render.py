@@ -864,8 +864,8 @@ class Renderer:
             draw_text(self.screen, title, rect.x + 12, rect.y + 10, title_color, scale=2)
 
     def _draw_main_menu(self, view: dict) -> None:
-        title = "TOUCHLINE STORIES"
-        subtitle = "SOCCER MANAGER PROTOTYPE"
+        title = "MY MANAGER CAREER"
+        subtitle = "REALISTIC FOOTBALL ENGINE"
         title_x = (SCREEN_W - text_width(title, 4)) // 2
         draw_text(self.screen, title, title_x, 92, (245, 245, 245), scale=4)
         draw_text(self.screen, subtitle, (SCREEN_W - text_width(subtitle, 2)) // 2, 140, (248, 187, 32), scale=2)
@@ -1011,17 +1011,41 @@ class Renderer:
 
     def _draw_load_game_screen(self, view: dict) -> None:
         saves = view.get("saves", [])
+        selected_save_id = view.get("selected_save_id")
         panel = pygame.Rect(120, 110, SCREEN_W - 240, SCREEN_H - 190)
         self._draw_panel(panel, "LOAD GAME", (36, 52, 96))
-        helper = "PLACEHOLDER SCREEN. EXISTING SAVES CAN STILL BE OPENED."
+        helper = "SELECT A SAVE, THEN LOAD OR DELETE IT."
         draw_text(self.screen, helper, panel.x + 28, panel.y + 54, (245, 245, 245), scale=2)
         y = panel.y + 96
         if not saves:
             draw_text(self.screen, "NO SAVES YET", panel.x + 28, y, (248, 187, 32), scale=2)
         for save in saves[:8]:
             rect = pygame.Rect(panel.x + 28, y, panel.width - 56, 48)
-            self._draw_ui_button(rect, f"{save['manager_name']} - {save['club_name']}", (220, 52, 52), (245, 245, 245), f"load:{save['id']}")
+            is_selected = save["id"] == selected_save_id
+            fill = (220, 52, 52) if is_selected else (28, 30, 34)
+            border = (248, 187, 32) if is_selected else (46, 48, 54)
+            pygame.draw.rect(self.screen, fill, rect, border_radius=6)
+            pygame.draw.rect(self.screen, border, rect, 2, border_radius=6)
+            label = f"{save['manager_name']} - {save['club_name']}"
+            draw_text(self.screen, label, rect.x + 16, rect.y + 16, (245, 245, 245), scale=2)
+            self._register_ui(f"select_save:{save['id']}", rect)
             y += 58
+        action_y = panel.bottom - 54
+        if selected_save_id is not None:
+            self._draw_ui_button(
+                pygame.Rect(panel.right - 318, action_y, 128, 40),
+                "DELETE",
+                (206, 54, 54),
+                (245, 245, 245),
+                "load_game:delete_selected",
+            )
+            self._draw_ui_button(
+                pygame.Rect(panel.right - 172, action_y, 128, 40),
+                "LOAD",
+                (248, 187, 32),
+                (24, 24, 28),
+                "load_game:load_selected",
+            )
         self._draw_ui_button(pygame.Rect(panel.x + 28, panel.bottom - 54, 128, 40), "BACK", (36, 52, 96), (245, 245, 245), "back:menu")
 
     def _draw_overview_screen(self, view: dict) -> None:
