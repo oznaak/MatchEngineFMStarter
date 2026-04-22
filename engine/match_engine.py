@@ -18,6 +18,8 @@ GOAL_KICK_SETUP_SECONDS = 1.6
 THROW_IN_SETUP_SECONDS = 1.1
 CORNER_SETUP_SECONDS = 1.3
 OFFSIDE_SETUP_SECONDS = 1.0
+FREE_KICK_SETUP_SECONDS = 1.4
+PENALTY_SETUP_SECONDS = 1.8
 HALF_REAL_SECONDS = 150.0
 MATCH_REAL_SECONDS = HALF_REAL_SECONDS * 2
 
@@ -202,10 +204,12 @@ class MatchEngine:
         return None
 
     def teammates(self, side: str) -> List[PlayerState]:
-        return self.home.xi if side == "home" else self.away.xi
+        team = self.home.xi if side == "home" else self.away.xi
+        return [p for p in team if not p.red_card]
 
     def opponents(self, side: str) -> List[PlayerState]:
-        return self.away.xi if side == "home" else self.home.xi
+        team = self.away.xi if side == "home" else self.home.xi
+        return [p for p in team if not p.red_card]
 
     def update(self, dt: float) -> None:
         if self.state.is_finished or self.state.awaiting_start:
@@ -625,6 +629,8 @@ class MatchEngine:
         if self.state.ball.mode == "loose":
             by_side = {"home": [], "away": []}
             for player in self.home.xi + self.away.xi:
+                if player.red_card:
+                    continue
                 by_side[player.side].append(player)
             for side in by_side:
                 chasers = [
@@ -647,10 +653,13 @@ class MatchEngine:
         for team in (self.home, self.away):
             attacking = team.side == self.state.possession
             opps = self.opponents(team.side)
-            pressers = sorted(team.xi, key=lambda p: distance((p.x, p.y), (ball_x, ball_y)))
+            active_players = [p for p in team.xi if not p.red_card]
+            if not active_players:
+                continue
+            pressers = sorted(active_players, key=lambda p: distance((p.x, p.y), (ball_x, ball_y)))
             main_presser = pressers[0]
             cover_ids = {p.profile.id for p in pressers[1:3]}
-            for p in team.xi:
+            for p in active_players:
                 if p.profile.id == self.state.ball.carrier_id:
                     continue
 
@@ -798,11 +807,15 @@ class MatchEngine:
             "throw_in": 16.0,
             "corner": 9.0,
             "offside": 4.0,
+            "foul": 24.0,
+            "yellow": 4.0,
         }
         currents = {
             "throw_in": float(self.state.throw_ins_count),
             "corner": float(self.state.corners_count),
             "offside": float(self.state.offsides_count),
+            "foul": float(self.state.fouls_count_home + self.state.fouls_count_away),
+            "yellow": float(self.state.yellow_cards_home + self.state.yellow_cards_away),
         }
         target = targets.get(kind, 0.0)
         current = currents.get(kind, 0.0)
@@ -811,6 +824,271 @@ class MatchEngine:
         expected = target * elapsed_ratio
         deficit = expected - current
         return clamp(deficit / max(1.0, target * 0.18), 0.0, 3.0)
+
+    def _is_in_penalty_area(self, side: str, x: float, y: float) -> bool:
+        defend_x = self._defending_goal_x(side)
+        if defend_x == 0.0:
+            return x <= 16.5 and 13.84 <= y <= (PITCH_WIDTH - 13.84)
+        return x >= (PITCH_LENGTH - 16.5) and 13.84 <= y <= (PITCH_WIDTH - 13.84)
+
+    def _card_event(self, offender: PlayerState, color: str) -> None:
+        if color == "yellow":
+            offender.yellow_cards += 1
+            if offender.side == "home":
+                self.state.yellow_cards_home += 1
+            else:
+                self.state.yellow_cards_away += 1
+            self.add_event(f"Yellow card for {offender.short_name}")
+            if offender.yellow_cards >= 2:
+                self._card_event(offender, "red")
+            return
+        if offender.red_card:
+            return
+        offender.red_card = True
+        offender.has_ball = False
+        offender.target_x = -10.0
+        offender.target_y = -10.0
+        offender.x = -10.0
+        offender.y = -10.0
+        offender.prev_x = -10.0
+        offender.prev_y = -10.0
+        self._set_render_state(offender, "shape", "sent_off")
+        if offender.side == "home":
+            self.state.red_cards_home += 1
+        else:
+            self.state.red_cards_away += 1
+        self.add_event(f"Red card for {offender.short_name}")
+
+    def _foul_card_color(self, offender: PlayerState, foul_spot: Tuple[float, float], attacking_side: str, severity: float) -> Optional[str]:
+        strictness = (self.state.referee_strictness - 50.0) / 50.0
+        attack_forward = self._forwardness(attacking_side, foul_spot[0])
+        dogso = attack_forward > 82.0 and abs(foul_spot[1] - PITCH_WIDTH / 2) < 12.0
+        yellow = (
+            severity
+            + max(0.0, strictness) * 0.10
+            + (0.12 if attack_forward > 70.0 else 0.0)
+            + (0.08 if offender.fouls_committed >= 2 else 0.0)
+            + (0.06 if offender.yellow_cards >= 1 else 0.0)
+        )
+        if dogso and severity > 0.62:
+            return "red"
+        if yellow > 0.58:
+            return "yellow"
+        return None
+
+    def _start_direct_free_kick_setup(self, attacking_side: str, x: float, y: float, taker: PlayerState, fouled: Optional[PlayerState] = None) -> None:
+        self._prepare_players_for_restart_motion()
+        self.state.restart_mode = "direct_free_kick_setup"
+        self.state.restart_timer = FREE_KICK_SETUP_SECONDS
+        self.state.restart_side = attacking_side
+        self.state.restart_taker_id = taker.profile.id
+        self.state.fouled_player_id = fouled.profile.id if fouled else None
+        x = clamp(x, 4.0, PITCH_LENGTH - 4.0)
+        y = clamp(y, 4.0, PITCH_WIDTH - 4.0)
+        self._reset_ball_for_restart(x, y)
+        taker.target_x = x
+        taker.target_y = y
+        self._set_render_state(taker, "restart", "free_kick")
+        sign = self._side_forward_sign(attacking_side)
+        dangerous = self._forwardness(attacking_side, x) > 74.0 and abs(y - PITCH_WIDTH / 2) < 15.0
+        for teammate in self.teammates(attacking_side):
+            if teammate.profile.id == taker.profile.id:
+                continue
+            if dangerous and teammate.slot in ("ST", "AM", "CB", "CM"):
+                teammate.target_x = clamp(x + sign * (8.0 + (3.0 if teammate.slot == "ST" else 0.0)), 2.0, PITCH_LENGTH - 2.0)
+                teammate.target_y = clamp(y + ((teammate.home_y - PITCH_WIDTH / 2) * 0.35), 6.0, PITCH_WIDTH - 6.0)
+                self._set_render_state(teammate, "restart", "free_kick_attack")
+            else:
+                teammate.target_x = clamp(lerp(teammate.home_x, x, 0.10), 2, PITCH_LENGTH - 2)
+                teammate.target_y = teammate.home_y
+                self._set_render_state(teammate, "restart", "free_kick_shape")
+        wall_x = x + sign * 9.15
+        defenders = sorted(self.opponents(attacking_side), key=lambda p: p.slot == "GK")
+        for idx, defender in enumerate(defenders):
+            if defender.slot == "GK":
+                defender.target_x = clamp(self._defending_goal_x(defender.side) + self._side_forward_sign(defender.side) * 2.5, 2, PITCH_LENGTH - 2)
+                defender.target_y = PITCH_WIDTH / 2
+            elif dangerous and idx < 4:
+                defender.target_x = clamp(wall_x, 2, PITCH_LENGTH - 2)
+                defender.target_y = clamp(y + (-2.4 + idx * 1.6), 8.0, PITCH_WIDTH - 8.0)
+            else:
+                defender.target_x = clamp(lerp(defender.home_x, x, 0.12), 2, PITCH_LENGTH - 2)
+                defender.target_y = defender.home_y
+            self._set_render_state(defender, "restart", "free_kick_defend")
+        self.add_event(f"Free kick to {self._team_state(attacking_side).name}")
+
+    def _execute_direct_free_kick(self) -> None:
+        side = self.state.restart_side or "home"
+        taker = self.find_player(self.state.restart_taker_id) or min(self.teammates(side), key=lambda p: distance((p.x, p.y), (self.state.ball.x, self.state.ball.y)))
+        forwardness = self._forwardness(side, self.state.ball.x)
+        central_gap = abs(self.state.ball.y - PITCH_WIDTH / 2)
+        dangerous = forwardness > 74.0 and central_gap < 15.0
+        advanced = forwardness > 60.0
+        own_half = forwardness < 45.0
+        wide = central_gap > 13.0
+        self.state.restart_mode = None
+        self.state.restart_timer = 0.0
+        self.state.restart_side = None
+        self.state.restart_taker_id = None
+        self.state.fouled_player_id = None
+        self._give_ball_to(taker, note="Free kick", action_type="recovery")
+        if dangerous and self.rng.random() < 0.38:
+            self._start_shot(taker)
+            return
+        if advanced:
+            if wide or self.rng.random() < 0.72:
+                receivers = [
+                    p for p in self.teammates(side)
+                    if p.profile.id != taker.profile.id and p.slot in ("ST", "AM", "CM", "LW", "RW", "CB")
+                ]
+                if not receivers:
+                    receivers = [p for p in self.teammates(side) if p.profile.id != taker.profile.id]
+                receiver = max(
+                    receivers,
+                    key=lambda p: (
+                        self._forwardness(side, p.x) * 0.5
+                        + p.profile.attributes["positioning"]
+                        + p.profile.attributes.get("off_ball", p.profile.attributes["positioning"]) * 0.35
+                        + self._receiver_space(p) * 18.0
+                    ),
+                )
+                pass_type = "cross"
+                label = "free kick cross"
+            else:
+                receivers = [
+                    p for p in self.teammates(side)
+                    if p.profile.id != taker.profile.id and p.slot in ("AM", "CM", "LW", "RW", "ST")
+                ]
+                if not receivers:
+                    receivers = [p for p in self.teammates(side) if p.profile.id != taker.profile.id]
+                receiver = max(
+                    receivers,
+                    key=lambda p: p.profile.attributes["first_touch"] + p.profile.attributes["passing"] + self._receiver_space(p) * 16.0,
+                )
+                pass_type = "progressive_ground"
+                label = "free kick"
+        elif own_half:
+            if self.rng.random() < 0.68:
+                receivers = [
+                    p for p in self.teammates(side)
+                    if p.profile.id != taker.profile.id and p.slot in ("DM", "CM", "CB", "LB", "RB")
+                ]
+                if not receivers:
+                    receivers = [p for p in self.teammates(side) if p.profile.id != taker.profile.id]
+                receiver = max(
+                    receivers,
+                    key=lambda p: p.profile.attributes["first_touch"] + p.profile.attributes["passing"] + self._receiver_space(p) * 12.0,
+                )
+                pass_type = "short_ground"
+                label = "free kick"
+            else:
+                receivers = [
+                    p for p in self.teammates(side)
+                    if p.profile.id != taker.profile.id and p.slot in ("ST", "LW", "RW", "AM", "CM")
+                ]
+                if not receivers:
+                    receivers = [p for p in self.teammates(side) if p.profile.id != taker.profile.id]
+                receiver = max(
+                    receivers,
+                    key=lambda p: self._forwardness(side, p.x) + p.profile.attributes.get("off_ball", p.profile.attributes["positioning"]) * 0.4,
+                )
+                pass_type = "cross"
+                label = "free kick long"
+        else:
+            receivers = [
+                p for p in self.teammates(side)
+                if p.profile.id != taker.profile.id and p.slot in ("CM", "AM", "DM", "LW", "RW", "ST")
+            ]
+            if not receivers:
+                receivers = [p for p in self.teammates(side) if p.profile.id != taker.profile.id]
+            receiver = max(
+                receivers,
+                key=lambda p: p.profile.attributes["positioning"] + self._receiver_space(p) * 16.0,
+            )
+            pass_type = "progressive_ground"
+            label = "free kick"
+        self._start_pass(taker, receiver, label, pass_type)
+
+    def _start_penalty_setup(self, attacking_side: str, taker: PlayerState) -> None:
+        self._prepare_players_for_restart_motion()
+        self.state.restart_mode = "penalty_setup"
+        self.state.restart_timer = PENALTY_SETUP_SECONDS
+        self.state.restart_side = attacking_side
+        self.state.restart_taker_id = taker.profile.id
+        spot_x = 11.0 if self._attacking_goal_x(attacking_side) == 0.0 else PITCH_LENGTH - 11.0
+        spot_y = PITCH_WIDTH / 2
+        self._reset_ball_for_restart(spot_x, spot_y)
+        for player in self.home.xi + self.away.xi:
+            if player.red_card:
+                continue
+            if player.profile.id == taker.profile.id:
+                player.target_x = spot_x
+                player.target_y = spot_y
+                self._set_render_state(player, "restart", "penalty")
+            elif player.slot == "GK" and player.side != attacking_side:
+                player.target_x = self._defending_goal_x(player.side) + self._side_forward_sign(player.side) * 0.8
+                player.target_y = PITCH_WIDTH / 2
+                self._set_render_state(player, "restart", "penalty_keeper")
+            else:
+                arc_x = spot_x - self._side_forward_sign(attacking_side) * 9.5
+                player.target_x = clamp(arc_x + ((player.home_y - PITCH_WIDTH / 2) * 0.05), 2, PITCH_LENGTH - 2)
+                player.target_y = clamp(player.home_y, 8.0, PITCH_WIDTH - 8.0)
+                self._set_render_state(player, "restart", "penalty_wait")
+        self.add_event(f"Penalty to {self._team_state(attacking_side).name}")
+
+    def _execute_penalty(self) -> None:
+        side = self.state.restart_side or "home"
+        taker = self.find_player(self.state.restart_taker_id) or max(self.teammates(side), key=lambda p: p.profile.attributes["finishing"])
+        keeper = self._goalkeeper("away" if side == "home" else "home")
+        self.state.restart_mode = None
+        self.state.restart_timer = 0.0
+        self.state.restart_side = None
+        self.state.restart_taker_id = None
+        taker_score = (
+            taker.profile.attributes["finishing"] * 0.42
+            + taker.profile.attributes["composure"] * 0.26
+            + taker.profile.attributes["decisions"] * 0.12
+        )
+        keeper_score = (
+            keeper.profile.attributes.get("reflexes", keeper.profile.attributes["positioning"]) * 0.38
+            + keeper.profile.attributes.get("one_on_ones", keeper.profile.attributes["positioning"]) * 0.24
+            + keeper.profile.attributes["positioning"] * 0.18
+        )
+        chance = 0.58 + (taker_score - keeper_score) / 260.0
+        if self.rng.random() < clamp(chance, 0.42, 0.86):
+            if side == "home":
+                self.state.home_score += 1
+            else:
+                self.state.away_score += 1
+            self.add_event(f"GOAL! {taker.short_name} scores the penalty")
+            self._start_goal_celebration(taker)
+            return
+        if self.rng.random() < 0.72:
+            self._give_ball_to(keeper, note=f"{keeper.short_name} saves the penalty", action_type="recovery")
+            return
+        self._start_goal_kick_setup("away" if side == "home" else "home", shot_out_position=(self._attacking_goal_x(side) + self._side_forward_sign(side) * 2.0, PITCH_WIDTH / 2))
+
+    def _commit_foul(self, offender: PlayerState, fouled: PlayerState, foul_spot: Tuple[float, float], severity: float) -> bool:
+        attacking_side = fouled.side
+        defending_side = offender.side
+        offender.fouls_committed += 1
+        fouled.fouls_suffered += 1
+        if attacking_side == "home":
+            self.state.fouls_count_home += 1
+        else:
+            self.state.fouls_count_away += 1
+        card = self._foul_card_color(offender, foul_spot, attacking_side, severity)
+        if card:
+            self._card_event(offender, card)
+        self.add_event(f"Foul by {offender.short_name}")
+        taker_pool = [p for p in self.teammates(attacking_side) if not p.red_card]
+        taker = fouled if not fouled.red_card else max(taker_pool, key=lambda p: p.profile.attributes["passing"])
+        if self._is_in_penalty_area(defending_side, foul_spot[0], foul_spot[1]) and attacking_side != defending_side:
+            taker = max(taker_pool, key=lambda p: p.profile.attributes["finishing"] + p.profile.attributes["composure"])
+            self._start_penalty_setup(attacking_side, taker)
+            return True
+        self._start_direct_free_kick_setup(attacking_side, foul_spot[0], foul_spot[1], taker, fouled)
+        return True
 
     def _should_flag_offside(self, carrier: PlayerState, receiver: PlayerState, pass_type: str, check_x: float) -> bool:
         sign = self._side_forward_sign(carrier.side)
@@ -888,6 +1166,16 @@ class MatchEngine:
 
     def _move_players(self) -> None:
         for p in self.home.xi + self.away.xi:
+            if p.red_card:
+                p.x = -10.0
+                p.y = -10.0
+                p.prev_x = -10.0
+                p.prev_y = -10.0
+                p.target_x = -10.0
+                p.target_y = -10.0
+                p.vx = 0.0
+                p.vy = 0.0
+                continue
             p.run_commit_timer = max(0.0, p.run_commit_timer - SLICE_SECONDS)
             if p.run_commit_timer <= 0.0 and p.commit_target_x is not None and p.commit_target_y is not None:
                 p.commit_target_x = None
@@ -1519,6 +1807,12 @@ class MatchEngine:
         elif self.state.restart_mode == "offside_restart_setup":
             self._snap_players_to_targets()
             self._execute_offside_restart()
+        elif self.state.restart_mode == "direct_free_kick_setup":
+            self._snap_players_to_targets()
+            self._execute_direct_free_kick()
+        elif self.state.restart_mode == "penalty_setup":
+            self._snap_players_to_targets()
+            self._execute_penalty()
 
     def _start_kickoff_setup(self, kickoff_side: str, opening: bool = False, immediate: bool = False) -> None:
         if immediate:
@@ -1761,6 +2055,8 @@ class MatchEngine:
         self.state.celebration_scorer_id = None
         self.state.pending_kickoff_side = None
         self.state.goal_banner_text = None
+        self.state.restart_taker_id = None
+        self.state.fouled_player_id = None
         self.state.ball.pass_type = "short_ground"
         self.state.ball.shot_outcome = None
         for team in (self.home, self.away):
@@ -1780,6 +2076,10 @@ class MatchEngine:
                 p.run_commit_timer = 0.0
                 p.commit_target_x = None
                 p.commit_target_y = None
+                p.yellow_cards = 0
+                p.red_card = False
+                p.fouls_committed = 0
+                p.fouls_suffered = 0
                 p.fatigue = max(0.0, p.fatigue - 0.3)
 
     def _prepare_players_for_restart_motion(self) -> None:
@@ -1789,6 +2089,8 @@ class MatchEngine:
         self.state.celebration_scorer_id = None
         self.state.pending_kickoff_side = None
         self.state.goal_banner_text = None
+        self.state.restart_taker_id = None
+        self.state.fouled_player_id = None
         self.state.ball.pass_type = "short_ground"
         self.state.ball.shot_outcome = None
         for team in (self.home, self.away):
@@ -2306,6 +2608,8 @@ class MatchEngine:
         self.state.restart_mode = None
         self.state.restart_timer = 0.0
         self.state.restart_side = None
+        self.state.restart_taker_id = None
+        self.state.fouled_player_id = None
         self._register_possession_change(player.side)
         self.state.last_touch_player_id = player.profile.id
         self.state.last_action_type = action_type
@@ -2432,14 +2736,59 @@ class MatchEngine:
             + defender.profile.attributes.get("anticipation", defender.profile.attributes["positioning"]) * 0.12
             + self.rng.uniform(0.0, 12.0)
         )
+        if defender.yellow_cards >= 1:
+            defender_score -= 2.0
         margin = carrier_score - defender_score
+        pressure = self._pressure_on_player(carrier)
+        near_touchline = carrier.y < 6.8 or carrier.y > (PITCH_WIDTH - 6.8)
+        foul_chance = (
+            0.08
+            + (defender.profile.attributes.get("aggression", 60.0) - 50.0) / 180.0
+            + defender.profile.attributes["tackling"] / 420.0
+            - defender.profile.attributes["decisions"] / 520.0
+            + defender.fatigue / 220.0
+            + pressure * 0.14
+            + self._event_frequency_boost("foul") * 0.06
+        )
+        if near_touchline:
+            foul_chance -= 0.08
+        if defender.yellow_cards >= 1:
+            foul_chance -= 0.06
+        foul_spot = ((carrier.x + defender.x) / 2, (carrier.y + defender.y) / 2)
+        severity = clamp(
+            0.18
+            + max(0.0, -margin) / 22.0
+            + pressure * 0.24
+            + defender.profile.attributes.get("aggression", 60.0) / 240.0
+            + defender.fatigue / 260.0,
+            0.10,
+            0.98,
+        )
+        touchline_spill_chance = clamp(
+            0.34
+            + self._event_frequency_boost("throw_in") * 0.18
+            + max(0.0, -margin) / 95.0
+            + pressure * 0.08
+            - severity * 0.16,
+            0.0,
+            0.88,
+        )
+        if near_touchline and severity < 0.72 and self.rng.random() < touchline_spill_chance:
+            out_y = -0.8 if carrier.y < (PITCH_WIDTH / 2) else (PITCH_WIDTH + 0.8)
+            out_x = clamp((carrier.x + defender.x) / 2, 1.0, PITCH_LENGTH - 1.0)
+            self.state.last_touch_player_id = defender.profile.id
+            self._handle_ball_out(defender.side, out_x, out_y)
+            return
+        if self.rng.random() < clamp(foul_chance + max(0.0, -margin) / 80.0, 0.04, 0.42):
+            self._commit_foul(defender, carrier, foul_spot, severity)
+            return
         if margin > 10.0:
             self._give_ball_to(carrier, note=f"{carrier.short_name} rides the challenge", action_type="dribble")
             carrier.control_cooldown = 0.22
             return
         ball.mode = "loose"
         ball.carrier_id = None
-        if (carrier.y < 6.5 or carrier.y > (PITCH_WIDTH - 6.5)) and self.rng.random() < clamp(0.52 + self._event_frequency_boost("throw_in") * 0.20, 0.36, 0.90):
+        if near_touchline and self.rng.random() < clamp(0.52 + self._event_frequency_boost("throw_in") * 0.20, 0.36, 0.90):
             out_y = -0.8 if carrier.y < (PITCH_WIDTH / 2) else (PITCH_WIDTH + 0.8)
             out_x = clamp((carrier.x + defender.x) / 2, 1.0, PITCH_LENGTH - 1.0)
             self.state.last_touch_player_id = defender.profile.id

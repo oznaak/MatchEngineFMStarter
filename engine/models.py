@@ -49,6 +49,10 @@ class PlayerState:
     run_commit_timer: float = 0.0
     commit_target_x: Optional[float] = None
     commit_target_y: Optional[float] = None
+    yellow_cards: int = 0
+    red_card: bool = False
+    fouls_committed: int = 0
+    fouls_suffered: int = 0
 
     def __post_init__(self) -> None:
         self.prev_x = self.x
@@ -146,3 +150,12 @@ class MatchState:
     throw_ins_count: int = 0
     corners_count: int = 0
     offsides_count: int = 0
+    fouls_count_home: int = 0
+    fouls_count_away: int = 0
+    yellow_cards_home: int = 0
+    yellow_cards_away: int = 0
+    red_cards_home: int = 0
+    red_cards_away: int = 0
+    referee_strictness: float = 52.0
+    restart_taker_id: Optional[str] = None
+    fouled_player_id: Optional[str] = None
