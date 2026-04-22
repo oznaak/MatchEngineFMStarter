@@ -16,6 +16,44 @@ def current_stamina_from_fatigue(fatigue: float) -> float:
     return max(0.0, min(100.0, 100.0 - fatigue * 3.0))
 
 
+def default_team_match_stats() -> Dict[str, float]:
+    return {
+        "possession_seconds": 0.0,
+        "shots_on_target": 0.0,
+        "shots_off_target": 0.0,
+        "passes_attempted": 0.0,
+        "passes_completed": 0.0,
+        "corners": 0.0,
+        "offsides": 0.0,
+        "fouls": 0.0,
+        "yellow_cards": 0.0,
+        "red_cards": 0.0,
+    }
+
+
+def default_player_match_stats() -> Dict[str, float]:
+    return {
+        "minutes": 0.0,
+        "goals": 0.0,
+        "assists": 0.0,
+        "shots_on_target": 0.0,
+        "shots_off_target": 0.0,
+        "passes_attempted": 0.0,
+        "passes_completed": 0.0,
+        "tackles": 0.0,
+        "interceptions": 0.0,
+        "clearances": 0.0,
+        "fouls_committed": 0.0,
+        "fouls_suffered": 0.0,
+        "dribbles_completed": 0.0,
+        "duels_total": 0.0,
+        "duels_won": 0.0,
+        "yellow_cards": 0.0,
+        "red_cards": 0.0,
+        "rating": 6.8,
+    }
+
+
 @dataclass
 class PlayerProfile:
     id: str
@@ -34,6 +72,18 @@ class Club:
     tactics: Dict[str, float] = field(default_factory=dict)
     colors: Dict[str, str] = field(default_factory=dict)
     badge: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def badge_id(self) -> str:
+        return str(self.badge.get("id", "1"))
+
+    @property
+    def badge_primary(self) -> str:
+        return str(self.badge.get("primary", self.colors.get("primary", "#2E3A6A")))
+
+    @property
+    def badge_secondary(self) -> str:
+        return str(self.badge.get("secondary", self.colors.get("secondary", "#F5F5F5")))
 
 
 @dataclass
@@ -178,3 +228,7 @@ class MatchState:
     player_goals: Dict[str, int] = field(default_factory=dict)
     player_assists: Dict[str, int] = field(default_factory=dict)
     assist_candidate_id: Optional[str] = None
+    team_match_stats: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {"home": default_team_match_stats(), "away": default_team_match_stats()}
+    )
+    player_match_stats: Dict[str, Dict[str, float]] = field(default_factory=dict)

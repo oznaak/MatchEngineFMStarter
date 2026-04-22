@@ -18,9 +18,12 @@ from .models import Club, MatchState, PlayerProfile, current_stamina_from_fatigu
 POST_MATCH_RECOVERY = 10.0
 
 
-def _daily_recovery(profile: PlayerProfile) -> float:
+def _daily_recovery(profile: PlayerProfile, current_stamina: float) -> float:
     natural_stamina = profile.attributes.get("stamina", 70.0)
-    return 1.6 + natural_stamina / 42.0
+    deficit = max(0.0, 100.0 - current_stamina)
+    base_recovery = 0.45 + natural_stamina / 160.0
+    deficit_factor = max(0.22, min(1.0, deficit / 35.0))
+    return base_recovery * deficit_factor
 
 
 def load_condition_state(path: Path, clubs: Dict[str, Club]) -> int:
@@ -61,11 +64,15 @@ def advance_condition_days(clubs: Dict[str, Club], days: int) -> None:
         return
     for club in clubs.values():
         for player in club.players:
-            player.current_stamina = min(100.0, player.current_stamina + _daily_recovery(player) * days)
+            for _ in range(days):
+                player.current_stamina = min(
+                    100.0,
+                    player.current_stamina + _daily_recovery(player, player.current_stamina),
+                )
 
 
 def apply_post_match_condition(state: MatchState) -> None:
     participants = state.home.xi + state.away.xi
     for player in participants:
         final_stamina = current_stamina_from_fatigue(player.fatigue)
-        player.profile.current_stamina = min(100.0, final_stamina + POST_MATCH_RECOVERY)
+        player.profile.current_stamina = min(100.0, final_stamina + 6.0)

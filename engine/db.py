@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List
 
@@ -34,6 +35,11 @@ DEFAULT_LEAGUE = {
     "id": "ENG1",
     "name": "England Division I",
 }
+
+SEASON_START_MONTH = 7
+SEASON_START_DAY = 7
+FIRST_MATCH_MONTH = 8
+FIRST_MATCH_DAY = 15
 
 BADGE_TEMPLATES = {
     "1": {
@@ -72,6 +78,7 @@ DEFAULT_APP_OPTIONS = {
     "bind_speed_x1": "1",
     "bind_speed_x2": "2",
     "bind_speed_x4": "4",
+    "bind_speed_x8": "8",
 }
 
 DEFAULT_OPTION_CHOICES = {
@@ -116,6 +123,11 @@ DEFAULT_OPTION_CHOICES = {
         ("4", "4", 1),
         ("e", "E", 2),
         ("c", "C", 3),
+    ],
+    "bind_speed_x8": [
+        ("8", "8", 1),
+        ("r", "R", 2),
+        ("v", "V", 3),
     ],
 }
 
@@ -240,11 +252,13 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             save_id INTEGER NOT NULL,
             match_day INTEGER NOT NULL,
+            fixture_date TEXT,
             home_club_id TEXT NOT NULL,
             away_club_id TEXT NOT NULL,
             played INTEGER NOT NULL DEFAULT 0,
             home_goals INTEGER,
             away_goals INTEGER,
+            report_json TEXT,
             FOREIGN KEY (save_id) REFERENCES saves(id),
             FOREIGN KEY (home_club_id) REFERENCES clubs(id),
             FOREIGN KEY (away_club_id) REFERENCES clubs(id)
@@ -264,6 +278,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _ensure_column(conn, "saves", "season_year", "INTEGER")
+    _ensure_column(conn, "saves", "current_date", "TEXT")
+    _ensure_column(conn, "fixtures", "fixture_date", "TEXT")
+    _ensure_column(conn, "fixtures", "report_json", "TEXT")
+    _backfill_calendar_fields(conn)
     conn.commit()
 
 
@@ -273,6 +292,77 @@ def bootstrap_database(conn: sqlite3.Connection) -> None:
     _ensure_default_league(conn)
     _ensure_default_options(conn)
     conn.commit()
+
+
+def current_season_year() -> int:
+    return date.today().year
+
+
+def season_start_date(year: int) -> date:
+    return date(year, SEASON_START_MONTH, SEASON_START_DAY)
+
+
+def first_match_date(year: int) -> date:
+    return date(year, FIRST_MATCH_MONTH, FIRST_MATCH_DAY)
+
+
+def format_game_date(date_text: str | None) -> str:
+    if not date_text:
+        return ""
+    return date.fromisoformat(date_text).strftime("%d %b %Y").upper()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    names = {str(row["name"]) for row in rows}
+    if column not in names:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _backfill_calendar_fields(conn: sqlite3.Connection) -> None:
+    save_rows = conn.execute(
+        """
+        SELECT id, current_day, season_year, current_date, created_at
+        FROM saves
+        """
+    ).fetchall()
+    year_by_save: Dict[int, int] = {}
+    for row in save_rows:
+        save_id = int(row["id"])
+        season_year = int(row["season_year"]) if row["season_year"] is not None else 0
+        if season_year <= 0:
+            created_at = str(row["created_at"] or "")
+            if len(created_at) >= 4 and created_at[:4].isdigit():
+                season_year = int(created_at[:4])
+            else:
+                season_year = current_season_year()
+            conn.execute("UPDATE saves SET season_year = ? WHERE id = ?", (season_year, save_id))
+        year_by_save[save_id] = season_year
+        if not row["current_date"]:
+            current_day = int(row["current_day"] or 0)
+            current_date = season_start_date(season_year) + timedelta(days=current_day)
+            conn.execute(
+                "UPDATE saves SET current_date = ? WHERE id = ?",
+                (current_date.isoformat(), save_id),
+            )
+
+    fixture_rows = conn.execute(
+        """
+        SELECT id, save_id, match_day, fixture_date
+        FROM fixtures
+        """
+    ).fetchall()
+    for row in fixture_rows:
+        if row["fixture_date"]:
+            continue
+        save_id = int(row["save_id"])
+        match_day = int(row["match_day"])
+        season_year = year_by_save.get(save_id, current_season_year())
+        fixture_date = first_match_date(season_year) + timedelta(days=(match_day - 1) * 7)
+        conn.execute(
+            "UPDATE fixtures SET fixture_date = ? WHERE id = ?",
+            (fixture_date.isoformat(), int(row["id"])),
+        )
 
 
 def _ensure_default_badges(conn: sqlite3.Connection) -> None:
@@ -642,17 +732,19 @@ def list_save_games(conn: sqlite3.Connection) -> List[dict]:
 
 
 def create_save_game(conn: sqlite3.Connection, manager_name: str, league_id: str, club_id: str) -> int:
+    season_year = current_season_year()
+    start_date = season_start_date(season_year)
     cursor = conn.execute("INSERT INTO managers (name) VALUES (?)", (manager_name.strip(),))
     manager_id = int(cursor.lastrowid)
     cursor = conn.execute(
         """
-        INSERT INTO saves (manager_id, league_id, club_id, current_day)
-        VALUES (?, ?, ?, 0)
+        INSERT INTO saves (manager_id, league_id, club_id, current_day, season_year, current_date)
+        VALUES (?, ?, ?, 0, ?, ?)
         """,
-        (manager_id, league_id, club_id),
+        (manager_id, league_id, club_id, season_year, start_date.isoformat()),
     )
     save_id = int(cursor.lastrowid)
-    _seed_fixtures_for_save(conn, save_id, league_id)
+    _seed_fixtures_for_save(conn, save_id, league_id, season_year)
     set_metadata(conn, "active_save_id", str(save_id))
     conn.commit()
     return save_id
@@ -697,7 +789,8 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
 def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     save_row = conn.execute(
         """
-        SELECT s.id, s.current_day, m.name AS manager_name, l.id AS league_id, l.name AS league_name,
+        SELECT s.id, s.current_day, s.current_date, s.season_year,
+               m.name AS manager_name, l.id AS league_id, l.name AS league_name,
                c.id AS club_id, c.name AS club_name
         FROM saves s
         JOIN managers m ON m.id = s.manager_id
@@ -714,9 +807,14 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     clubs = list_league_clubs(conn, league_id)
     players_by_club = {club["id"]: list_club_players(conn, club["id"]) for club in clubs}
     next_fixture = get_next_fixture_for_save(conn, save_id, club_id)
+    current_date = str(save_row["current_date"] or season_start_date(int(save_row["season_year"] or current_season_year())).isoformat())
+    today_fixture = get_playable_fixture_for_save(conn, save_id, club_id, current_date)
     return {
         "save_id": int(save_row["id"]),
         "current_day": int(save_row["current_day"]),
+        "current_date": current_date,
+        "current_date_label": format_game_date(current_date),
+        "season_year": int(save_row["season_year"] or current_season_year()),
         "manager_name": str(save_row["manager_name"]),
         "league_id": league_id,
         "league_name": str(save_row["league_name"]),
@@ -727,19 +825,20 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
         "standings": load_save_standings(conn, save_id),
         "fixtures": list_save_fixtures(conn, save_id),
         "next_fixture": next_fixture,
+        "today_fixture": today_fixture,
     }
 
 
 def list_save_fixtures(conn: sqlite3.Connection, save_id: int) -> List[dict]:
     rows = conn.execute(
         """
-        SELECT f.id, f.match_day, hc.name AS home_name, ac.name AS away_name,
-               f.played, f.home_goals, f.away_goals
+        SELECT f.id, f.match_day, f.fixture_date, hc.name AS home_name, ac.name AS away_name,
+               f.played, f.home_goals, f.away_goals, f.report_json
         FROM fixtures f
         JOIN clubs hc ON hc.id = f.home_club_id
         JOIN clubs ac ON ac.id = f.away_club_id
         WHERE f.save_id = ?
-        ORDER BY f.match_day, f.id
+        ORDER BY f.fixture_date, f.id
         """,
         (save_id,),
     ).fetchall()
@@ -747,11 +846,14 @@ def list_save_fixtures(conn: sqlite3.Connection, save_id: int) -> List[dict]:
         {
             "id": int(row["id"]),
             "match_day": int(row["match_day"]),
+            "fixture_date": str(row["fixture_date"] or ""),
+            "fixture_date_label": format_game_date(str(row["fixture_date"] or "")),
             "home_name": str(row["home_name"]),
             "away_name": str(row["away_name"]),
             "played": bool(row["played"]),
             "home_goals": None if row["home_goals"] is None else int(row["home_goals"]),
             "away_goals": None if row["away_goals"] is None else int(row["away_goals"]),
+            "has_report": bool(row["report_json"]),
         }
         for row in rows
     ]
@@ -760,14 +862,15 @@ def list_save_fixtures(conn: sqlite3.Connection, save_id: int) -> List[dict]:
 def get_next_fixture_for_save(conn: sqlite3.Connection, save_id: int, club_id: str) -> dict | None:
     row = conn.execute(
         """
-        SELECT f.id, f.match_day, f.home_club_id, f.away_club_id, hc.name AS home_name, ac.name AS away_name
+        SELECT f.id, f.match_day, f.fixture_date, f.home_club_id, f.away_club_id,
+               hc.name AS home_name, ac.name AS away_name
         FROM fixtures f
         JOIN clubs hc ON hc.id = f.home_club_id
         JOIN clubs ac ON ac.id = f.away_club_id
         WHERE f.save_id = ?
           AND f.played = 0
           AND (f.home_club_id = ? OR f.away_club_id = ?)
-        ORDER BY f.match_day, f.id
+        ORDER BY f.fixture_date, f.id
         LIMIT 1
         """,
         (save_id, club_id, club_id),
@@ -777,6 +880,39 @@ def get_next_fixture_for_save(conn: sqlite3.Connection, save_id: int, club_id: s
     return {
         "id": int(row["id"]),
         "match_day": int(row["match_day"]),
+        "fixture_date": str(row["fixture_date"] or ""),
+        "fixture_date_label": format_game_date(str(row["fixture_date"] or "")),
+        "home_club_id": str(row["home_club_id"]),
+        "away_club_id": str(row["away_club_id"]),
+        "home_name": str(row["home_name"]),
+        "away_name": str(row["away_name"]),
+    }
+
+
+def get_playable_fixture_for_save(conn: sqlite3.Connection, save_id: int, club_id: str, current_date: str) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT f.id, f.match_day, f.fixture_date, f.home_club_id, f.away_club_id,
+               hc.name AS home_name, ac.name AS away_name
+        FROM fixtures f
+        JOIN clubs hc ON hc.id = f.home_club_id
+        JOIN clubs ac ON ac.id = f.away_club_id
+        WHERE f.save_id = ?
+          AND f.played = 0
+          AND (f.home_club_id = ? OR f.away_club_id = ?)
+          AND f.fixture_date <= ?
+        ORDER BY f.fixture_date, f.id
+        LIMIT 1
+        """,
+        (save_id, club_id, club_id, current_date),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "match_day": int(row["match_day"]),
+        "fixture_date": str(row["fixture_date"] or ""),
+        "fixture_date_label": format_game_date(str(row["fixture_date"] or "")),
         "home_club_id": str(row["home_club_id"]),
         "away_club_id": str(row["away_club_id"]),
         "home_name": str(row["home_name"]),
@@ -787,7 +923,7 @@ def get_next_fixture_for_save(conn: sqlite3.Connection, save_id: int, club_id: s
 def list_matchday_fixtures(conn: sqlite3.Connection, save_id: int, match_day: int) -> List[dict]:
     rows = conn.execute(
         """
-        SELECT id, home_club_id, away_club_id
+        SELECT id, fixture_date, home_club_id, away_club_id
         FROM fixtures
         WHERE save_id = ? AND match_day = ?
         ORDER BY id
@@ -797,6 +933,7 @@ def list_matchday_fixtures(conn: sqlite3.Connection, save_id: int, match_day: in
     return [
         {
             "id": int(row["id"]),
+            "fixture_date": str(row["fixture_date"] or ""),
             "home_club_id": str(row["home_club_id"]),
             "away_club_id": str(row["away_club_id"]),
         }
@@ -809,27 +946,52 @@ def save_fixture_result(
     fixture_id: int,
     home_goals: int,
     away_goals: int,
+    report: dict | None = None,
 ) -> None:
     conn.execute(
         """
         UPDATE fixtures
         SET played = 1,
             home_goals = ?,
-            away_goals = ?
+            away_goals = ?,
+            report_json = ?
         WHERE id = ?
         """,
-        (int(home_goals), int(away_goals), int(fixture_id)),
+        (
+            int(home_goals),
+            int(away_goals),
+            json.dumps(report, separators=(",", ":"), ensure_ascii=True) if report is not None else None,
+            int(fixture_id),
+        ),
     )
 
 
+def get_fixture_report(conn: sqlite3.Connection, fixture_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT report_json FROM fixtures WHERE id = ?",
+        (int(fixture_id),),
+    ).fetchone()
+    if row is None or not row["report_json"]:
+        return None
+    try:
+        return json.loads(str(row["report_json"]))
+    except json.JSONDecodeError:
+        return None
+
+
 def set_save_current_day(conn: sqlite3.Connection, save_id: int, current_day: int) -> None:
+    row = conn.execute("SELECT season_year FROM saves WHERE id = ?", (int(save_id),)).fetchone()
+    if row is None:
+        return
+    season_year = int(row["season_year"] or current_season_year())
+    current_date = season_start_date(season_year) + timedelta(days=int(current_day))
     conn.execute(
         """
         UPDATE saves
-        SET current_day = ?
+        SET current_day = ?, current_date = ?
         WHERE id = ?
         """,
-        (int(current_day), int(save_id)),
+        (int(current_day), current_date.isoformat(), int(save_id)),
     )
 
 
@@ -903,7 +1065,7 @@ def load_save_standings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
     return standings
 
 
-def _seed_fixtures_for_save(conn: sqlite3.Connection, save_id: int, league_id: str) -> None:
+def _seed_fixtures_for_save(conn: sqlite3.Connection, save_id: int, league_id: str, season_year: int) -> None:
     club_rows = conn.execute(
         """
         SELECT club_id
@@ -915,15 +1077,18 @@ def _seed_fixtures_for_save(conn: sqlite3.Connection, save_id: int, league_id: s
     ).fetchall()
     club_ids = [str(row["club_id"]) for row in club_rows]
     match_day = 1
-    fixture_rows: List[tuple[int, int, str, str]] = []
+    fixture_rows: List[tuple[int, int, str, str, str]] = []
+    match_date = first_match_date(season_year)
+    matches_per_round = max(1, len(club_ids) // 2)
     for home_id, away_id in _generate_double_round_robin(club_ids):
-        fixture_rows.append((save_id, match_day, home_id, away_id))
-        if len(fixture_rows) % (max(1, len(club_ids) // 2)) == 0:
+        fixture_rows.append((save_id, match_day, match_date.isoformat(), home_id, away_id))
+        if len(fixture_rows) % matches_per_round == 0:
             match_day += 1
+            match_date += timedelta(days=7)
     conn.executemany(
         """
-        INSERT INTO fixtures (save_id, match_day, home_club_id, away_club_id)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO fixtures (save_id, match_day, fixture_date, home_club_id, away_club_id)
+        VALUES (?, ?, ?, ?, ?)
         """,
         fixture_rows,
     )

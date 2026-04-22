@@ -5,7 +5,17 @@ import random
 from typing import Dict, List, Optional, Tuple
 
 from .loader import FORMATION_433, pick_best_xi
-from .models import BallState, Club, MatchEvent, MatchState, PlayerProfile, PlayerState, TeamState, fatigue_from_current_stamina
+from .models import (
+    BallState,
+    Club,
+    MatchEvent,
+    MatchState,
+    PlayerProfile,
+    PlayerState,
+    TeamState,
+    default_player_match_stats,
+    fatigue_from_current_stamina,
+)
 
 PITCH_LENGTH = 105.0
 PITCH_WIDTH = 68.0
@@ -119,6 +129,7 @@ class MatchEngine:
         )
         self.state.referee_strictness = self.rng.uniform(46.0, 54.0)
         self._time_accumulator = 0.0
+        self._init_match_stats()
         self._kickoff()
 
     def set_speed(self, multiplier: float) -> None:
@@ -176,6 +187,52 @@ class MatchEngine:
         self._setup_pre_match_presentation()
         self.add_event(f"{self.home.name} vs {self.away.name}")
         self._derive_match_context()
+
+    def _init_match_stats(self) -> None:
+        for profile in self.home.club.players + self.away.club.players:
+            self.state.player_match_stats[profile.id] = default_player_match_stats()
+
+    def _team_match_stats(self, side: str) -> Dict[str, float]:
+        return self.state.team_match_stats["home" if side == "home" else "away"]
+
+    def _player_match_stats(self, player_or_id: PlayerState | str) -> Dict[str, float]:
+        player_id = player_or_id.profile.id if isinstance(player_or_id, PlayerState) else player_or_id
+        if player_id not in self.state.player_match_stats:
+            self.state.player_match_stats[player_id] = default_player_match_stats()
+        return self.state.player_match_stats[player_id]
+
+    def _record_live_stats_slice(self) -> None:
+        self._team_match_stats(self.state.possession)["possession_seconds"] += SLICE_SECONDS
+        for player in self.home.xi + self.away.xi:
+            if player.red_card:
+                continue
+            self._player_match_stats(player)["minutes"] += SLICE_SECONDS / 60.0
+
+    def _record_pass_attempt(self, passer: PlayerState) -> None:
+        self._team_match_stats(passer.side)["passes_attempted"] += 1.0
+        self._player_match_stats(passer)["passes_attempted"] += 1.0
+
+    def _record_completed_pass(self, passer: Optional[PlayerState]) -> None:
+        if not passer:
+            return
+        self._team_match_stats(passer.side)["passes_completed"] += 1.0
+        self._player_match_stats(passer)["passes_completed"] += 1.0
+
+    def _record_shot(self, shooter: PlayerState, on_target: bool) -> None:
+        team_stats = self._team_match_stats(shooter.side)
+        player_stats = self._player_match_stats(shooter)
+        if on_target:
+            team_stats["shots_on_target"] += 1.0
+            player_stats["shots_on_target"] += 1.0
+        else:
+            team_stats["shots_off_target"] += 1.0
+            player_stats["shots_off_target"] += 1.0
+
+    def _record_goal(self, scorer: PlayerState) -> None:
+        self._player_match_stats(scorer)["goals"] += 1.0
+
+    def _record_assist(self, assister: PlayerState) -> None:
+        self._player_match_stats(assister)["assists"] += 1.0
 
     def start_match_flow(self) -> bool:
         if not self.state.awaiting_start or self.state.is_finished:
@@ -239,6 +296,7 @@ class MatchEngine:
 
         self.state.real_elapsed_seconds += SLICE_SECONDS
         self._update_match_clock()
+        self._record_live_stats_slice()
 
         if was_first_half and self.state.real_elapsed_seconds >= HALF_REAL_SECONDS:
             self._start_halftime_break()
@@ -848,6 +906,8 @@ class MatchEngine:
                 self.state.yellow_cards_home += 1
             else:
                 self.state.yellow_cards_away += 1
+            self._team_match_stats(offender.side)["yellow_cards"] += 1.0
+            self._player_match_stats(offender)["yellow_cards"] += 1.0
             self.add_event(f"Yellow card for {offender.short_name}")
             if offender.yellow_cards >= 2:
                 self._card_event(offender, "red")
@@ -867,6 +927,8 @@ class MatchEngine:
             self.state.red_cards_home += 1
         else:
             self.state.red_cards_away += 1
+        self._team_match_stats(offender.side)["red_cards"] += 1.0
+        self._player_match_stats(offender)["red_cards"] += 1.0
         self.add_event(f"Red card for {offender.short_name}")
 
     def _foul_card_color(self, offender: PlayerState, foul_spot: Tuple[float, float], attacking_side: str, severity: float) -> Optional[str]:
@@ -1069,7 +1131,9 @@ class MatchEngine:
         )
         chance = 0.58 + (taker_score - keeper_score) / 260.0
         if self.rng.random() < clamp(chance, 0.42, 0.86):
+            self._record_shot(taker, True)
             self.state.player_goals[taker.profile.id] = self.state.player_goals.get(taker.profile.id, 0) + 1
+            self._record_goal(taker)
             if side == "home":
                 self.state.home_score += 1
             else:
@@ -1078,8 +1142,10 @@ class MatchEngine:
             self._start_goal_celebration(taker)
             return
         if self.rng.random() < 0.72:
+            self._record_shot(taker, True)
             self._give_ball_to(keeper, note=f"{keeper.short_name} saves the penalty", action_type="recovery")
             return
+        self._record_shot(taker, False)
         self._start_goal_kick_setup("away" if side == "home" else "home", shot_out_position=(self._attacking_goal_x(side) + self._side_forward_sign(side) * 2.0, PITCH_WIDTH / 2))
 
     def _commit_foul(self, offender: PlayerState, fouled: PlayerState, foul_spot: Tuple[float, float], severity: float) -> bool:
@@ -1091,6 +1157,9 @@ class MatchEngine:
             self.state.fouls_count_home += 1
         else:
             self.state.fouls_count_away += 1
+        self._team_match_stats(attacking_side)["fouls"] += 1.0
+        self._player_match_stats(offender)["fouls_committed"] += 1.0
+        self._player_match_stats(fouled)["fouls_suffered"] += 1.0
         card = self._foul_card_color(offender, foul_spot, attacking_side, severity)
         if card:
             self._card_event(offender, card)
@@ -1627,6 +1696,9 @@ class MatchEngine:
                         return True
                 interceptor.x = lerp(interceptor.x, ball.x, 0.35)
                 interceptor.y = lerp(interceptor.y, ball.y, 0.35)
+                self._player_match_stats(interceptor)["interceptions"] += 1.0
+                if self._goal_distance(interceptor) < 26.0:
+                    self._player_match_stats(interceptor)["clearances"] += 1.0
                 self._give_ball_to(interceptor, note=f"{interceptor.short_name} intercepts", action_type="interception")
                 return True
         return False
@@ -1682,10 +1754,12 @@ class MatchEngine:
                     return True
             outcome = self._resolve_first_touch(receiver, nearest_opp)
             if outcome == "clean":
+                self._record_completed_pass(self.find_player(ball.lead_player_id))
                 self._settle_ball_for_reception(receiver)
                 self._give_ball_to(receiver, note=f"{receiver.short_name} receives", action_type="pass")
                 receiver.control_cooldown = max(receiver.control_cooldown, 0.36)
             elif outcome == "slowed":
+                self._record_completed_pass(self.find_player(ball.lead_player_id))
                 self._settle_ball_for_reception(receiver)
                 self._give_ball_to(receiver, note=f"{receiver.short_name} cushions it", action_type="pass")
                 receiver.control_cooldown = 0.44
@@ -1755,6 +1829,7 @@ class MatchEngine:
             if outcome in ("clean", "slowed"):
                 if passer and passer.side == receiver.side:
                     self.state.assist_candidate_id = passer.profile.id
+                self._record_completed_pass(passer)
                 self._settle_ball_for_reception(receiver)
                 self._give_ball_to(receiver, note=f"{receiver.short_name} collects", action_type="pass")
                 if outcome == "slowed":
@@ -1784,11 +1859,13 @@ class MatchEngine:
         self.state.ball.shot_outcome = None
         if outcome == "goal":
             self.state.player_goals[shooter.profile.id] = self.state.player_goals.get(shooter.profile.id, 0) + 1
+            self._record_goal(shooter)
             assister_id = self.state.assist_candidate_id
             if assister_id and assister_id != shooter.profile.id:
                 assister = self.find_player(assister_id)
                 if assister and assister.side == shooter.side:
                     self.state.player_assists[assister_id] = self.state.player_assists.get(assister_id, 0) + 1
+                    self._record_assist(assister)
             if shooter.side == "home":
                 self.state.home_score += 1
             else:
@@ -2158,10 +2235,6 @@ class MatchEngine:
                 p.run_commit_timer = 0.0
                 p.commit_target_x = None
                 p.commit_target_y = None
-                p.yellow_cards = 0
-                p.red_card = False
-                p.fouls_committed = 0
-                p.fouls_suffered = 0
 
     def _prepare_players_for_restart_motion(self) -> None:
         self.state.recent_turnover_seconds = 0.0
@@ -2216,6 +2289,7 @@ class MatchEngine:
         self.state.restart_timer = OFFSIDE_SETUP_SECONDS
         self.state.restart_side = defending_side
         self.state.offsides_count += 1
+        self._team_match_stats("away" if defending_side == "home" else "home")["offsides"] += 1.0
         x = clamp(x, 5.0, PITCH_LENGTH - 5.0)
         y = clamp(y, 5.0, PITCH_WIDTH - 5.0)
         self._reset_ball_for_restart(x, y)
@@ -2308,6 +2382,7 @@ class MatchEngine:
         self.state.restart_timer = CORNER_SETUP_SECONDS
         self.state.restart_side = attacking_side
         self.state.corners_count += 1
+        self._team_match_stats(attacking_side)["corners"] += 1.0
         x = 0.5 if self._attacking_goal_x(attacking_side) == 0.0 else PITCH_LENGTH - 0.5
         y = 0.5 if y < PITCH_WIDTH / 2 else PITCH_WIDTH - 0.5
         self._reset_ball_for_restart(x, y)
@@ -2708,6 +2783,7 @@ class MatchEngine:
     def _start_pass(self, carrier: PlayerState, receiver: PlayerState, label: str, pass_type: str) -> None:
         attrs = carrier.profile.attributes
         recv_attrs = receiver.profile.attributes
+        self._record_pass_attempt(carrier)
         pressure = self._pressure_on_player(carrier)
         recv_space = self._receiver_space(receiver)
         dist = distance((carrier.x, carrier.y), (receiver.x, receiver.y))
@@ -2806,6 +2882,8 @@ class MatchEngine:
         return best_target
 
     def _resolve_duel(self, carrier: PlayerState, defender: PlayerState) -> None:
+        self._player_match_stats(carrier)["duels_total"] += 1.0
+        self._player_match_stats(defender)["duels_total"] += 1.0
         ball = self.state.ball
         carrier_score = (
             carrier.profile.attributes["dribbling"] * 0.35
@@ -2869,6 +2947,8 @@ class MatchEngine:
             self._commit_foul(defender, carrier, foul_spot, severity)
             return
         if margin > 10.0:
+            self._player_match_stats(carrier)["duels_won"] += 1.0
+            self._player_match_stats(carrier)["dribbles_completed"] += 1.0
             self._give_ball_to(carrier, note=f"{carrier.short_name} rides the challenge", action_type="dribble")
             carrier.control_cooldown = 0.22
             return
@@ -2883,6 +2963,10 @@ class MatchEngine:
         ball.x = clamp((carrier.x + defender.x) / 2 + self.rng.uniform(-0.9, 0.9), -2.5, PITCH_LENGTH + 2.5)
         ball.y = clamp((carrier.y + defender.y) / 2 + self.rng.uniform(-0.9, 0.9), -2.5, PITCH_WIDTH + 2.5)
         ball.loose_owner_bias = carrier.side if margin > -6.0 else defender.side
+        self._player_match_stats(defender)["duels_won"] += 1.0
+        self._player_match_stats(defender)["tackles"] += 1.0
+        if self._goal_distance(defender) < 28.0:
+            self._player_match_stats(defender)["clearances"] += 1.0
         self.state.last_touch_player_id = defender.profile.id
         self.state.last_action_type = "recovery"
         self.add_event(f"{defender.short_name} gets a touch")
@@ -2904,6 +2988,7 @@ class MatchEngine:
             - nearest.profile.attributes["positioning"] / 360.0
         )
         if self._success_roll(chance):
+            self._player_match_stats(carrier)["dribbles_completed"] += 1.0
             carrier.target_x = target_x
             carrier.target_y = target_y
             carrier.control_cooldown = 0.28
@@ -2929,6 +3014,7 @@ class MatchEngine:
         defending_side = "away" if carrier.side == "home" else "home"
         keeper = self._goalkeeper(defending_side)
         shot_outcome = self._decide_shot_outcome(carrier, keeper)
+        self._record_shot(carrier, shot_outcome in ("goal", "save", "save_out"))
         if shot_outcome == "save":
             goal_x, target_y = self._keeper_collection_point(keeper, carrier.side)
         elif shot_outcome == "off_target":

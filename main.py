@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pygame
@@ -12,6 +13,7 @@ from engine.db import (
     delete_save_game,
     db_session,
     get_current_day,
+    get_fixture_report,
     get_next_fixture_for_save,
     list_league_clubs,
     list_leagues,
@@ -36,6 +38,7 @@ SPEED_MULTIPLIERS = {
     "X1": 2.0,
     "X2": 2.5,
     "X4": 5.0,
+    "X8": 10.0,
 }
 KEY_BINDINGS = {
     "escape": pygame.K_ESCAPE,
@@ -48,12 +51,15 @@ KEY_BINDINGS = {
     "1": pygame.K_1,
     "2": pygame.K_2,
     "4": pygame.K_4,
+    "8": pygame.K_8,
     "q": pygame.K_q,
     "w": pygame.K_w,
     "e": pygame.K_e,
+    "r": pygame.K_r,
     "z": pygame.K_z,
     "x": pygame.K_x,
     "c": pygame.K_c,
+    "v": pygame.K_v,
 }
 
 
@@ -104,6 +110,8 @@ def run_match_viewer(home_id: str, away_id: str, days: int) -> int:
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and engine.state.is_finished:
+                    running = False
                 elif event.key == pygame.K_SPACE:
                     if not engine.state.awaiting_start and not engine.state.is_finished:
                         paused = not paused
@@ -114,6 +122,9 @@ def run_match_viewer(home_id: str, away_id: str, days: int) -> int:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 action = renderer.handle_click(event.pos)
                 if action == "start":
+                    if engine.state.is_finished:
+                        running = False
+                        continue
                     if engine.start_match_flow():
                         paused = False
                 elif action and action.startswith("speed:"):
@@ -134,6 +145,7 @@ def run_match_viewer(home_id: str, away_id: str, days: int) -> int:
             alpha=engine.slice_progress(),
             speed_label=speed_label,
             clock_seconds=engine.display_clock_seconds(),
+            selected_player_id=engine.home.xi[0].profile.id if engine.home.xi else None,
         )
 
     pygame.quit()
@@ -172,6 +184,9 @@ class ManagerGameApp:
         self.match_condition_saved = False
         self.match_current_day = 0
         self.match_finish_timer = 0.0
+        self.match_selected_player_id: str | None = None
+        self.fixture_report: dict | None = None
+        self.fixture_report_selected_player_id: str | None = None
         self.modal: dict | None = None
         self.options_return_screen: str | None = None
         self.modal_paused_match = False
@@ -193,6 +208,7 @@ class ManagerGameApp:
                     "bind_speed_x1",
                     "bind_speed_x2",
                     "bind_speed_x4",
+                    "bind_speed_x8",
                 )
             }
             self.option_choices["display"] = self.renderer.available_displays()
@@ -265,14 +281,13 @@ class ManagerGameApp:
     def _start_next_match(self) -> None:
         if self.active_save_id is None or not self.overview:
             return
-        fixture = self.overview.get("next_fixture")
+        fixture = self.overview.get("today_fixture")
         if not fixture:
             return
         with db_session(self.db_path) as conn:
             bootstrap_database(conn)
             clubs = load_clubs_from_db(conn)
-            current_day = get_current_day(conn)
-        current_day = load_condition_state(self.db_path, clubs)
+        load_condition_state(self.db_path, clubs)
         home_id = fixture["home_club_id"]
         away_id = fixture["away_club_id"]
         if home_id not in clubs or away_id not in clubs:
@@ -281,20 +296,100 @@ class ManagerGameApp:
         self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
         self.match_fixture = fixture
         self.match_clubs = clubs
-        self.match_current_day = current_day
+        self.match_current_day = int(self.overview.get("current_day", 0))
         self.match_paused = False
         self.match_condition_saved = False
         self.screen = "match"
         self.match_finish_timer = 0.0
+        self.match_selected_player_id = self.match_engine.home.xi[0].profile.id if self.match_engine.home.xi else None
+
+    def _advance_one_day(self) -> None:
+        if self.active_save_id is None:
+            return
+        with db_session(self.db_path) as conn:
+            bootstrap_database(conn)
+            clubs = load_clubs_from_db(conn)
+            load_condition_state(self.db_path, clubs)
+            save_row = conn.execute("SELECT current_day FROM saves WHERE id = ?", (self.active_save_id,)).fetchone()
+            if save_row is None:
+                return
+            next_day = int(save_row["current_day"]) + 1
+            advance_condition_days(clubs, 1)
+            save_condition_state_to_conn(conn, clubs, next_day)
+            set_save_current_day(conn, self.active_save_id, next_day)
+            conn.commit()
+        self._reload_state()
 
     def _finish_matchday(self) -> None:
         self._finish_matchday_with_score(None)
 
+    def _build_match_report(self, engine: MatchEngine, fixture: dict) -> dict:
+        state = engine.state
+        return {
+            "fixture_id": int(fixture["id"]),
+            "save_id": int(self.active_save_id or 0),
+            "home": {
+                "id": state.home.club.id,
+                "name": state.home.name,
+                "primary_color": state.home.club.colors.get("primary", "#D03434"),
+                "secondary_color": state.home.club.colors.get("secondary", "#F5F5F5"),
+                "badge": {
+                    "template_id": state.home.club.badge_id,
+                    "primary": state.home.club.badge_primary,
+                    "secondary": state.home.club.badge_secondary,
+                    "border": state.home.club.badge.get("border", "#F5F5F5"),
+                },
+            },
+            "away": {
+                "id": state.away.club.id,
+                "name": state.away.name,
+                "primary_color": state.away.club.colors.get("primary", "#3970D0"),
+                "secondary_color": state.away.club.colors.get("secondary", "#F5F5F5"),
+                "badge": {
+                    "template_id": state.away.club.badge_id,
+                    "primary": state.away.club.badge_primary,
+                    "secondary": state.away.club.badge_secondary,
+                    "border": state.away.club.badge.get("border", "#F5F5F5"),
+                },
+            },
+            "home_score": int(state.home_score),
+            "away_score": int(state.away_score),
+            "team_stats": json.loads(json.dumps(state.team_match_stats)),
+            "player_stats": json.loads(json.dumps(state.player_match_stats)),
+            "player_goals": {key: int(value) for key, value in state.player_goals.items()},
+            "player_assists": {key: int(value) for key, value in state.player_assists.items()},
+            "players": {
+                "home": [
+                    {
+                        "id": player.profile.id,
+                        "name": player.profile.name,
+                        "short_name": player.short_name,
+                        "position": player.profile.position,
+                        "ovr": player.profile.ovr,
+                        "side": "home",
+                    }
+                    for player in state.home.xi
+                ],
+                "away": [
+                    {
+                        "id": player.profile.id,
+                        "name": player.profile.name,
+                        "short_name": player.short_name,
+                        "position": player.profile.position,
+                        "ovr": player.profile.ovr,
+                        "side": "away",
+                    }
+                    for player in state.away.xi
+                ],
+            },
+        }
+
     def _finish_matchday_with_score(self, score_override: tuple[int, int] | None) -> None:
         if not self.match_engine or not self.match_fixture or not self.match_clubs or self.active_save_id is None:
             return
-        managed_clubs = self.match_clubs
+        season_clubs = self.match_clubs
         fixture = self.match_fixture
+        fixture_report = self._build_match_report(self.match_engine, fixture) if score_override is None else None
         if score_override is None:
             home_goals = self.match_engine.state.home_score
             away_goals = self.match_engine.state.away_score
@@ -306,10 +401,10 @@ class ManagerGameApp:
                 fixture["id"],
                 home_goals,
                 away_goals,
+                report=fixture_report,
             )
             match_day = fixture["match_day"]
             same_day = list_matchday_fixtures(conn, self.active_save_id, match_day)
-            db_clubs = load_clubs_from_db(conn)
             for other in same_day:
                 if other["id"] == fixture["id"]:
                     continue
@@ -317,8 +412,8 @@ class ManagerGameApp:
                 if row is not None and int(row["played"]) == 1:
                     continue
                 engine = MatchEngine(
-                    db_clubs[other["home_club_id"]],
-                    db_clubs[other["away_club_id"]],
+                    season_clubs[other["home_club_id"]],
+                    season_clubs[other["away_club_id"]],
                     seed=hash((self.active_save_id, other["id"])) & 0xFFFFFFFF,
                 )
                 engine.set_speed(SPEED_MULTIPLIERS["X4"])
@@ -327,17 +422,24 @@ class ManagerGameApp:
                 while not engine.state.is_finished and safety < 12000:
                     engine.update(1.0 / 30.0)
                     safety += 1
-                save_fixture_result(conn, other["id"], engine.state.home_score, engine.state.away_score)
-            next_day = self.match_current_day + 4
-            advance_condition_days(managed_clubs, 4)
-            save_condition_state_to_conn(conn, managed_clubs, next_day)
-            set_save_current_day(conn, self.active_save_id, next_day)
+                apply_post_match_condition(engine.state)
+                save_fixture_result(
+                    conn,
+                    other["id"],
+                    engine.state.home_score,
+                    engine.state.away_score,
+                    report=self._build_match_report(engine, other),
+                )
+            save_condition_state_to_conn(conn, season_clubs, self.match_current_day)
             conn.commit()
         self.match_condition_saved = True
         self.match_engine = None
         self.match_fixture = None
         self.match_clubs = None
         self.match_finish_timer = 0.0
+        self.match_selected_player_id = None
+        self.fixture_report = None
+        self.fixture_report_selected_player_id = None
         self.screen = "overview"
         self._reload_state()
 
@@ -522,6 +624,24 @@ class ManagerGameApp:
         if action.startswith("load:"):
             self._load_save(int(action.split(":", 1)[1]))
             return
+        if action.startswith("match:player:"):
+            player_id = action.split(":", 2)[2]
+            if self.screen == "match":
+                self.match_selected_player_id = player_id
+            elif self.screen == "match_report":
+                self.fixture_report_selected_player_id = player_id
+            return
+        if action.startswith("overview:fixture:"):
+            fixture_id = int(action.split(":", 2)[2])
+            with db_session(self.db_path) as conn:
+                report = get_fixture_report(conn, fixture_id)
+            if report:
+                self.fixture_report = report
+                home_players = report.get("players", {}).get("home", [])
+                away_players = report.get("players", {}).get("away", [])
+                self.fixture_report_selected_player_id = home_players[0]["id"] if home_players else away_players[0]["id"] if away_players else None
+                self.screen = "match_report"
+            return
         if action.startswith("select_save:"):
             self.selected_save_id = int(action.split(":", 1)[1])
             return
@@ -538,6 +658,15 @@ class ManagerGameApp:
             return
         if action == "overview:play_next_match":
             self._start_next_match()
+            return
+        if action == "overview:advance_day":
+            self._advance_one_day()
+            return
+        if action == "back:match_report":
+            self.fixture_report = None
+            self.fixture_report_selected_player_id = None
+            self.screen = "overview"
+            return
 
     def _handle_keydown(self, event: pygame.event.Event) -> None:
         if self.modal:
@@ -553,6 +682,10 @@ class ManagerGameApp:
                 return
             if self._is_bound(event, "bind_menu", "escape"):
                 self._open_escape_modal()
+                return
+            if self.match_engine.state.is_finished:
+                if self._is_bound(event, "bind_start", "enter"):
+                    self._finish_matchday()
                 return
             if self.match_engine.state.awaiting_start and self._is_bound(event, "bind_start", "enter"):
                 if self.match_engine.start_match_flow():
@@ -574,6 +707,14 @@ class ManagerGameApp:
                 self.match_speed_label = "X4"
                 self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
                 return
+            if self._is_bound(event, "bind_speed_x8", "8"):
+                self.match_speed_label = "X8"
+                self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
+                return
+        if self.screen == "match_report":
+            if self._is_bound(event, "bind_menu", "escape"):
+                self._handle_action("back:match_report")
+            return
         if self.screen != "new_game_name":
             if self.screen == "options" and self._is_bound(event, "bind_menu", "escape"):
                 self._handle_action("back:menu")
@@ -610,6 +751,12 @@ class ManagerGameApp:
             return {"screen": "options", "options": self.options, "choices": self.option_choices}
         if self.screen == "load_game":
             return {"screen": "load_game", "saves": self.saves, "selected_save_id": self.selected_save_id}
+        if self.screen == "match_report":
+            return {
+                "screen": "match_report",
+                "report": self.fixture_report or {},
+                "selected_player_id": self.fixture_report_selected_player_id,
+            }
         if self.screen == "overview":
             return {
                 "screen": "overview",
@@ -631,8 +778,15 @@ class ManagerGameApp:
                         self._handle_action(self.renderer.handle_ui_click(event.pos))
                         continue
                     if self.screen == "match" and self.match_engine:
+                        action = self.renderer.handle_ui_click(event.pos)
+                        if action:
+                            self._handle_action(action)
+                            continue
                         action = self.renderer.handle_click(event.pos)
                         if action == "start":
+                            if self.match_engine.state.is_finished:
+                                self._finish_matchday()
+                                continue
                             if self.match_engine.start_match_flow():
                                 self.match_paused = False
                         elif action and action.startswith("speed:"):
@@ -647,11 +801,6 @@ class ManagerGameApp:
                 if self.match_engine.state.is_finished and not self.match_condition_saved:
                     apply_post_match_condition(self.match_engine.state)
                     self.match_condition_saved = True
-                if self.match_engine.state.is_finished and self.match_condition_saved:
-                    self.match_finish_timer += dt
-                    if self.match_finish_timer >= 1.25:
-                        self._finish_matchday()
-                        continue
                 fixture_label = f"{self.match_engine.state.home.name} vs {self.match_engine.state.away.name}"
                 self.renderer.draw(
                     self.match_engine.state,
@@ -661,6 +810,17 @@ class ManagerGameApp:
                     speed_label=self.match_speed_label,
                     clock_seconds=self.match_engine.display_clock_seconds(),
                     commentary_colors=self._managed_club_colors(),
+                    selected_player_id=self.match_selected_player_id,
+                    present=not self.modal,
+                )
+                if self.modal:
+                    self.renderer.draw_modal(self.modal)
+                    pygame.display.flip()
+                continue
+            if self.screen == "match_report" and self.fixture_report:
+                self.renderer.draw_match_report_view(
+                    self.fixture_report,
+                    self.fixture_report_selected_player_id,
                     present=not self.modal,
                 )
                 if self.modal:

@@ -22,7 +22,7 @@ PITCH_X = 62
 PITCH_Y = VIEWPORT_Y
 PITCH_W = 1138
 PITCH_H = 737
-SPEED_OPTIONS = ("X1", "X2", "X4")
+SPEED_OPTIONS = ("X1", "X2", "X4", "X8")
 PLAYER_OUTLINE_RADIUS = 16
 PLAYER_OUTER_RADIUS = 14
 PLAYER_INNER_RADIUS = 11
@@ -182,7 +182,7 @@ class Renderer:
 
     def __init__(self, width: int = 1560, height: int = 900, fullscreen: bool = False) -> None:
         pygame.init()
-        pygame.display.set_caption("FM-Style Match Engine Prototype")
+        pygame.display.set_caption("MY MANAGER CAREER")
         self.ui_click_targets: dict[str, pygame.Rect] = {}
         self.fullscreen = fullscreen
         self.display_index = 0
@@ -240,10 +240,10 @@ class Renderer:
 
     def _draw_club_badge(self, badge: dict | None, rect: pygame.Rect) -> None:
         badge = badge or {}
-        template_id = str(badge.get("template_id", "1"))
-        primary = hex_to_rgb(str(badge.get("primary", "#2E3A6A")), (46, 58, 106))
-        secondary = hex_to_rgb(str(badge.get("secondary", "#F5F5F5")), (245, 245, 245))
-        border = hex_to_rgb(str(badge.get("border", "#F5F5F5")), (245, 245, 245))
+        template_id = str(badge.get("template_id", badge.get("badge_id", "1")))
+        primary = hex_to_rgb(str(badge.get("primary", badge.get("badge_primary", "#2E3A6A"))), (46, 58, 106))
+        secondary = hex_to_rgb(str(badge.get("secondary", badge.get("badge_secondary", "#F5F5F5"))), (245, 245, 245))
+        border = hex_to_rgb(str(badge.get("border", badge.get("badge_border", "#F5F5F5"))), (245, 245, 245))
 
         silhouettes = {
             "1": [(0.5, 0.02), (0.12, 0.1), (0.12, 0.44), (0.18, 0.68), (0.32, 0.88), (0.5, 0.98), (0.68, 0.88), (0.82, 0.68), (0.88, 0.44), (0.88, 0.1)],
@@ -299,16 +299,22 @@ class Renderer:
         speed_label: str = "x1",
         clock_seconds: float | None = None,
         commentary_colors: tuple[Tuple[int, int, int], Tuple[int, int, int]] | None = None,
+        selected_player_id: str | None = None,
         present: bool = True,
     ) -> None:
         self.ui_click_targets = {}
         self.screen.fill((18, 18, 22))
         self._layout_pitch()
-        self._draw_side_panel(state)
-        pygame.draw.rect(self.screen, (108, 142, 63), PITCH_PANEL)
-        self._draw_pitch()
-        self._draw_players_and_ball(state, alpha)
-        self._draw_pitch_overlay(state, fixture_label)
+        if state.is_finished:
+            report_view = pygame.Rect(0, VIEWPORT_Y, SCREEN_W, VIEWPORT_H)
+            pygame.draw.rect(self.screen, (108, 142, 63), report_view)
+            self._draw_post_match_screen(state, selected_player_id)
+        else:
+            self._draw_side_panel(state)
+            pygame.draw.rect(self.screen, (108, 142, 63), PITCH_PANEL)
+            self._draw_pitch()
+            self._draw_players_and_ball(state, alpha)
+            self._draw_pitch_overlay(state, fixture_label)
         self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds)
         self._draw_events(state, commentary_colors)
         self._draw_goal_banner(state)
@@ -607,6 +613,27 @@ class Renderer:
         pygame.draw.circle(self.screen, (20, 20, 20), (sx - 2, sy + 3), 1)
         pygame.draw.circle(self.screen, (20, 20, 20), (sx + 2, sy + 3), 1)
 
+    def _draw_ball_icon(self, surface: pygame.Surface, center: tuple[int, int], radius: int) -> None:
+        cx, cy = center
+        pygame.draw.circle(surface, (245, 245, 245), center, radius)
+        pygame.draw.circle(surface, (18, 18, 18), center, radius, max(1, radius // 7))
+        pentagon = []
+        for idx in range(5):
+            angle = math.radians(-90 + idx * 72)
+            pentagon.append((int(cx + math.cos(angle) * radius * 0.34), int(cy + math.sin(angle) * radius * 0.34)))
+        pygame.draw.polygon(surface, (18, 18, 18), pentagon)
+        for idx in range(5):
+            angle = math.radians(-90 + idx * 72)
+            node_x = cx + math.cos(angle) * radius * 0.72
+            node_y = cy + math.sin(angle) * radius * 0.72
+            pygame.draw.circle(surface, (18, 18, 18), (int(node_x), int(node_y)), max(1, radius // 7))
+            pygame.draw.line(surface, (18, 18, 18), pentagon[idx], (int(node_x), int(node_y)), max(1, radius // 7))
+            next_idx = (idx + 1) % 5
+            next_angle = math.radians(-90 + next_idx * 72)
+            next_x = cx + math.cos(next_angle) * radius * 0.72
+            next_y = cy + math.sin(next_angle) * radius * 0.72
+            pygame.draw.line(surface, (18, 18, 18), (int(node_x), int(node_y)), (int(next_x), int(next_y)), max(1, radius // 9))
+
     def _draw_pitch_overlay(self, state: MatchState, fixture_label: str) -> None:
         if state.phase == "pre_match" and state.awaiting_start:
             home_name = state.home.name
@@ -702,6 +729,332 @@ class Renderer:
         pygame.draw.rect(self.screen, (255, 220, 90), panel, 3)
         draw_text(self.screen, state.goal_banner_text, x + 18, y + 18, (255, 240, 120), scale=2)
 
+    def _team_stat_value(self, stats: dict, key: str) -> str:
+        if key == "possession_seconds":
+            home = stats["home"]["possession_seconds"]
+            away = stats["away"]["possession_seconds"]
+            total = max(1.0, home + away)
+            return f"{int(round(home / total * 100))}%|{int(round(away / total * 100))}%"
+        if key == "passing":
+            home_attempted = max(1.0, stats["home"]["passes_attempted"])
+            away_attempted = max(1.0, stats["away"]["passes_attempted"])
+            home_pct = int(round(stats["home"]["passes_completed"] / home_attempted * 100))
+            away_pct = int(round(stats["away"]["passes_completed"] / away_attempted * 100))
+            return f"{home_pct}%|{away_pct}%"
+        home_value = int(round(stats["home"][key]))
+        away_value = int(round(stats["away"][key]))
+        return f"{home_value}|{away_value}"
+
+    def _player_rating(self, state: MatchState, player_id: str) -> float:
+        stats = state.player_match_stats.get(player_id, {})
+        rating = 6.6
+        rating += stats.get("goals", 0.0) * 0.85
+        rating += stats.get("assists", 0.0) * 0.55
+        rating += stats.get("shots_on_target", 0.0) * 0.08
+        rating += stats.get("passes_completed", 0.0) * 0.01
+        rating += stats.get("tackles", 0.0) * 0.08
+        rating += stats.get("interceptions", 0.0) * 0.08
+        rating += stats.get("clearances", 0.0) * 0.03
+        rating += stats.get("dribbles_completed", 0.0) * 0.05
+        rating -= stats.get("fouls_committed", 0.0) * 0.06
+        rating -= stats.get("yellow_cards", 0.0) * 0.22
+        rating -= stats.get("red_cards", 0.0) * 1.0
+        return max(5.0, min(10.0, rating))
+
+    def _format_goal_scorers(self, state: MatchState, team) -> str:
+        items = []
+        for player in team.xi:
+            goals = state.player_goals.get(player.profile.id, 0)
+            if goals:
+                suffix = f" x{goals}" if goals > 1 else ""
+                items.append(f"{player.short_name}{suffix}")
+        return ", ".join(items) if items else "-"
+
+    def _report_player_rating(self, report: dict, player_id: str) -> float:
+        stats = report.get("player_stats", {}).get(player_id, {})
+        if "rating" in stats:
+            return float(stats["rating"])
+        rating = 6.6
+        rating += float(stats.get("goals", 0.0)) * 0.85
+        rating += float(stats.get("assists", 0.0)) * 0.55
+        rating += float(stats.get("shots_on_target", 0.0)) * 0.08
+        rating += float(stats.get("passes_completed", 0.0)) * 0.01
+        rating += float(stats.get("tackles", 0.0)) * 0.08
+        rating += float(stats.get("interceptions", 0.0)) * 0.08
+        rating += float(stats.get("clearances", 0.0)) * 0.03
+        rating += float(stats.get("dribbles_completed", 0.0)) * 0.05
+        rating -= float(stats.get("fouls_committed", 0.0)) * 0.06
+        rating -= float(stats.get("yellow_cards", 0.0)) * 0.22
+        rating -= float(stats.get("red_cards", 0.0)) * 1.0
+        return max(5.0, min(10.0, rating))
+
+    def _format_report_goal_scorers(self, report: dict, side: str) -> str:
+        players = report.get("players", {}).get(side, [])
+        goals_by_player = report.get("player_goals", {})
+        items = []
+        for player in players:
+            goals = int(goals_by_player.get(player["id"], 0))
+            if goals:
+                suffix = f" x{goals}" if goals > 1 else ""
+                items.append(f"{player.get('short_name', player.get('name', 'PLAYER'))}{suffix}")
+        return ", ".join(items) if items else "-"
+
+    def _draw_post_match_report(self, report: dict, selected_player_id: str | None, panel: pygame.Rect) -> None:
+        pygame.draw.rect(self.screen, (16, 18, 22), panel, border_radius=10)
+        pygame.draw.rect(self.screen, (42, 44, 50), panel, 2, border_radius=10)
+
+        home = report["home"]
+        away = report["away"]
+        home_primary = hex_to_rgb(home["primary_color"], (208, 52, 52))
+        away_primary = hex_to_rgb(away["primary_color"], (57, 112, 208))
+        home_secondary = hex_to_rgb(home["secondary_color"], (245, 245, 245))
+        away_secondary = hex_to_rgb(away["secondary_color"], (245, 245, 245))
+
+        title = "FULL TIME"
+        draw_text(self.screen, title, panel.x + (panel.width - text_width(title, 4)) // 2, panel.y + 18, (245, 245, 245), scale=4)
+
+        score_band = pygame.Rect(panel.x + 18, panel.y + 68, panel.width - 36, 92)
+        pygame.draw.rect(self.screen, (12, 14, 18), score_band, border_radius=10)
+        pygame.draw.rect(self.screen, (50, 52, 58), score_band, 1, border_radius=10)
+        pygame.draw.rect(self.screen, home_primary, (score_band.x, score_band.y, score_band.width // 2, 10), border_top_left_radius=10)
+        pygame.draw.rect(self.screen, away_primary, (score_band.centerx, score_band.y, score_band.width - score_band.width // 2, 10), border_top_right_radius=10)
+
+        home_badge = pygame.Rect(score_band.x + 20, score_band.y + 20, 42, 48)
+        away_badge = pygame.Rect(score_band.right - 62, score_band.y + 20, 42, 48)
+        self._draw_club_badge(home["badge"], home_badge)
+        self._draw_club_badge(away["badge"], away_badge)
+        draw_text(self.screen, compact_team_name(home["name"]), home_badge.right + 12, score_band.y + 24, home_secondary, scale=3)
+        away_name = compact_team_name(away["name"])
+        draw_text(self.screen, away_name, away_badge.x - 12 - text_width(away_name, 3), score_band.y + 24, away_secondary, scale=3)
+
+        score_text = f"{report['home_score']} - {report['away_score']}"
+        draw_text(self.screen, score_text, score_band.x + (score_band.width - text_width(score_text, 4)) // 2, score_band.y + 22, (245, 245, 245), scale=4)
+        draw_text(self.screen, self._format_report_goal_scorers(report, "home"), score_band.x + 18, score_band.bottom - 20, (190, 194, 204), scale=1)
+        away_scorers = self._format_report_goal_scorers(report, "away")
+        draw_text(self.screen, away_scorers, score_band.right - 18 - text_width(away_scorers, 1), score_band.bottom - 20, (190, 194, 204), scale=1)
+
+        left = pygame.Rect(panel.x + 18, panel.y + 174, panel.width // 2 - 28, panel.height - 192)
+        right = pygame.Rect(left.right + 18, left.y, panel.right - left.right - 36, left.height)
+        pygame.draw.rect(self.screen, (12, 14, 18), left, border_radius=8)
+        pygame.draw.rect(self.screen, (12, 14, 18), right, border_radius=8)
+        pygame.draw.rect(self.screen, (50, 52, 58), left, 1, border_radius=8)
+        pygame.draw.rect(self.screen, (50, 52, 58), right, 1, border_radius=8)
+        pygame.draw.rect(self.screen, (248, 187, 32), (left.x, left.y, left.width, 34), border_top_left_radius=8, border_top_right_radius=8)
+        pygame.draw.rect(self.screen, (36, 52, 96), (right.x, right.y, right.width, 34), border_top_left_radius=8, border_top_right_radius=8)
+        draw_text(self.screen, "MATCH STATISTICS", left.x + 12, left.y + 10, (24, 24, 28), scale=2)
+        draw_text(self.screen, "PLAYER STATISTICS", right.x + 12, right.y + 10, (245, 245, 245), scale=2)
+
+        stat_rows = [
+            ("BALL POSSESSION", "possession_seconds"),
+            ("SHOT ON TARGET", "shots_on_target"),
+            ("SHOT OFF TARGET", "shots_off_target"),
+            ("PASSING", "passing"),
+            ("CORNERS", "corners"),
+            ("OFFSIDE", "offsides"),
+            ("FOULS", "fouls"),
+            ("YELLOW CARD", "yellow_cards"),
+            ("RED CARD", "red_cards"),
+        ]
+        team_stats = report["team_stats"]
+        y = left.y + 50
+        row_h = 32
+        row_gap = 11
+        value_w = 70
+        label_w = 180
+        for label, key in stat_rows:
+            if key == "possession_seconds":
+                home_v = team_stats["home"]["possession_seconds"]
+                away_v = team_stats["away"]["possession_seconds"]
+                total = max(1.0, home_v + away_v)
+                home_value = f"{int(round(home_v / total * 100))}%"
+                away_value = f"{int(round(away_v / total * 100))}%"
+            elif key == "passing":
+                home_attempted = max(1.0, team_stats["home"]["passes_attempted"])
+                away_attempted = max(1.0, team_stats["away"]["passes_attempted"])
+                home_value = f"{int(round(team_stats['home']['passes_completed'] / home_attempted * 100))}%"
+                away_value = f"{int(round(team_stats['away']['passes_completed'] / away_attempted * 100))}%"
+            else:
+                home_value = str(int(round(team_stats["home"].get(key, 0.0))))
+                away_value = str(int(round(team_stats["away"].get(key, 0.0))))
+            row_rect = pygame.Rect(left.x + 12, y, left.width - 24, row_h)
+            pygame.draw.rect(self.screen, (18, 20, 26), row_rect, border_radius=5)
+            pygame.draw.rect(self.screen, (38, 40, 46), row_rect, 1, border_radius=5)
+            home_box = pygame.Rect(row_rect.x + 4, row_rect.y + 4, value_w, row_h - 8)
+            away_box = pygame.Rect(row_rect.right - value_w - 4, row_rect.y + 4, value_w, row_h - 8)
+            label_box = pygame.Rect(row_rect.centerx - label_w // 2, row_rect.y + 4, label_w, row_h - 8)
+            pygame.draw.rect(self.screen, home_primary, home_box, border_radius=4)
+            pygame.draw.rect(self.screen, (24, 26, 32), label_box, border_radius=4)
+            pygame.draw.rect(self.screen, away_primary, away_box, border_radius=4)
+            draw_text(self.screen, home_value, home_box.x + (home_box.width - text_width(home_value, 1)) // 2, home_box.y + 7, home_secondary, scale=1)
+            draw_text(self.screen, label, label_box.x + (label_box.width - text_width(label, 1)) // 2, label_box.y + 7, (236, 236, 240), scale=1)
+            draw_text(self.screen, away_value, away_box.x + (away_box.width - text_width(away_value, 1)) // 2, away_box.y + 7, away_secondary, scale=1)
+            y += row_h + row_gap
+
+        home_players = report.get("players", {}).get("home", [])
+        away_players = report.get("players", {}).get("away", [])
+        if not selected_player_id:
+            if home_players:
+                selected_player_id = home_players[0]["id"]
+            elif away_players:
+                selected_player_id = away_players[0]["id"]
+
+        squad_w = 180
+        list_header_h = 28
+        home_list = pygame.Rect(right.x + 12, right.y + 48, squad_w, right.height - 60)
+        detail_rect = pygame.Rect(home_list.right + 12, right.y + 48, right.width - squad_w * 2 - 48, right.height - 60)
+        away_list = pygame.Rect(detail_rect.right + 12, right.y + 48, squad_w, right.height - 60)
+        for rect in (home_list, detail_rect, away_list):
+            pygame.draw.rect(self.screen, (18, 20, 26), rect, border_radius=6)
+            pygame.draw.rect(self.screen, (50, 52, 58), rect, 1, border_radius=6)
+        for rect, title_text in ((home_list, "HOME SQUAD"), (detail_rect, "PLAYER CARD"), (away_list, "AWAY SQUAD")):
+            header = pygame.Rect(rect.x, rect.y, rect.width, list_header_h)
+            pygame.draw.rect(self.screen, (24, 26, 32), header, border_top_left_radius=6, border_top_right_radius=6)
+            draw_text(self.screen, title_text, header.x + (header.width - text_width(title_text, 1)) // 2, header.y + 8, (248, 187, 32), scale=1)
+
+        def draw_squad_list(players: list[dict], rect: pygame.Rect, fill_color: Tuple[int, int, int]) -> None:
+            row_y = rect.y + list_header_h + 6
+            for player in players:
+                is_selected = player["id"] == selected_player_id
+                row_rect = pygame.Rect(rect.x + 6, row_y, rect.width - 12, 26)
+                if is_selected:
+                    pygame.draw.rect(self.screen, fill_color, row_rect, border_radius=4)
+                    pygame.draw.rect(self.screen, (248, 187, 32), row_rect, 2, border_radius=4)
+                else:
+                    pygame.draw.rect(self.screen, (24, 26, 32), row_rect, border_radius=4)
+                draw_text(self.screen, player.get("short_name", player.get("name", "PLAYER"))[:12], row_rect.x + 8, row_rect.y + 8, (245, 245, 245), scale=1)
+                rating = f"{self._report_player_rating(report, player['id']):.1f}"
+                draw_text(self.screen, rating, row_rect.right - 8 - text_width(rating, 1), row_rect.y + 8, (245, 245, 245), scale=1)
+                self._register_ui(f"match:player:{player['id']}", row_rect)
+                row_y += 28
+                if row_y + 26 > rect.bottom:
+                    break
+
+        draw_squad_list(home_players, home_list, home_primary)
+        draw_squad_list(away_players, away_list, away_primary)
+
+        selected_player = None
+        for player in home_players + away_players:
+            if player["id"] == selected_player_id:
+                selected_player = player
+                break
+        if selected_player:
+            stats = report.get("player_stats", {}).get(selected_player["id"], {})
+            selected_side = selected_player["side"]
+            card_fill = home_primary if selected_side == "home" else away_primary
+            card_text = home_secondary if selected_side == "home" else away_secondary
+            selected_badge = home["badge"] if selected_side == "home" else away["badge"]
+            card_top = pygame.Rect(detail_rect.x + 12, detail_rect.y + 38, detail_rect.width - 24, 74)
+            pygame.draw.rect(self.screen, card_fill, card_top, border_radius=8)
+            pygame.draw.rect(self.screen, (22, 22, 26), card_top, 2, border_radius=8)
+            draw_text(self.screen, selected_player["name"][:22], card_top.x + 16, card_top.y + 12, card_text, scale=2)
+            meta = f"{selected_player['position']}  OVR {selected_player['ovr']}"
+            draw_text(self.screen, meta, card_top.x + 16, card_top.y + 40, card_text, scale=1)
+            self._draw_club_badge(selected_badge, pygame.Rect(card_top.right - 54, card_top.y + 12, 38, 46))
+            detail_rows = [
+                ("Goals", int(stats.get("goals", 0.0))),
+                ("Assists", int(stats.get("assists", 0.0))),
+                ("Shots on target", int(stats.get("shots_on_target", 0.0))),
+                ("Shots off target", int(stats.get("shots_off_target", 0.0))),
+                ("Passing", f"{int(round((stats.get('passes_completed', 0.0) / max(1.0, stats.get('passes_attempted', 0.0))) * 100))}%"),
+                ("Tackles", int(stats.get("tackles", 0.0))),
+                ("Interceptions", int(stats.get("interceptions", 0.0))),
+                ("Clearances", int(stats.get("clearances", 0.0))),
+                ("Fouls committed", int(stats.get("fouls_committed", 0.0))),
+                ("Fouls suffered", int(stats.get("fouls_suffered", 0.0))),
+                ("Dribbles", int(stats.get("dribbles_completed", 0.0))),
+                ("Duels won", f"{int(stats.get('duels_won', 0.0))}/{int(stats.get('duels_total', 0.0))}"),
+                ("Minutes", int(round(stats.get("minutes", 0.0)))),
+                ("Player rating", f"{self._report_player_rating(report, selected_player['id']):.1f}"),
+            ]
+            row_y = card_top.bottom + 14
+            for idx, (label, value) in enumerate(detail_rows):
+                stat_row = pygame.Rect(detail_rect.x + 12, row_y - 4, detail_rect.width - 24, 24)
+                pygame.draw.rect(self.screen, (22, 24, 30), stat_row, border_radius=4)
+                draw_text(self.screen, str(label), detail_rect.x + 20, row_y, (245, 245, 245), scale=1)
+                value_text = str(value)
+                draw_text(self.screen, value_text, detail_rect.right - 20 - text_width(value_text, 1), row_y, (245, 245, 245), scale=1)
+                bar_color = home_primary if idx % 2 == 0 else away_primary
+                pygame.draw.line(self.screen, bar_color, (detail_rect.x + 20, row_y + 16), (detail_rect.right - 20, row_y + 16), 2)
+                row_y += 28
+
+    def _draw_post_match_screen(self, state: MatchState, selected_player_id: str | None) -> None:
+        report = {
+            "home": {
+                "id": state.home.club.id,
+                "name": state.home.name,
+                "primary_color": state.home.club.colors.get("primary", "#D03434"),
+                "secondary_color": state.home.club.colors.get("secondary", "#F5F5F5"),
+                "badge": {
+                    "template_id": state.home.club.badge_id,
+                    "primary": state.home.club.badge_primary,
+                    "secondary": state.home.club.badge_secondary,
+                    "border": state.home.club.badge.get("border", "#F5F5F5"),
+                },
+            },
+            "away": {
+                "id": state.away.club.id,
+                "name": state.away.name,
+                "primary_color": state.away.club.colors.get("primary", "#3970D0"),
+                "secondary_color": state.away.club.colors.get("secondary", "#F5F5F5"),
+                "badge": {
+                    "template_id": state.away.club.badge_id,
+                    "primary": state.away.club.badge_primary,
+                    "secondary": state.away.club.badge_secondary,
+                    "border": state.away.club.badge.get("border", "#F5F5F5"),
+                },
+            },
+            "home_score": state.home_score,
+            "away_score": state.away_score,
+            "team_stats": state.team_match_stats,
+            "player_stats": state.player_match_stats,
+            "player_goals": state.player_goals,
+            "player_assists": state.player_assists,
+            "players": {
+                "home": [
+                    {
+                        "id": player.profile.id,
+                        "name": player.profile.name,
+                        "short_name": player.short_name,
+                        "position": player.profile.position,
+                        "ovr": player.profile.ovr,
+                        "side": "home",
+                    }
+                    for player in state.home.xi
+                ],
+                "away": [
+                    {
+                        "id": player.profile.id,
+                        "name": player.profile.name,
+                        "short_name": player.short_name,
+                        "position": player.profile.position,
+                        "ovr": player.profile.ovr,
+                        "side": "away",
+                    }
+                    for player in state.away.xi
+                ],
+            },
+        }
+        panel = pygame.Rect(14, VIEWPORT_Y + 10, SCREEN_W - 28, VIEWPORT_H - 18)
+        self._draw_post_match_report(report, selected_player_id, panel)
+
+    def draw_match_report_view(self, report: dict, selected_player_id: str | None, present: bool = True) -> None:
+        self.ui_click_targets = {}
+        self.screen.fill((18, 18, 22))
+        self._layout_pitch()
+        report_view = pygame.Rect(0, VIEWPORT_Y, SCREEN_W, VIEWPORT_H)
+        pygame.draw.rect(self.screen, (108, 142, 63), report_view)
+        self._draw_post_match_report(report, selected_player_id, pygame.Rect(14, VIEWPORT_Y + 10, SCREEN_W - 28, VIEWPORT_H - 18))
+        self._draw_ui_button(
+            pygame.Rect(SCREEN_W - 146, TOP_BAR_H + 10, 120, 34),
+            "BACK",
+            (36, 52, 96),
+            (245, 245, 245),
+            "back:match_report",
+            scale=2,
+        )
+        if present:
+            pygame.display.flip()
+
     def _draw_top_bar(self, state: MatchState, minute_text: str, paused: bool, speed_label: str) -> None:
         time_box = pygame.Rect(14, 0, 96, TOP_BAR_H)
         home_box = pygame.Rect(time_box.right, 0, 138, TOP_BAR_H)
@@ -741,7 +1094,10 @@ class Renderer:
         pygame.draw.rect(self.screen, (14, 14, 16), self.speed_rect)
         pygame.draw.rect(self.screen, (78, 78, 84), self.speed_rect, 1)
         draw_text(self.screen, speed_label, speed_x + (speed_w - text_width(speed_label, 2)) // 2, 11, (245, 245, 245), scale=2)
-        if state.awaiting_start:
+        if state.is_finished:
+            status_text = "CONTINUE"
+            status_color = (255, 250, 215)
+        elif state.awaiting_start:
             status_text = "START"
             status_color = (255, 250, 215)
         elif paused:
@@ -848,6 +1204,33 @@ class Renderer:
         )
         if action:
             self._register_ui(action, rect)
+
+    def _draw_icon_button(
+        self,
+        rect: pygame.Rect,
+        label: str,
+        fill: Tuple[int, int, int],
+        text: Tuple[int, int, int],
+        action: str,
+        icon: str | None = None,
+    ) -> None:
+        pygame.draw.rect(self.screen, fill, rect, border_radius=6)
+        pygame.draw.rect(self.screen, (22, 22, 26), rect, 2, border_radius=6)
+        content_left = rect.x + 16
+        if icon == "ball":
+            cx = rect.x + 20
+            cy = rect.centery
+            self._draw_ball_icon(self.screen, (cx, cy), 8)
+            content_left = cx + 16
+        draw_text(
+            self.screen,
+            label,
+            content_left,
+            rect.y + (rect.height - 14) // 2,
+            text,
+            scale=2,
+        )
+        self._register_ui(action, rect)
 
     def _draw_panel(
         self,
@@ -961,6 +1344,7 @@ class Renderer:
             ("SPEED X1", "bind_speed_x1"),
             ("SPEED X2", "bind_speed_x2"),
             ("SPEED X4", "bind_speed_x4"),
+            ("SPEED X8", "bind_speed_x8"),
         ]
         available_h = panel.height - 66 - 56 - 28
         normal_total_h = normal_sections_h + 34 + len(bind_rows) * 46
@@ -1085,12 +1469,17 @@ class Renderer:
             x += text_width(item, 2) + 26
 
         next_fixture = overview.get("next_fixture")
+        today_fixture = overview.get("today_fixture")
         right_x = SCREEN_W - 20
-        if next_fixture:
-            play_rect = pygame.Rect(right_x - 146, 11, 146, 40)
-            self._draw_ui_button(play_rect, "PLAY MATCH", primary, secondary, "overview:play_next_match")
+        if today_fixture:
+            play_rect = pygame.Rect(right_x - 176, 11, 176, 40)
+            self._draw_icon_button(play_rect, "PLAY MATCH", (46, 160, 67), (245, 245, 245), "overview:play_next_match", icon="ball")
             right_x = play_rect.x - 12
-        info = f"DAY {overview.get('current_day', 0)}"
+        else:
+            advance_rect = pygame.Rect(right_x - 146, 11, 146, 40)
+            self._draw_ui_button(advance_rect, "ADVANCE", primary, secondary, "overview:advance_day")
+            right_x = advance_rect.x - 12
+        info = overview.get("current_date_label", "")
         draw_text(self.screen, info, right_x - text_width(info, 2), 20, (245, 245, 245), scale=2)
 
         players = players_by_club.get(selected_club_id, [])
@@ -1176,12 +1565,16 @@ class Renderer:
         y += 30
         for fixture in fixtures[:6]:
             score = "--" if fixture["home_goals"] is None else f"{fixture['home_goals']}-{fixture['away_goals']}"
-            line = f"MD{fixture['match_day']:>2} {short_display_name(fixture['home_name'], 8)} {score} {short_display_name(fixture['away_name'], 8)}"
-            draw_text(self.screen, line, right.x + 16, y, (245, 245, 245), scale=1)
+            date_label = fixture.get("fixture_date_label", "")[:6]
+            line = f"{date_label} {short_display_name(fixture['home_name'], 8)} {score} {short_display_name(fixture['away_name'], 8)}"
+            color = (248, 187, 32) if fixture.get("has_report") else (245, 245, 245)
+            draw_text(self.screen, line, right.x + 16, y, color, scale=1)
+            if fixture.get("has_report"):
+                self._register_ui(f"overview:fixture:{fixture['id']}", pygame.Rect(right.x + 12, y - 2, right.width - 24, 16))
             y += 18
 
         if next_fixture:
-            subtitle = f"MD{next_fixture['match_day']} {short_display_name(next_fixture['home_name'], 8)} VS {short_display_name(next_fixture['away_name'], 8)}"
+            subtitle = f"{next_fixture.get('fixture_date_label', '')} {short_display_name(next_fixture['home_name'], 8)} VS {short_display_name(next_fixture['away_name'], 8)}"
             y += 12
             draw_text(self.screen, subtitle, right.x + 16, y, (245, 245, 245), scale=1)
 
