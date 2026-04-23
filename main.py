@@ -1295,6 +1295,7 @@ class ManagerGameApp:
                                 hit = self.renderer.handle_squad_hit(event.pos)
                                 if not hit:
                                     continue
+                                self.squad_selected_player_id = str(hit["player_id"])
                                 self.squad_mouse_down_player_id = str(hit["player_id"])
                                 self.squad_mouse_down_pos = event.pos
                                 self.squad_hover_target_id = None

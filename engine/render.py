@@ -2177,9 +2177,9 @@ class Renderer:
             is_selected = player_id == selected_player_id
             fill = (44, 50, 60) if hover_target_id != player_id else (76, 128, 84)
             if is_selected:
-                fill = (54, 72, 96)
+                fill = (58, 70, 110)
             pygame.draw.rect(self.screen, fill, role_rect, border_radius=8)
-            pygame.draw.rect(self.screen, (248, 187, 32) if is_selected else outline, role_rect, 1, border_radius=8)
+            pygame.draw.rect(self.screen, outline, role_rect, 1, border_radius=8)
             draw_text(self.screen, slot, role_rect.x + (role_rect.width - text_width(slot, 1)) // 2, role_rect.y + 4, (230, 234, 240), scale=1)
             if player:
                 name = short_display_name(player["name"], 12)
@@ -2246,9 +2246,9 @@ class Renderer:
             is_selected = player_id == selected_player_id
             fill = (24, 26, 32) if hover_target_id != player_id else (76, 128, 84)
             if is_selected:
-                fill = (42, 48, 60)
+                fill = (50, 58, 84)
             pygame.draw.rect(self.screen, fill, row_rect, border_radius=6)
-            pygame.draw.rect(self.screen, (248, 187, 32) if is_selected else (58, 60, 68), row_rect, 1, border_radius=6)
+            pygame.draw.rect(self.screen, (84, 88, 98) if is_selected else (58, 60, 68), row_rect, 1, border_radius=6)
             draw_text(self.screen, player["position"], row_rect.x + 8, row_rect.y + 8, (170, 174, 182), scale=1)
             draw_text(self.screen, short_display_name(player["name"], 14), row_rect.x + 40, row_rect.y + 8, (245, 245, 245), scale=1)
             ovr = str(player["ovr"])
@@ -2261,8 +2261,8 @@ class Renderer:
         pygame.draw.rect(self.screen, (18, 20, 26), detail_rect, border_radius=8)
         pygame.draw.rect(self.screen, (50, 52, 58), detail_rect, 1, border_radius=8)
         compare_player_id = None
-        if hover_player_id and hover_player_id != selected_player_id and not drag_player_id:
-            compare_player_id = hover_player_id
+        if drag_player_id and str(drag_player_id) == str(selected_player_id) and hover_target_id and hover_target_id != selected_player_id:
+            compare_player_id = hover_target_id
         self._draw_player_detail_panel(
             detail_rect,
             players_by_id,
@@ -2340,8 +2340,8 @@ class Renderer:
     def _draw_team_instruction_preview(self, card: pygame.Rect, key: str, current_value: str) -> None:
         left_label, center_label, right_label = instruction_preview_labels(key, current_value)
         arrow_y = card.bottom - 28
-        left_rect = pygame.Rect(card.x + 12, arrow_y - 1, 12, 12)
-        right_rect = pygame.Rect(card.right - 24, arrow_y - 1, 12, 12)
+        left_rect = pygame.Rect(card.x + 10, arrow_y + 1, 8, 8)
+        right_rect = pygame.Rect(card.right - 18, arrow_y + 1, 8, 8)
         left_enabled = left_label is not None
         right_enabled = right_label is not None
         left_color = (220, 224, 232) if left_enabled else (88, 92, 104)
@@ -2360,15 +2360,15 @@ class Renderer:
         )
         center_y = card.bottom - 18
         if left_label:
-            draw_text(self.screen, left_label, card.x + 28, center_y, (112, 116, 128), scale=1)
+            draw_text(self.screen, left_label, card.x + 22, center_y, (112, 116, 128), scale=1)
         center_x = card.centerx - text_width(center_label, 1) // 2
         draw_text(self.screen, center_label, center_x, center_y, (245, 245, 245), scale=1)
         if right_label:
-            draw_text(self.screen, right_label, card.right - 28 - text_width(right_label, 1), center_y, (112, 116, 128), scale=1)
+            draw_text(self.screen, right_label, card.right - 22 - text_width(right_label, 1), center_y, (112, 116, 128), scale=1)
         if left_enabled:
-            self._register_ui(f"squad:instruction_step:{key}:-1", left_rect.inflate(6, 6))
+            self._register_ui(f"squad:instruction_step:{key}:-1", left_rect.inflate(8, 8))
         if right_enabled:
-            self._register_ui(f"squad:instruction_step:{key}:1", right_rect.inflate(6, 6))
+            self._register_ui(f"squad:instruction_step:{key}:1", right_rect.inflate(8, 8))
 
     def _attribute_profile(self, player: dict) -> dict[str, float]:
         attrs = dict(player.get("attributes", {}))
@@ -2378,7 +2378,7 @@ class Renderer:
             return sum(values) / max(1, len(values))
         return {
             "MENTAL": avg("decisions", "anticipation", "composure"),
-            "DEFENDING": avg("tackling", "positioning", "stamina"),
+            "DEFENDING": avg("tackling", "positioning", "strength"),
             "PHYSICAL": avg("stamina", "pace", "acceleration"),
             "SPEED": avg("pace", "acceleration", "off_ball"),
             "VISION": avg("vision", "passing", "long_passing"),
@@ -2388,11 +2388,10 @@ class Renderer:
     def _draw_attribute_radar(self, rect: pygame.Rect, player: dict) -> None:
         values = self._attribute_profile(player)
         labels = list(values.keys())
-        center = rect.center
-        radius = min(rect.width, rect.height) // 2 - 10
-        rings = [0.25, 0.45, 0.65, 0.85]
-        ring_colors = [(90, 188, 108), (146, 204, 112), (220, 210, 110), (242, 132, 108)]
-        points_by_ring: list[list[tuple[int, int]]] = []
+        center = (rect.centerx, rect.centery + 8)
+        radius = max(36, min(rect.width, rect.height) // 2 - 36)
+        rings = [0.28, 0.48, 0.68, 0.88]
+        ring_colors = [(42, 46, 54), (54, 60, 70), (68, 76, 88), (84, 94, 108)]
         for scale, color in zip(reversed(rings), reversed(ring_colors)):
             ring_points = []
             for idx in range(len(labels)):
@@ -2403,25 +2402,63 @@ class Renderer:
                         int(center[1] + math.sin(angle) * radius * scale),
                     )
                 )
-            points_by_ring.append(ring_points)
             pygame.draw.polygon(self.screen, color, ring_points)
+            pygame.draw.polygon(self.screen, (94, 100, 114), ring_points, 1)
         value_points = []
         for idx, label in enumerate(labels):
             angle = (-math.pi / 2) + idx * (math.pi * 2 / len(labels))
-            scale = max(0.22, min(1.0, float(values[label]) / 100.0))
+            scale = max(0.18, min(0.78, float(values[label]) / 115.0))
             value_points.append(
                 (
                     int(center[0] + math.cos(angle) * radius * scale),
                     int(center[1] + math.sin(angle) * radius * scale),
                 )
             )
-        pygame.draw.polygon(self.screen, (255, 239, 160), value_points)
-        pygame.draw.polygon(self.screen, (24, 24, 28), value_points, 2)
+        pygame.draw.polygon(self.screen, (250, 231, 156), value_points)
+        pygame.draw.polygon(self.screen, (242, 132, 108), value_points, 2)
         for idx, label in enumerate(labels):
             angle = (-math.pi / 2) + idx * (math.pi * 2 / len(labels))
-            label_x = int(center[0] + math.cos(angle) * (radius + 18))
-            label_y = int(center[1] + math.sin(angle) * (radius + 14))
-            draw_text(self.screen, label, label_x - text_width(label, 1) // 2, label_y - 4, (220, 224, 232), scale=1)
+            label_x = int(center[0] + math.cos(angle) * (radius + 34))
+            label_y = int(center[1] + math.sin(angle) * (radius + 26))
+            value_text = str(int(round(values[label])))
+            draw_text(self.screen, label, label_x - text_width(label, 1) // 2, label_y - 12, (220, 224, 232), scale=1)
+            draw_text(self.screen, value_text, label_x - text_width(value_text, 1) // 2, label_y + 4, (248, 187, 32), scale=1)
+
+    def _draw_foot_icon(self, rect: pygame.Rect, active: bool, flip: bool = False) -> None:
+        color = (248, 187, 32) if active else (94, 98, 110)
+        sole = [
+            (0.22, 0.08), (0.48, 0.06), (0.66, 0.16), (0.76, 0.34),
+            (0.76, 0.56), (0.62, 0.8), (0.4, 0.92), (0.24, 0.8), (0.18, 0.5), (0.18, 0.24),
+        ]
+        toes = [(0.68, 0.14), (0.84, 0.18), (0.9, 0.28), (0.84, 0.38), (0.7, 0.34)]
+        if flip:
+            sole = [(1.0 - px, py) for px, py in sole]
+            toes = [(1.0 - px, py) for px, py in toes]
+        pygame.draw.polygon(self.screen, color, scale_points(sole, rect), 2)
+        pygame.draw.polygon(self.screen, color, scale_points(toes, rect), 2)
+
+    def _draw_stat_icon(self, kind: str, rect: pygame.Rect, color: Tuple[int, int, int]) -> None:
+        if kind == "apps":
+            body = rect.inflate(-4, -2)
+            pygame.draw.rect(self.screen, color, body, 2, border_radius=2)
+            pygame.draw.line(self.screen, color, (body.x + 3, body.y + 5), (body.right - 3, body.y + 5), 2)
+            pygame.draw.line(self.screen, color, (body.x + 4, body.y - 1), (body.x + 4, body.y + 5), 2)
+            pygame.draw.line(self.screen, color, (body.right - 4, body.y - 1), (body.right - 4, body.y + 5), 2)
+        elif kind == "goals":
+            pygame.draw.circle(self.screen, color, rect.center, max(5, rect.width // 3), 2)
+            pygame.draw.line(self.screen, color, (rect.centerx - 3, rect.centery), (rect.centerx + 3, rect.centery), 2)
+            pygame.draw.line(self.screen, color, (rect.centerx, rect.centery - 3), (rect.centerx, rect.centery + 3), 2)
+        else:
+            boot_rect = rect.inflate(-2, -3)
+            boot = [(0.1, 0.5), (0.42, 0.5), (0.58, 0.62), (0.84, 0.62), (0.9, 0.8), (0.18, 0.8), (0.08, 0.66)]
+            pygame.draw.polygon(self.screen, color, scale_points(boot, boot_rect), 2)
+            pygame.draw.line(self.screen, color, (boot_rect.x + 4, boot_rect.y + 6), (boot_rect.x + 10, boot_rect.y + 6), 2)
+
+    def _draw_stat_chip(self, rect: pygame.Rect, kind: str, value: int) -> None:
+        icon_rect = pygame.Rect(rect.x, rect.y, 16, 16)
+        self._draw_stat_icon(kind, icon_rect, (200, 204, 212))
+        value_text = str(int(value))
+        draw_text(self.screen, value_text, icon_rect.right + 5, rect.y + 4, (220, 224, 232), scale=1)
 
     def _draw_slider_control(
         self,
@@ -2454,18 +2491,23 @@ class Renderer:
         }
 
     def _draw_single_player_focus(self, rect: pygame.Rect, player: dict, instructions: dict[str, int]) -> None:
-        info_rect = pygame.Rect(rect.x + 18, rect.y + 18, max(220, rect.width // 2 - 24), rect.height - 36)
+        info_rect = pygame.Rect(rect.x + 18, rect.y + 18, max(240, rect.width // 2 - 22), rect.height - 36)
         side_rect = pygame.Rect(info_rect.right + 18, rect.y + 18, rect.right - info_rect.right - 36, rect.height - 36)
         name = player["name"].upper()
         number = "".join(ch for ch in player["id"] if ch.isdigit())[-2:] or "0"
-        foot = "LEFT FOOTED" if player["position"] in ("LB", "LW") else "RIGHT FOOTED"
-        draw_text(self.screen, name, info_rect.x, info_rect.y, (245, 245, 245), scale=2)
+        preferred_foot = str(player.get("preferred_foot", "right")).lower()
+        draw_text(self.screen, name, info_rect.x, info_rect.y, (248, 187, 32), scale=2)
         draw_text(self.screen, number.rjust(2, "0"), info_rect.right - text_width(number.rjust(2, "0"), 2), info_rect.y, (248, 187, 32), scale=2)
-        meta = f"{player['position']}     {foot}"
-        draw_text(self.screen, meta, info_rect.x, info_rect.y + 28, (170, 174, 182), scale=1)
-        season_line = f"APPS {int(player.get('apps', 0))}  GOALS {int(player.get('goals', 0))}  ASSISTS {int(player.get('assists', 0))}"
-        draw_text(self.screen, season_line, info_rect.x, info_rect.y + 46, (220, 224, 232), scale=1)
-        radar_rect = pygame.Rect(info_rect.x + 8, info_rect.y + 78, min(240, info_rect.width - 16), min(240, info_rect.height - 96))
+        draw_text(self.screen, player["position"], info_rect.x, info_rect.y + 28, (170, 174, 182), scale=1)
+        foot_left_rect = pygame.Rect(info_rect.x + 34, info_rect.y + 26, 14, 18)
+        foot_right_rect = pygame.Rect(info_rect.x + 54, info_rect.y + 26, 14, 18)
+        self._draw_foot_icon(foot_left_rect, preferred_foot == "left", flip=False)
+        self._draw_foot_icon(foot_right_rect, preferred_foot == "right", flip=True)
+        stats_y = info_rect.y + 52
+        self._draw_stat_chip(pygame.Rect(info_rect.x, stats_y, 48, 18), "apps", int(player.get("apps", 0)))
+        self._draw_stat_chip(pygame.Rect(info_rect.x + 74, stats_y, 48, 18), "goals", int(player.get("goals", 0)))
+        self._draw_stat_chip(pygame.Rect(info_rect.x + 148, stats_y, 48, 18), "assists", int(player.get("assists", 0)))
+        radar_rect = pygame.Rect(info_rect.x + 6, info_rect.y + 82, min(info_rect.width - 12, 270), min(info_rect.height - 96, 270))
         self._draw_attribute_radar(radar_rect, player)
 
         draw_text(self.screen, "PLAYER INSTRUCTIONS", side_rect.x, side_rect.y, (248, 187, 32), scale=1)
@@ -2481,12 +2523,12 @@ class Renderer:
         pygame.draw.rect(self.screen, (20, 22, 28), rect, border_radius=8)
         pygame.draw.rect(self.screen, tint, rect, 1, border_radius=8)
         name = short_display_name(player["name"], 18).upper()
-        draw_text(self.screen, name, rect.x + 12, rect.y + 10, (245, 245, 245), scale=1)
+        draw_text(self.screen, name, rect.x + 12, rect.y + 10, tint, scale=1)
         meta = f"{player['position']}  OVR {player['ovr']}"
         draw_text(self.screen, meta, rect.x + 12, rect.y + 28, (170, 174, 182), scale=1)
         season = f"{int(player.get('apps', 0))} APPS  {int(player.get('goals', 0))} G  {int(player.get('assists', 0))} A"
         draw_text(self.screen, season, rect.x + 12, rect.y + 44, (220, 224, 232), scale=1)
-        radar_rect = pygame.Rect(rect.x + 10, rect.y + 70, rect.width - 20, rect.height - 82)
+        radar_rect = pygame.Rect(rect.x + 10, rect.y + 72, rect.width - 20, rect.height - 86)
         self._draw_attribute_radar(radar_rect, player)
 
     def _draw_player_detail_panel(

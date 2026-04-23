@@ -48,6 +48,39 @@ PLAYER_INSTRUCTION_LABELS = {
     "mindset": ("HELP TEAM DEFEND", "FOCUS ON ATTACK"),
 }
 
+PREFERRED_FOOT_OPTIONS = ("left", "right")
+
+KNOWN_PREFERRED_FEET = {
+    "DAVID RAYA": "right",
+    "OLEKS ZINCHENKO": "left",
+    "BEN WHITE": "right",
+    "THOMAS PARTEY": "right",
+    "MARTIN ODEGAARD": "left",
+    "GABRIEL MARTINELLI": "right",
+    "GABRIEL JESUS": "right",
+    "BUKAYO SAKA": "left",
+    "AARON RAMSDALE": "right",
+    "LEANDRO TROSSARD": "right",
+    "ANDRE ONANA": "right",
+    "LUKE SHAW": "left",
+    "LISANDRO MARTINEZ": "left",
+    "BRUNO FERNANDES": "right",
+    "MARCUS RASHFORD": "right",
+    "ANTONY": "left",
+    "BEN CHILWELL": "left",
+    "ENZO FERNANDEZ": "right",
+    "COLE PALMER": "left",
+    "MYKHAILO MUDRYK": "right",
+    "NONI MADUEKE": "left",
+    "EDERSON": "left",
+    "JOSKO GVARDIOL": "left",
+    "KEVIN DE BRUYNE": "right",
+    "BERNARDO SILVA": "left",
+    "JEREMY DOKU": "right",
+    "PHIL FODEN": "left",
+    "JULIAN ALVAREZ": "left",
+}
+
 
 def normalize_team_instructions(custom: Dict[str, str] | None) -> Dict[str, str]:
     instructions = dict(DEFAULT_TEAM_INSTRUCTIONS)
@@ -86,6 +119,21 @@ def normalize_player_instruction_map(custom: Dict[str, Dict[str, int]] | None) -
             continue
         normalized[player_id] = normalize_player_instructions(values if isinstance(values, dict) else None)
     return normalized
+
+
+def normalize_preferred_foot(value: str | None) -> str:
+    foot = str(value or "right").strip().lower()
+    return foot if foot in PREFERRED_FOOT_OPTIONS else "right"
+
+
+def infer_preferred_foot(name: str | None, position: str | None) -> str:
+    lookup = KNOWN_PREFERRED_FEET.get(str(name or "").strip().upper())
+    if lookup:
+        return lookup
+    pos = str(position or "").upper()
+    if pos in {"LB", "LW"}:
+        return "left"
+    return "right"
 
 
 def stamina_ratio_for_player(stamina: float, fatigue: float) -> float:
@@ -151,6 +199,7 @@ class PlayerProfile:
     position: str
     ovr: int
     attributes: Dict[str, float]
+    preferred_foot: str = "right"
     current_stamina: float = 100.0
 
 

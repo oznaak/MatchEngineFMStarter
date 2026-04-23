@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List
 
-from .models import Club, PlayerProfile, normalize_player_instruction_map, normalize_team_instructions
+from .models import Club, PlayerProfile, infer_preferred_foot, normalize_player_instruction_map, normalize_preferred_foot, normalize_team_instructions
 
 DEFAULT_TACTICS = {
     "tempo": 50.0,
@@ -199,6 +199,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL,
             position TEXT NOT NULL,
             ovr INTEGER NOT NULL,
+            preferred_foot TEXT NOT NULL DEFAULT 'right',
             FOREIGN KEY (club_id) REFERENCES clubs(id)
         );
 
@@ -307,6 +308,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "fixtures", "report_json", "TEXT")
     _ensure_column(conn, "save_club_setups", "instructions_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(conn, "save_club_setups", "player_instructions_json", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(conn, "players", "preferred_foot", "TEXT NOT NULL DEFAULT 'right'")
+    _backfill_player_feet(conn)
     _backfill_calendar_fields(conn)
     conn.commit()
 
@@ -388,6 +391,19 @@ def _backfill_calendar_fields(conn: sqlite3.Connection) -> None:
             "UPDATE fixtures SET fixture_date = ? WHERE id = ?",
             (fixture_date.isoformat(), int(row["id"])),
         )
+
+
+def _backfill_player_feet(conn: sqlite3.Connection) -> None:
+    rows = conn.execute("SELECT id, name, position, preferred_foot FROM players").fetchall()
+    for row in rows:
+        raw_value = row["preferred_foot"]
+        current = normalize_preferred_foot(raw_value)
+        inferred = infer_preferred_foot(str(row["name"]), str(row["position"]))
+        if raw_value is None or str(raw_value).strip().lower() not in {"left", "right"} or (current == "right" and inferred == "left"):
+            conn.execute(
+                "UPDATE players SET preferred_foot = ? WHERE id = ?",
+                (inferred, str(row["id"])),
+            )
 
 
 def _ensure_default_badges(conn: sqlite3.Connection) -> None:
@@ -500,6 +516,7 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
         player_rows = conn.execute(
             """
             SELECT p.id, p.club_id, p.name, p.position, p.ovr, pc.current_stamina
+                 , p.preferred_foot
             FROM players p
             LEFT JOIN player_condition pc ON pc.player_id = p.id
             ORDER BY p.club_id, p.id
@@ -509,6 +526,7 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
         player_rows = conn.execute(
             """
             SELECT p.id, p.club_id, p.name, p.position, p.ovr, spc.current_stamina
+                 , p.preferred_foot
             FROM players p
             LEFT JOIN save_player_condition spc
               ON spc.player_id = p.id AND spc.save_id = ?
@@ -585,6 +603,7 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
                 position=str(row["position"]),
                 ovr=int(row["ovr"]),
                 attributes=dict(attrs_by_player.get(player_id, {})),
+                preferred_foot=normalize_preferred_foot(row["preferred_foot"]),
                 current_stamina=float(row["current_stamina"]) if row["current_stamina"] is not None else 100.0,
             )
         )
@@ -774,6 +793,7 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
         rows = conn.execute(
             """
             SELECT p.id, p.name, p.position, p.ovr, pc.current_stamina
+                 , p.preferred_foot
             FROM players p
             LEFT JOIN player_condition pc ON pc.player_id = p.id
             WHERE p.club_id = ?
@@ -797,6 +817,7 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
         rows = conn.execute(
             """
             SELECT p.id, p.name, p.position, p.ovr, spc.current_stamina
+                 , p.preferred_foot
             FROM players p
             LEFT JOIN save_player_condition spc
               ON spc.player_id = p.id AND spc.save_id = ?
@@ -823,6 +844,7 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
             "name": str(row["name"]),
             "position": str(row["position"]),
             "ovr": int(row["ovr"]),
+            "preferred_foot": normalize_preferred_foot(row["preferred_foot"]),
             "current_stamina": float(row["current_stamina"]) if row["current_stamina"] is not None else 100.0,
             "attributes": dict(attrs_by_player.get(str(row["id"]), {})),
         }

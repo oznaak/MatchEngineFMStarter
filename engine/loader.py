@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from .models import Club, PlayerProfile
+from .models import Club, PlayerProfile, infer_preferred_foot, normalize_preferred_foot
 
 FORMATIONS: Dict[str, List[str]] = {
     "4-3-3": ["GK", "LB", "CB", "CB", "RB", "DM", "CM", "AM", "LW", "ST", "RW"],
@@ -181,6 +181,7 @@ def load_league(path: Path) -> Dict[str, Club]:
                     position=p["position"],
                     ovr=int(p["ovr"]),
                     attributes=merge_player_attributes(int(p["ovr"]), p["position"], p.get("attributes")),
+                    preferred_foot=normalize_preferred_foot(p.get("preferred_foot", infer_preferred_foot(p.get("name"), p.get("position")))),
                     current_stamina=max(0.0, min(100.0, float(p.get("current_stamina", 100.0)))),
                 )
             )
