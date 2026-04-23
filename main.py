@@ -185,6 +185,15 @@ class ManagerGameApp:
         self.match_current_day = 0
         self.match_finish_timer = 0.0
         self.match_selected_player_id: str | None = None
+        self.match_sub_mode = False
+        self.match_sub_restore_paused = False
+        self.match_sub_drag_player_id: str | None = None
+        self.match_sub_drag_pos: tuple[int, int] | None = None
+        self.match_sub_hover_player_id: str | None = None
+        self.match_sub_draft_xi_ids: list[str] = []
+        self.match_sub_draft_bench_ids: list[str] = []
+        self.match_pending_substitutions: list[tuple[str, str]] = []
+        self.match_sub_animation: dict | None = None
         self.fixture_report: dict | None = None
         self.fixture_report_selected_player_id: str | None = None
         self.modal: dict | None = None
@@ -278,6 +287,138 @@ class ManagerGameApp:
             return True
         return False
 
+    def _managed_match_side(self) -> str | None:
+        if not self.match_fixture or not self.overview:
+            return None
+        managed_club_id = self.overview["club_id"]
+        if self.match_fixture["home_club_id"] == managed_club_id:
+            return "home"
+        if self.match_fixture["away_club_id"] == managed_club_id:
+            return "away"
+        return None
+
+    def _managed_match_team(self):
+        if not self.match_engine:
+            return None
+        side = self._managed_match_side()
+        if side == "home":
+            return self.match_engine.home
+        if side == "away":
+            return self.match_engine.away
+        return None
+
+    def _reset_match_sub_state(self, restore_pause: bool = True) -> None:
+        if restore_pause and self.match_engine and not self.match_engine.state.is_finished:
+            self.match_paused = self.match_sub_restore_paused
+        self.match_sub_mode = False
+        self.match_sub_restore_paused = False
+        self.match_sub_drag_player_id = None
+        self.match_sub_drag_pos = None
+        self.match_sub_hover_player_id = None
+        self.match_sub_draft_xi_ids = []
+        self.match_sub_draft_bench_ids = []
+
+    def _match_has_natural_stoppage(self) -> bool:
+        if not self.match_engine or self.match_engine.state.is_finished:
+            return False
+        state = self.match_engine.state
+        return state.awaiting_start or state.restart_timer > 0.0 or state.restart_mode == "kickoff_setup"
+
+    def _start_match_sub_animation(self) -> None:
+        side = self._managed_match_side()
+        if not self.match_engine or not side or not self.match_pending_substitutions:
+            return
+        self.match_paused = True
+        self.match_sub_animation = {
+            "side": side,
+            "pairs": list(self.match_pending_substitutions),
+            "duration": 1.8,
+            "elapsed": 0.0,
+            "applied": False,
+        }
+
+    def _update_match_sub_animation(self, dt: float) -> None:
+        if not self.match_sub_animation or not self.match_engine:
+            return
+        animation = self.match_sub_animation
+        animation["elapsed"] += dt
+        duration = float(animation.get("duration", 1.8))
+        midpoint = duration * 0.5
+        if not animation.get("applied") and animation["elapsed"] >= midpoint:
+            side = str(animation.get("side", "home"))
+            applied = self.match_engine.apply_substitution_window(side, list(animation.get("pairs", [])))
+            if applied > 0:
+                active_ids = {player.profile.id for player in self.match_engine._team_state(side).xi}
+                if self.match_selected_player_id and self.match_selected_player_id not in active_ids:
+                    self.match_selected_player_id = next(iter(active_ids), None)
+            self.match_pending_substitutions = []
+            animation["applied"] = True
+        if animation["elapsed"] >= duration:
+            self.match_sub_animation = None
+            self.match_paused = False
+
+    def _enter_match_sub_mode(self) -> None:
+        team = self._managed_match_team()
+        side = self._managed_match_side()
+        if not self.match_engine or not team or not side:
+            return
+        if self.match_pending_substitutions or self.match_sub_animation:
+            return
+        if not self.match_engine.can_make_substitution_window(side):
+            return
+        self.match_sub_restore_paused = self.match_paused
+        self.match_paused = True
+        self.match_sub_mode = True
+        self.match_sub_drag_player_id = None
+        self.match_sub_drag_pos = None
+        self.match_sub_hover_player_id = None
+        self.match_sub_draft_xi_ids = [player.profile.id for player in team.xi]
+        self.match_sub_draft_bench_ids = [player.id for player in team.bench]
+
+    def _apply_sub_draft_swap(self, source_id: str, target_id: str) -> None:
+        team = self._managed_match_team()
+        if not team:
+            return
+        if source_id == target_id:
+            return
+        if source_id in team.subbed_out_ids:
+            return
+        if target_id in team.subbed_out_ids:
+            return
+        if source_id in self.match_sub_draft_xi_ids and target_id in self.match_sub_draft_bench_ids:
+            xi_index = self.match_sub_draft_xi_ids.index(source_id)
+            bench_index = self.match_sub_draft_bench_ids.index(target_id)
+        elif source_id in self.match_sub_draft_bench_ids and target_id in self.match_sub_draft_xi_ids:
+            xi_index = self.match_sub_draft_xi_ids.index(target_id)
+            bench_index = self.match_sub_draft_bench_ids.index(source_id)
+        else:
+            return
+        self.match_sub_draft_xi_ids[xi_index], self.match_sub_draft_bench_ids[bench_index] = (
+            self.match_sub_draft_bench_ids[bench_index],
+            self.match_sub_draft_xi_ids[xi_index],
+        )
+        remaining = 5 - team.substitutions_used
+        diff_count = sum(1 for player, draft_id in zip(team.xi, self.match_sub_draft_xi_ids) if player.profile.id != draft_id)
+        if diff_count > remaining:
+            self.match_sub_draft_xi_ids[xi_index], self.match_sub_draft_bench_ids[bench_index] = (
+                self.match_sub_draft_bench_ids[bench_index],
+                self.match_sub_draft_xi_ids[xi_index],
+            )
+
+    def _confirm_match_subs(self) -> None:
+        team = self._managed_match_team()
+        side = self._managed_match_side()
+        if not self.match_engine or not team or not side or not self.match_sub_mode:
+            return
+        changes = [
+            (player.profile.id, draft_id)
+            for player, draft_id in zip(team.xi, self.match_sub_draft_xi_ids)
+            if player.profile.id != draft_id
+        ]
+        if changes:
+            self.match_pending_substitutions = changes
+        self._reset_match_sub_state(restore_pause=True)
+
     def _start_next_match(self) -> None:
         if self.active_save_id is None or not self.overview:
             return
@@ -286,8 +427,8 @@ class ManagerGameApp:
             return
         with db_session(self.db_path) as conn:
             bootstrap_database(conn)
-            clubs = load_clubs_from_db(conn)
-        load_condition_state(self.db_path, clubs)
+            clubs = load_clubs_from_db(conn, save_id=self.active_save_id)
+        load_condition_state(self.db_path, clubs, save_id=self.active_save_id)
         home_id = fixture["home_club_id"]
         away_id = fixture["away_club_id"]
         if home_id not in clubs or away_id not in clubs:
@@ -302,20 +443,23 @@ class ManagerGameApp:
         self.screen = "match"
         self.match_finish_timer = 0.0
         self.match_selected_player_id = self.match_engine.home.xi[0].profile.id if self.match_engine.home.xi else None
+        self._reset_match_sub_state(restore_pause=False)
+        self.match_pending_substitutions = []
+        self.match_sub_animation = None
 
     def _advance_one_day(self) -> None:
         if self.active_save_id is None:
             return
         with db_session(self.db_path) as conn:
             bootstrap_database(conn)
-            clubs = load_clubs_from_db(conn)
-            load_condition_state(self.db_path, clubs)
+            clubs = load_clubs_from_db(conn, save_id=self.active_save_id)
+            load_condition_state(self.db_path, clubs, save_id=self.active_save_id)
             save_row = conn.execute("SELECT current_day FROM saves WHERE id = ?", (self.active_save_id,)).fetchone()
             if save_row is None:
                 return
             next_day = int(save_row["current_day"]) + 1
             advance_condition_days(clubs, 1)
-            save_condition_state_to_conn(conn, clubs, next_day)
+            save_condition_state_to_conn(conn, clubs, next_day, save_id=self.active_save_id)
             set_save_current_day(conn, self.active_save_id, next_day)
             conn.commit()
         self._reload_state()
@@ -420,6 +564,8 @@ class ManagerGameApp:
                 engine.start_match_flow()
                 safety = 0
                 while not engine.state.is_finished and safety < 12000:
+                    if engine.state.awaiting_start:
+                        engine.start_match_flow()
                     engine.update(1.0 / 30.0)
                     safety += 1
                 apply_post_match_condition(engine.state)
@@ -430,7 +576,7 @@ class ManagerGameApp:
                     engine.state.away_score,
                     report=self._build_match_report(engine, other),
                 )
-            save_condition_state_to_conn(conn, season_clubs, self.match_current_day)
+            save_condition_state_to_conn(conn, season_clubs, self.match_current_day, save_id=self.active_save_id)
             conn.commit()
         self.match_condition_saved = True
         self.match_engine = None
@@ -438,6 +584,9 @@ class ManagerGameApp:
         self.match_clubs = None
         self.match_finish_timer = 0.0
         self.match_selected_player_id = None
+        self._reset_match_sub_state(restore_pause=False)
+        self.match_pending_substitutions = []
+        self.match_sub_animation = None
         self.fixture_report = None
         self.fixture_report_selected_player_id = None
         self.screen = "overview"
@@ -631,6 +780,15 @@ class ManagerGameApp:
             elif self.screen == "match_report":
                 self.fixture_report_selected_player_id = player_id
             return
+        if action == "match:subs:start":
+            self._enter_match_sub_mode()
+            return
+        if action == "match:subs:cancel":
+            self._reset_match_sub_state(restore_pause=True)
+            return
+        if action == "match:subs:confirm":
+            self._confirm_match_subs()
+            return
         if action.startswith("overview:fixture:"):
             fixture_id = int(action.split(":", 2)[2])
             with db_session(self.db_path) as conn:
@@ -681,6 +839,9 @@ class ManagerGameApp:
             if not self.match_engine:
                 return
             if self._is_bound(event, "bind_menu", "escape"):
+                if self.match_sub_mode:
+                    self._reset_match_sub_state(restore_pause=True)
+                    return
                 self._open_escape_modal()
                 return
             if self.match_engine.state.is_finished:
@@ -690,6 +851,10 @@ class ManagerGameApp:
             if self.match_engine.state.awaiting_start and self._is_bound(event, "bind_start", "enter"):
                 if self.match_engine.start_match_flow():
                     self.match_paused = False
+                return
+            if self.match_sub_mode:
+                if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    self._confirm_match_subs()
                 return
             if self._is_bound(event, "bind_pause", "space"):
                 if not self.match_engine.state.awaiting_start and not self.match_engine.state.is_finished:
@@ -773,11 +938,40 @@ class ManagerGameApp:
                     self.running = False
                 elif event.type == pygame.KEYDOWN:
                     self._handle_keydown(event)
+                elif event.type == pygame.MOUSEMOTION:
+                    if self.screen == "match" and self.match_sub_mode and self.match_sub_drag_player_id:
+                        self.match_sub_drag_pos = event.pos
+                        hit = self.renderer.handle_sub_row_hit(event.pos)
+                        if hit:
+                            target_id = str(hit["player_id"])
+                            dragging_from_xi = self.match_sub_drag_player_id in self.match_sub_draft_xi_ids
+                            hovering_valid_target = (
+                                target_id != self.match_sub_drag_player_id
+                                and not bool(hit.get("unavailable"))
+                                and (
+                                    (dragging_from_xi and target_id in self.match_sub_draft_bench_ids)
+                                    or ((not dragging_from_xi) and target_id in self.match_sub_draft_xi_ids)
+                                )
+                            )
+                            self.match_sub_hover_player_id = target_id if hovering_valid_target else None
+                        else:
+                            self.match_sub_hover_player_id = None
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if self.modal:
                         self._handle_action(self.renderer.handle_ui_click(event.pos))
                         continue
                     if self.screen == "match" and self.match_engine:
+                        if self.match_sub_mode:
+                            action = self.renderer.handle_ui_click(event.pos)
+                            if action:
+                                self._handle_action(action)
+                                continue
+                            hit = self.renderer.handle_sub_row_hit(event.pos)
+                            if hit and not bool(hit.get("unavailable")):
+                                self.match_sub_drag_player_id = str(hit["player_id"])
+                                self.match_sub_drag_pos = event.pos
+                                self.match_sub_hover_player_id = None
+                            continue
                         action = self.renderer.handle_ui_click(event.pos)
                         if action:
                             self._handle_action(action)
@@ -795,7 +989,19 @@ class ManagerGameApp:
                     else:
                         action = self.renderer.handle_ui_click(event.pos)
                         self._handle_action(action)
+                elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    if self.screen == "match" and self.match_sub_mode and self.match_sub_drag_player_id:
+                        hit = self.renderer.handle_sub_row_hit(event.pos)
+                        if hit and not bool(hit.get("unavailable")):
+                            self._apply_sub_draft_swap(self.match_sub_drag_player_id, str(hit["player_id"]))
+                        self.match_sub_drag_player_id = None
+                        self.match_sub_drag_pos = None
+                        self.match_sub_hover_player_id = None
             if self.screen == "match" and self.match_engine:
+                if self.match_pending_substitutions and not self.match_sub_animation and not self.match_paused and self._match_has_natural_stoppage():
+                    self._start_match_sub_animation()
+                if self.match_sub_animation:
+                    self._update_match_sub_animation(dt)
                 if not self.match_paused:
                     self.match_engine.update(dt)
                 if self.match_engine.state.is_finished and not self.match_condition_saved:
@@ -811,6 +1017,15 @@ class ManagerGameApp:
                     clock_seconds=self.match_engine.display_clock_seconds(),
                     commentary_colors=self._managed_club_colors(),
                     selected_player_id=self.match_selected_player_id,
+                    managed_side=self._managed_match_side(),
+                    subs_mode=self.match_sub_mode,
+                    draft_xi_ids=self.match_sub_draft_xi_ids if self.match_sub_mode else None,
+                    draft_bench_ids=self.match_sub_draft_bench_ids if self.match_sub_mode else None,
+                    drag_player_id=self.match_sub_drag_player_id,
+                    drag_pos=self.match_sub_drag_pos,
+                    hover_player_id=self.match_sub_hover_player_id,
+                    sub_animation=self.match_sub_animation,
+                    subs_pending=bool(self.match_pending_substitutions),
                     present=not self.modal,
                 )
                 if self.modal:

@@ -217,6 +217,16 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (player_id) REFERENCES players(id)
         );
 
+        CREATE TABLE IF NOT EXISTS save_player_condition (
+            save_id INTEGER NOT NULL,
+            player_id TEXT NOT NULL,
+            current_stamina REAL NOT NULL,
+            updated_day INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (save_id, player_id),
+            FOREIGN KEY (save_id) REFERENCES saves(id),
+            FOREIGN KEY (player_id) REFERENCES players(id)
+        );
+
         CREATE TABLE IF NOT EXISTS leagues (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL
@@ -461,7 +471,7 @@ def _ensure_default_options(conn: sqlite3.Connection) -> None:
         )
 
 
-def load_clubs_from_db(conn: sqlite3.Connection) -> Dict[str, Club]:
+def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> Dict[str, Club]:
     club_rows = conn.execute("SELECT id, name FROM clubs ORDER BY id").fetchall()
     tactic_rows = conn.execute("SELECT club_id, key, value FROM club_tactics").fetchall()
     color_rows = conn.execute("SELECT club_id, key, value FROM club_colors").fetchall()
@@ -471,14 +481,26 @@ def load_clubs_from_db(conn: sqlite3.Connection) -> Dict[str, Club]:
         FROM club_badges
         """
     ).fetchall()
-    player_rows = conn.execute(
-        """
-        SELECT p.id, p.club_id, p.name, p.position, p.ovr, pc.current_stamina
-        FROM players p
-        LEFT JOIN player_condition pc ON pc.player_id = p.id
-        ORDER BY p.club_id, p.id
-        """
-    ).fetchall()
+    if save_id is None:
+        player_rows = conn.execute(
+            """
+            SELECT p.id, p.club_id, p.name, p.position, p.ovr, pc.current_stamina
+            FROM players p
+            LEFT JOIN player_condition pc ON pc.player_id = p.id
+            ORDER BY p.club_id, p.id
+            """
+        ).fetchall()
+    else:
+        player_rows = conn.execute(
+            """
+            SELECT p.id, p.club_id, p.name, p.position, p.ovr, spc.current_stamina
+            FROM players p
+            LEFT JOIN save_player_condition spc
+              ON spc.player_id = p.id AND spc.save_id = ?
+            ORDER BY p.club_id, p.id
+            """,
+            (int(save_id),),
+        ).fetchall()
     attribute_rows = conn.execute("SELECT player_id, key, value FROM player_attributes").fetchall()
 
     tactics_by_club: Dict[str, Dict[str, float]] = {}
@@ -575,29 +597,54 @@ def list_league_clubs(conn: sqlite3.Connection, league_id: str) -> List[dict]:
     return clubs
 
 
-def list_club_players(conn: sqlite3.Connection, club_id: str) -> List[dict]:
-    rows = conn.execute(
-        """
-        SELECT p.id, p.name, p.position, p.ovr, pc.current_stamina
-        FROM players p
-        LEFT JOIN player_condition pc ON pc.player_id = p.id
-        WHERE p.club_id = ?
-        ORDER BY CASE p.position
-            WHEN 'GK' THEN 1
-            WHEN 'LB' THEN 2
-            WHEN 'CB' THEN 3
-            WHEN 'RB' THEN 4
-            WHEN 'DM' THEN 5
-            WHEN 'CM' THEN 6
-            WHEN 'AM' THEN 7
-            WHEN 'LW' THEN 8
-            WHEN 'ST' THEN 9
-            WHEN 'RW' THEN 10
-            ELSE 99
-        END, p.id
-        """,
-        (club_id,),
-    ).fetchall()
+def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | None = None) -> List[dict]:
+    if save_id is None:
+        rows = conn.execute(
+            """
+            SELECT p.id, p.name, p.position, p.ovr, pc.current_stamina
+            FROM players p
+            LEFT JOIN player_condition pc ON pc.player_id = p.id
+            WHERE p.club_id = ?
+            ORDER BY CASE p.position
+                WHEN 'GK' THEN 1
+                WHEN 'LB' THEN 2
+                WHEN 'CB' THEN 3
+                WHEN 'RB' THEN 4
+                WHEN 'DM' THEN 5
+                WHEN 'CM' THEN 6
+                WHEN 'AM' THEN 7
+                WHEN 'LW' THEN 8
+                WHEN 'ST' THEN 9
+                WHEN 'RW' THEN 10
+                ELSE 99
+            END, p.id
+            """,
+            (club_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT p.id, p.name, p.position, p.ovr, spc.current_stamina
+            FROM players p
+            LEFT JOIN save_player_condition spc
+              ON spc.player_id = p.id AND spc.save_id = ?
+            WHERE p.club_id = ?
+            ORDER BY CASE p.position
+                WHEN 'GK' THEN 1
+                WHEN 'LB' THEN 2
+                WHEN 'CB' THEN 3
+                WHEN 'RB' THEN 4
+                WHEN 'DM' THEN 5
+                WHEN 'CM' THEN 6
+                WHEN 'AM' THEN 7
+                WHEN 'LW' THEN 8
+                WHEN 'ST' THEN 9
+                WHEN 'RW' THEN 10
+                ELSE 99
+            END, p.id
+            """,
+            (int(save_id), club_id),
+        ).fetchall()
     return [
         {
             "id": str(row["id"]),
@@ -652,6 +699,13 @@ def set_current_day(conn: sqlite3.Connection, current_day: int) -> None:
     set_metadata(conn, "current_day", str(int(current_day)))
 
 
+def get_save_current_day(conn: sqlite3.Connection, save_id: int) -> int:
+    row = conn.execute("SELECT current_day FROM saves WHERE id = ?", (int(save_id),)).fetchone()
+    if row is None:
+        return 0
+    return int(row["current_day"] or 0)
+
+
 def get_metadata(conn: sqlite3.Connection, key: str) -> str | None:
     row = conn.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
     if row is None:
@@ -679,6 +733,16 @@ def load_player_condition(conn: sqlite3.Connection, player_id: str) -> float | N
     return float(row["current_stamina"])
 
 
+def load_save_player_condition(conn: sqlite3.Connection, save_id: int, player_id: str) -> float | None:
+    row = conn.execute(
+        "SELECT current_stamina FROM save_player_condition WHERE save_id = ? AND player_id = ?",
+        (int(save_id), player_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return float(row["current_stamina"])
+
+
 def save_player_condition(conn: sqlite3.Connection, player_id: str, stamina: float, current_day: int) -> None:
     conn.execute(
         """
@@ -689,6 +753,75 @@ def save_player_condition(conn: sqlite3.Connection, player_id: str, stamina: flo
             updated_day=excluded.updated_day
         """,
         (player_id, float(stamina), int(current_day)),
+    )
+
+
+def save_save_player_condition(conn: sqlite3.Connection, save_id: int, player_id: str, stamina: float, current_day: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO save_player_condition (save_id, player_id, current_stamina, updated_day)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(save_id, player_id) DO UPDATE SET
+            current_stamina=excluded.current_stamina,
+            updated_day=excluded.updated_day
+        """,
+        (int(save_id), player_id, float(stamina), int(current_day)),
+    )
+
+
+def seed_save_player_condition_from_global(conn: sqlite3.Connection, save_id: int, clubs: Dict[str, Club], current_day: int) -> None:
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM save_player_condition WHERE save_id = ?",
+        (int(save_id),),
+    ).fetchone()
+    if row is not None and int(row["count"] or 0) > 0:
+        return
+    for club in clubs.values():
+        for player in club.players:
+            saved = load_player_condition(conn, player.id)
+            stamina = player.current_stamina if saved is None else float(saved)
+            save_save_player_condition(conn, save_id, player.id, stamina, current_day)
+
+
+def seed_save_player_condition_defaults(conn: sqlite3.Connection, save_id: int) -> None:
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM save_player_condition WHERE save_id = ?",
+        (int(save_id),),
+    ).fetchone()
+    if row is not None and int(row["count"] or 0) > 0:
+        return
+    current_day = get_save_current_day(conn, save_id)
+    conn.execute(
+        """
+        INSERT INTO save_player_condition (save_id, player_id, current_stamina, updated_day)
+        SELECT ?, p.id, 100.0, ?
+        FROM players p
+        """,
+        (int(save_id), int(current_day)),
+    )
+
+
+def normalize_new_save_player_condition(conn: sqlite3.Connection, save_id: int) -> None:
+    save_row = conn.execute(
+        "SELECT current_day FROM saves WHERE id = ?",
+        (int(save_id),),
+    ).fetchone()
+    if save_row is None or int(save_row["current_day"] or 0) != 0:
+        return
+    played_row = conn.execute(
+        "SELECT COUNT(*) AS count FROM fixtures WHERE save_id = ? AND played = 1",
+        (int(save_id),),
+    ).fetchone()
+    if played_row is not None and int(played_row["count"] or 0) > 0:
+        return
+    conn.execute(
+        """
+        UPDATE save_player_condition
+        SET current_stamina = 100.0,
+            updated_day = 0
+        WHERE save_id = ?
+        """,
+        (int(save_id),),
     )
 
 
@@ -745,6 +878,7 @@ def create_save_game(conn: sqlite3.Connection, manager_name: str, league_id: str
     )
     save_id = int(cursor.lastrowid)
     _seed_fixtures_for_save(conn, save_id, league_id, season_year)
+    seed_save_player_condition_defaults(conn, save_id)
     set_metadata(conn, "active_save_id", str(save_id))
     conn.commit()
     return save_id
@@ -787,6 +921,9 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
 
 
 def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
+    seed_save_player_condition_defaults(conn, save_id)
+    normalize_new_save_player_condition(conn, save_id)
+    conn.commit()
     save_row = conn.execute(
         """
         SELECT s.id, s.current_day, s.current_date, s.season_year,
@@ -805,7 +942,7 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     league_id = str(save_row["league_id"])
     club_id = str(save_row["club_id"])
     clubs = list_league_clubs(conn, league_id)
-    players_by_club = {club["id"]: list_club_players(conn, club["id"]) for club in clubs}
+    players_by_club = {club["id"]: list_club_players(conn, club["id"], save_id=save_id) for club in clubs}
     next_fixture = get_next_fixture_for_save(conn, save_id, club_id)
     current_date = str(save_row["current_date"] or season_start_date(int(save_row["season_year"] or current_season_year())).isoformat())
     today_fixture = get_playable_fixture_for_save(conn, save_id, club_id, current_date)

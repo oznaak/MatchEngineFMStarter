@@ -50,7 +50,12 @@ def default_player_match_stats() -> Dict[str, float]:
         "duels_won": 0.0,
         "yellow_cards": 0.0,
         "red_cards": 0.0,
-        "rating": 6.8,
+        "goalkeeper_saves": 0.0,
+        "goalkeeper_high_claims": 0.0,
+        "goalkeeper_goals_conceded": 0.0,
+        "ball_recoveries": 0.0,
+        "long_balls_attempted": 0.0,
+        "long_balls_completed": 0.0,
     }
 
 
@@ -139,6 +144,9 @@ class TeamState:
     xi: List[PlayerState]
     bench: List[PlayerProfile]
     avg_ovr: float
+    substitutions_used: int = 0
+    substitution_windows_used: int = 0
+    subbed_out_ids: set[str] = field(default_factory=set)
 
     @property
     def name(self) -> str:

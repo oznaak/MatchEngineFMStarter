@@ -83,6 +83,7 @@ GLYPHS = {
     '8': ["01110","10001","10001","01110","10001","10001","01110"],
     '9': ["01110","10001","10001","01111","00001","00001","01110"],
     ':': ["00000","00100","00100","00000","00100","00100","00000"],
+    '%': ["11001","11010","00100","01000","10110","00110","00000"],
     '-': ["00000","00000","00000","11111","00000","00000","00000"],
     '.': ["00000","00000","00000","00000","00000","00110","00110"],
     '[': ["01110","01000","01000","01000","01000","01000","01110"],
@@ -184,6 +185,7 @@ class Renderer:
         pygame.init()
         pygame.display.set_caption("MY MANAGER CAREER")
         self.ui_click_targets: dict[str, pygame.Rect] = {}
+        self.sub_row_targets: dict[str, dict[str, object]] = {}
         self.fullscreen = fullscreen
         self.display_index = 0
         self.screen = pygame.Surface((1, 1))
@@ -236,6 +238,13 @@ class Renderer:
         for action, rect in self.ui_click_targets.items():
             if rect.collidepoint(pos):
                 return action
+        return None
+
+    def handle_sub_row_hit(self, pos: Tuple[int, int]) -> dict[str, object] | None:
+        for info in self.sub_row_targets.values():
+            rect = info.get("rect")
+            if isinstance(rect, pygame.Rect) and rect.collidepoint(pos):
+                return info
         return None
 
     def _draw_club_badge(self, badge: dict | None, rect: pygame.Rect) -> None:
@@ -300,9 +309,19 @@ class Renderer:
         clock_seconds: float | None = None,
         commentary_colors: tuple[Tuple[int, int, int], Tuple[int, int, int]] | None = None,
         selected_player_id: str | None = None,
+        managed_side: str | None = None,
+        subs_mode: bool = False,
+        draft_xi_ids: list[str] | None = None,
+        draft_bench_ids: list[str] | None = None,
+        drag_player_id: str | None = None,
+        drag_pos: tuple[int, int] | None = None,
+        hover_player_id: str | None = None,
+        sub_animation: dict | None = None,
+        subs_pending: bool = False,
         present: bool = True,
     ) -> None:
         self.ui_click_targets = {}
+        self.sub_row_targets = {}
         self.screen.fill((18, 18, 22))
         self._layout_pitch()
         if state.is_finished:
@@ -310,7 +329,7 @@ class Renderer:
             pygame.draw.rect(self.screen, (108, 142, 63), report_view)
             self._draw_post_match_screen(state, selected_player_id)
         else:
-            self._draw_side_panel(state)
+            self._draw_side_panel(state, managed_side, subs_mode, draft_xi_ids, draft_bench_ids, drag_player_id, hover_player_id, subs_pending)
             pygame.draw.rect(self.screen, (108, 142, 63), PITCH_PANEL)
             self._draw_pitch()
             self._draw_players_and_ball(state, alpha)
@@ -318,6 +337,10 @@ class Renderer:
         self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds)
         self._draw_events(state, commentary_colors)
         self._draw_goal_banner(state)
+        if drag_player_id and drag_pos and not state.is_finished:
+            self._draw_drag_preview(state, managed_side, drag_player_id, drag_pos)
+        if sub_animation and not state.is_finished:
+            self._draw_substitution_animation(state, sub_animation)
         if present:
             pygame.display.flip()
 
@@ -344,7 +367,17 @@ class Renderer:
         PITCH_W = pitch_w
         PITCH_H = pitch_h
 
-    def _draw_side_panel(self, state: MatchState) -> None:
+    def _draw_side_panel(
+        self,
+        state: MatchState,
+        managed_side: str | None = None,
+        subs_mode: bool = False,
+        draft_xi_ids: list[str] | None = None,
+        draft_bench_ids: list[str] | None = None,
+        drag_player_id: str | None = None,
+        hover_player_id: str | None = None,
+        subs_pending: bool = False,
+    ) -> None:
         panel = SIDE_PANEL.inflate(-10, -10)
         pygame.draw.rect(self.screen, (12, 12, 14), panel, border_radius=4)
         pygame.draw.rect(self.screen, (44, 44, 48), panel, 1, border_radius=4)
@@ -354,11 +387,25 @@ class Renderer:
             state.home,
             state,
             pygame.Rect(panel.x + 8, mid_y, panel.width - 16, section_h - 6),
+            is_managed_team=managed_side == "home",
+            subs_mode=subs_mode,
+            draft_xi_ids=draft_xi_ids if managed_side == "home" else None,
+            draft_bench_ids=draft_bench_ids if managed_side == "home" else None,
+            drag_player_id=drag_player_id if managed_side == "home" else None,
+            hover_player_id=hover_player_id if managed_side == "home" else None,
+            subs_pending=subs_pending if managed_side == "home" else False,
         )
         self._draw_team_squad_section(
             state.away,
             state,
             pygame.Rect(panel.x + 8, mid_y + section_h + 6, panel.width - 16, section_h - 6),
+            is_managed_team=managed_side == "away",
+            subs_mode=subs_mode,
+            draft_xi_ids=draft_xi_ids if managed_side == "away" else None,
+            draft_bench_ids=draft_bench_ids if managed_side == "away" else None,
+            drag_player_id=drag_player_id if managed_side == "away" else None,
+            hover_player_id=hover_player_id if managed_side == "away" else None,
+            subs_pending=subs_pending if managed_side == "away" else False,
         )
 
     def _draw_team_squad_section(
@@ -366,12 +413,22 @@ class Renderer:
         team,
         state: MatchState,
         rect: pygame.Rect,
+        is_managed_team: bool = False,
+        subs_mode: bool = False,
+        draft_xi_ids: list[str] | None = None,
+        draft_bench_ids: list[str] | None = None,
+        drag_player_id: str | None = None,
+        hover_player_id: str | None = None,
+        subs_pending: bool = False,
     ) -> None:
         primary = hex_to_rgb(team.club.colors.get("primary", "#2E3A6A"), (46, 58, 106))
         secondary = hex_to_rgb(team.club.colors.get("secondary", "#F5F5F5"), (245, 245, 245))
         pygame.draw.rect(self.screen, (18, 18, 22), rect, border_radius=4)
         pygame.draw.rect(self.screen, primary, (rect.x, rect.y, rect.width, 28), border_radius=4)
         draw_text(self.screen, compact_team_name(team.name), rect.x + 10, rect.y + 8, secondary, scale=2)
+        if is_managed_team:
+            counter_text = f"{5 - team.substitutions_used} SUBS {3 - team.substitution_windows_used} WIN"
+            draw_text(self.screen, counter_text, rect.right - text_width(counter_text, 1) - 10, rect.y + 10, secondary, scale=1)
 
         col_name = rect.x + 10
         col_avg = rect.right - 106
@@ -381,39 +438,89 @@ class Renderer:
         draw_text(self.screen, "AVG", col_avg, y, (180, 180, 186), scale=1)
         draw_text(self.screen, "STM", col_stam, y, (180, 180, 186), scale=1)
         y += 18
+        row_h = 18
+        xi_lookup = {player.profile.id: player for player in team.xi}
+        profile_lookup = {profile.id: profile for profile in team.club.players}
+        xi_ids = draft_xi_ids if is_managed_team and draft_xi_ids else [player.profile.id for player in team.xi]
 
-        for player in team.xi:
+        for player_id in xi_ids:
+            live_player = xi_lookup.get(player_id)
+            profile = live_player.profile if live_player else profile_lookup.get(player_id)
+            if profile is None:
+                continue
+            avg_score = self._player_rating(state, player_id)
+            stamina_ratio = (
+                stamina_ratio_for_player(profile.attributes.get("stamina", 70.0), live_player.fatigue)
+                if live_player
+                else max(0.08, min(1.0, profile.current_stamina / 100.0))
+            )
+            yellow_cards = live_player.yellow_cards if live_player else int(state.player_match_stats.get(player_id, {}).get("yellow_cards", 0.0))
+            red_card = live_player.red_card if live_player else bool(state.player_match_stats.get(player_id, {}).get("red_cards", 0.0))
+            row_fill = None
+            if subs_mode and is_managed_team and player_id != drag_player_id:
+                row_fill = (28, 30, 36)
+            if hover_player_id == player_id:
+                row_fill = (76, 128, 84)
             self._draw_squad_row(
                 rect,
                 y,
-                player.profile.name,
-                player.profile.id,
-                6.8,
-                stamina_ratio_for_player(player.profile.attributes.get("stamina", 70.0), player.fatigue),
-                player.yellow_cards,
-                player.red_card,
-                state.player_goals.get(player.profile.id, 0),
-                state.player_assists.get(player.profile.id, 0),
+                profile.name,
+                player_id,
+                avg_score,
+                stamina_ratio,
+                yellow_cards,
+                red_card,
+                state.player_goals.get(player_id, 0),
+                state.player_assists.get(player_id, 0),
+                row_fill=row_fill,
             )
+            if subs_mode and is_managed_team:
+                self.sub_row_targets[player_id] = {
+                    "player_id": player_id,
+                    "group": "xi",
+                    "rect": pygame.Rect(rect.x + 4, y - 1, rect.width - 8, row_h),
+                    "unavailable": False,
+                }
             y += 18
 
         y += 4
         draw_text(self.screen, "BENCH", col_name, y + 2, (245, 245, 245), scale=1)
         y += 18
-        for bench_player in team.bench[:7]:
+        bench_ids = draft_bench_ids if is_managed_team and draft_bench_ids else [player.id for player in team.bench]
+        for bench_player_id in bench_ids[:7]:
+            bench_player = profile_lookup.get(bench_player_id)
+            if bench_player is None:
+                continue
+            unavailable = bench_player.id in team.subbed_out_ids
+            row_fill = None
+            if subs_mode and is_managed_team and bench_player.id != drag_player_id:
+                row_fill = (28, 30, 36) if not unavailable else (72, 34, 34)
+            if hover_player_id == bench_player.id:
+                row_fill = (76, 128, 84)
             self._draw_squad_row(
                 rect,
                 y,
                 bench_player.name,
                 bench_player.id,
-                6.8,
+                self._player_rating(state, bench_player.id),
                 max(0.08, min(1.0, bench_player.current_stamina / 100.0)),
                 0,
                 False,
                 state.player_goals.get(bench_player.id, 0),
                 state.player_assists.get(bench_player.id, 0),
+                row_fill=row_fill,
+                subbed_out=unavailable,
             )
+            if subs_mode and is_managed_team:
+                self.sub_row_targets[bench_player.id] = {
+                    "player_id": bench_player.id,
+                    "group": "bench",
+                    "rect": pygame.Rect(rect.x + 4, y - 1, rect.width - 8, row_h),
+                    "unavailable": unavailable,
+                }
             y += 18
+        if is_managed_team:
+            self._draw_sub_controls(rect, team, subs_mode, subs_pending)
 
     def _draw_squad_row(
         self,
@@ -427,7 +534,13 @@ class Renderer:
         red_card: bool,
         goals: int,
         assists: int,
+        row_fill: Tuple[int, int, int] | None = None,
+        subbed_out: bool = False,
     ) -> None:
+        row_rect = pygame.Rect(rect.x + 4, y - 1, rect.width - 8, 18)
+        if row_fill:
+            pygame.draw.rect(self.screen, row_fill, row_rect, border_radius=3)
+            pygame.draw.rect(self.screen, (58, 58, 64), row_rect, 1, border_radius=3)
         shirt_number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "0"
         draw_text(self.screen, shirt_number.rjust(2, "0"), rect.x + 8, y + 2, (168, 168, 174), scale=1)
         label = short_display_name(name, 11)
@@ -461,6 +574,105 @@ class Renderer:
         elif yellow_cards > 0:
             pygame.draw.rect(self.screen, (236, 202, 56), (badge_x, y + 1, 12, 14))
             draw_text(self.screen, "Y", badge_x + 2, y + 4, (28, 28, 28), scale=1)
+        if subbed_out:
+            self._draw_subbed_out_indicator(rect.right - 146, y + 8)
+
+    def _draw_sub_controls(self, rect: pygame.Rect, team, subs_mode: bool, subs_pending: bool = False) -> None:
+        button_rect = pygame.Rect(rect.x + 10, rect.bottom - 36, rect.width - 20, 26)
+        if subs_mode:
+            half_w = (button_rect.width - 8) // 2
+            cancel_rect = pygame.Rect(button_rect.x, button_rect.y, half_w, button_rect.height)
+            confirm_rect = pygame.Rect(cancel_rect.right + 8, button_rect.y, button_rect.width - half_w - 8, button_rect.height)
+            self._draw_ui_button(cancel_rect, "CANCEL", (70, 74, 92), (245, 245, 245), "match:subs:cancel", scale=2)
+            self._draw_ui_button(confirm_rect, "CONFIRM", (88, 170, 104), (18, 18, 22), "match:subs:confirm", scale=2)
+            return
+        if subs_pending:
+            self._draw_ui_button(button_rect, "WAIT STOPPAGE", (92, 72, 28), (245, 245, 245), scale=2)
+            return
+        if team.substitutions_used >= 5 or team.substitution_windows_used >= 3:
+            self._draw_ui_button(button_rect, "NO SUB WINDOWS", (56, 58, 64), (188, 188, 194), scale=2)
+        else:
+            self._draw_ui_button(button_rect, "MAKE SUBS", (36, 52, 96), (245, 245, 245), "match:subs:start", scale=2)
+
+    def _draw_drag_preview(
+        self,
+        state: MatchState,
+        managed_side: str | None,
+        player_id: str,
+        drag_pos: tuple[int, int],
+    ) -> None:
+        if not managed_side:
+            return
+        team = state.home if managed_side == "home" else state.away
+        profile_lookup = {profile.id: profile for profile in team.club.players}
+        player = next((p for p in team.xi if p.profile.id == player_id), None)
+        preview_rect = pygame.Rect(0, 0, SIDE_PANEL_W - 36, 20)
+        preview = pygame.Surface(preview_rect.size, pygame.SRCALPHA)
+        screen_backup = self.screen
+        self.screen = preview
+        if player:
+            self._draw_squad_row(
+                preview.get_rect(),
+                1,
+                player.profile.name,
+                player.profile.id,
+                self._player_rating(state, player.profile.id),
+                stamina_ratio_for_player(player.profile.attributes.get("stamina", 70.0), player.fatigue),
+                player.yellow_cards,
+                player.red_card,
+                state.player_goals.get(player.profile.id, 0),
+                state.player_assists.get(player.profile.id, 0),
+                row_fill=(20, 20, 24),
+            )
+        else:
+            bench_player = profile_lookup.get(player_id)
+            if bench_player is None:
+                self.screen = screen_backup
+                return
+            self._draw_squad_row(
+                preview.get_rect(),
+                1,
+                bench_player.name,
+                bench_player.id,
+                self._player_rating(state, bench_player.id),
+                max(0.08, min(1.0, bench_player.current_stamina / 100.0)),
+                int(state.player_match_stats.get(bench_player.id, {}).get("yellow_cards", 0.0)),
+                bool(state.player_match_stats.get(bench_player.id, {}).get("red_cards", 0.0)),
+                state.player_goals.get(bench_player.id, 0),
+                state.player_assists.get(bench_player.id, 0),
+                row_fill=(20, 20, 24),
+                subbed_out=bench_player.id in team.subbed_out_ids,
+            )
+        self.screen = screen_backup
+        self.screen.blit(preview, (drag_pos[0] - preview_rect.width // 2, drag_pos[1] - preview_rect.height // 2))
+
+    def _draw_substitution_animation(self, state: MatchState, animation: dict) -> None:
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 96))
+        self.screen.blit(overlay, (0, 0))
+
+        pairs = list(animation.get("pairs", []))
+        panel_h = 72 + min(5, len(pairs)) * 28
+        panel = pygame.Rect(0, 0, min(520, SCREEN_W - 120), panel_h)
+        panel.center = (SCREEN_W // 2, VIEWPORT_Y + VIEWPORT_H // 2)
+        pygame.draw.rect(self.screen, (16, 18, 22), panel, border_radius=8)
+        pygame.draw.rect(self.screen, (76, 76, 84), panel, 2, border_radius=8)
+        draw_text(self.screen, "SUBSTITUTION", panel.x + (panel.width - text_width("SUBSTITUTION", 2)) // 2, panel.y + 12, (245, 245, 245), scale=2)
+
+        pairs = pairs[:5]
+        team = state.home if animation.get("side") == "home" else state.away
+        profile_lookup = {profile.id: profile for profile in team.club.players}
+        for idx, (outgoing_id, incoming_id) in enumerate(pairs):
+            row_y = panel.y + 46 + idx * 28
+            outgoing = profile_lookup.get(outgoing_id)
+            incoming = profile_lookup.get(incoming_id)
+            outgoing_name = short_display_name(outgoing.name if outgoing else outgoing_id, 14)
+            incoming_name = short_display_name(incoming.name if incoming else incoming_id, 14)
+            draw_text(self.screen, outgoing_name, panel.x + 22, row_y, (236, 236, 240), scale=2)
+            self._draw_subbed_out_indicator(panel.centerx - 18, row_y + 7)
+            pygame.draw.line(self.screen, (116, 208, 120), (panel.centerx + 4, row_y + 7), (panel.centerx + 16, row_y + 7), 2)
+            pygame.draw.polygon(self.screen, (116, 208, 120), [(panel.centerx + 22, row_y + 7), (panel.centerx + 14, row_y + 2), (panel.centerx + 14, row_y + 12)])
+            draw_text(self.screen, incoming_name, panel.centerx + 32, row_y, (116, 208, 120), scale=2)
 
     def _draw_goal_icon(self, x: int, y: int) -> None:
         pygame.draw.circle(self.screen, (244, 244, 244), (x, y), 5)
@@ -471,6 +683,11 @@ class Renderer:
         pygame.draw.line(self.screen, (236, 236, 236), (x - 4, y + 3), (x + 3, y - 4), 2)
         pygame.draw.line(self.screen, (236, 236, 236), (x + 1, y - 5), (x + 5, y - 1), 2)
         pygame.draw.line(self.screen, (236, 236, 236), (x + 5, y - 1), (x + 3, y + 2), 2)
+
+    def _draw_subbed_out_indicator(self, x: int, y: int) -> None:
+        points = [(x + 5, y - 5), (x - 4, y), (x + 5, y + 5)]
+        pygame.draw.polygon(self.screen, (218, 78, 78), points)
+        pygame.draw.line(self.screen, (218, 78, 78), (x + 6, y), (x + 12, y), 2)
 
     def _draw_pitch(self) -> None:
         pitch = pygame.Rect(PITCH_X, PITCH_Y, PITCH_W, PITCH_H)
@@ -747,6 +964,20 @@ class Renderer:
 
     def _player_rating(self, state: MatchState, player_id: str) -> float:
         stats = state.player_match_stats.get(player_id, {})
+        player = next((p for p in state.home.xi + state.away.xi if p.profile.id == player_id), None)
+        if player and player.slot == "GK":
+            rating = 6.6
+            rating += stats.get("goalkeeper_saves", 0.0) * 0.18
+            rating += stats.get("passes_completed", 0.0) * 0.006
+            rating += stats.get("long_balls_completed", 0.0) * 0.04
+            rating += stats.get("ball_recoveries", 0.0) * 0.03
+            rating += stats.get("assists", 0.0) * 0.55
+            rating += stats.get("goals", 0.0) * 0.85
+            rating -= stats.get("goalkeeper_goals_conceded", 0.0) * 0.32
+            rating -= stats.get("fouls_committed", 0.0) * 0.06
+            rating -= stats.get("yellow_cards", 0.0) * 0.22
+            rating -= stats.get("red_cards", 0.0) * 1.0
+            return max(5.0, min(10.0, rating))
         rating = 6.6
         rating += stats.get("goals", 0.0) * 0.85
         rating += stats.get("assists", 0.0) * 0.55
@@ -772,8 +1003,23 @@ class Renderer:
 
     def _report_player_rating(self, report: dict, player_id: str) -> float:
         stats = report.get("player_stats", {}).get(player_id, {})
-        if "rating" in stats:
-            return float(stats["rating"])
+        player = next(
+            (p for p in report.get("players", {}).get("home", []) + report.get("players", {}).get("away", []) if p["id"] == player_id),
+            None,
+        )
+        if player and player.get("position") == "GK":
+            rating = 6.6
+            rating += float(stats.get("goalkeeper_saves", 0.0)) * 0.18
+            rating += float(stats.get("passes_completed", 0.0)) * 0.006
+            rating += float(stats.get("long_balls_completed", 0.0)) * 0.04
+            rating += float(stats.get("ball_recoveries", 0.0)) * 0.03
+            rating += float(stats.get("assists", 0.0)) * 0.55
+            rating += float(stats.get("goals", 0.0)) * 0.85
+            rating -= float(stats.get("goalkeeper_goals_conceded", 0.0)) * 0.32
+            rating -= float(stats.get("fouls_committed", 0.0)) * 0.06
+            rating -= float(stats.get("yellow_cards", 0.0)) * 0.22
+            rating -= float(stats.get("red_cards", 0.0)) * 1.0
+            return max(5.0, min(10.0, rating))
         rating = 6.6
         rating += float(stats.get("goals", 0.0)) * 0.85
         rating += float(stats.get("assists", 0.0)) * 0.55
@@ -972,22 +1218,44 @@ class Renderer:
             meta = f"{selected_player['position']}  OVR {selected_player['ovr']}"
             draw_text(self.screen, meta, card_top.x + 16, card_top.y + 40, card_text, scale=1)
             self._draw_club_badge(selected_badge, pygame.Rect(card_top.right - 54, card_top.y + 12, 38, 46))
-            detail_rows = [
-                ("Goals", int(stats.get("goals", 0.0))),
-                ("Assists", int(stats.get("assists", 0.0))),
-                ("Shots on target", int(stats.get("shots_on_target", 0.0))),
-                ("Shots off target", int(stats.get("shots_off_target", 0.0))),
-                ("Passing", f"{int(round((stats.get('passes_completed', 0.0) / max(1.0, stats.get('passes_attempted', 0.0))) * 100))}%"),
-                ("Tackles", int(stats.get("tackles", 0.0))),
-                ("Interceptions", int(stats.get("interceptions", 0.0))),
-                ("Clearances", int(stats.get("clearances", 0.0))),
-                ("Fouls committed", int(stats.get("fouls_committed", 0.0))),
-                ("Fouls suffered", int(stats.get("fouls_suffered", 0.0))),
-                ("Dribbles", int(stats.get("dribbles_completed", 0.0))),
-                ("Duels won", f"{int(stats.get('duels_won', 0.0))}/{int(stats.get('duels_total', 0.0))}"),
-                ("Minutes", int(round(stats.get("minutes", 0.0)))),
-                ("Player rating", f"{self._report_player_rating(report, selected_player['id']):.1f}"),
-            ]
+            if selected_player["position"] == "GK":
+                detail_rows = [
+                    ("Saves", int(stats.get("goalkeeper_saves", 0.0))),
+                    ("Goals conceded", int(stats.get("goalkeeper_goals_conceded", 0.0))),
+                    ("Ball recovery", int(stats.get("ball_recoveries", 0.0))),
+                    ("Passes", int(stats.get("passes_attempted", 0.0))),
+                    ("Accurate passes", int(stats.get("passes_completed", 0.0))),
+                    ("Pass accuracy", f"{int(round((stats.get('passes_completed', 0.0) / max(1.0, stats.get('passes_attempted', 0.0))) * 100))}%"),
+                    ("Long balls", int(stats.get("long_balls_attempted", 0.0))),
+                    ("Long ball accuracy", f"{int(round((stats.get('long_balls_completed', 0.0) / max(1.0, stats.get('long_balls_attempted', 0.0))) * 100))}%"),
+                    ("Minutes played", int(round(stats.get("minutes", 0.0)))),
+                    ("Fouls committed", int(stats.get("fouls_committed", 0.0))),
+                    ("Fouls suffered", int(stats.get("fouls_suffered", 0.0))),
+                    ("Yellow cards", int(stats.get("yellow_cards", 0.0))),
+                    ("Red cards", int(stats.get("red_cards", 0.0))),
+                    ("Goals", int(stats.get("goals", 0.0))),
+                    ("Assists", int(stats.get("assists", 0.0))),
+                    ("Player rating", f"{self._report_player_rating(report, selected_player['id']):.1f}"),
+                ]
+            else:
+                detail_rows = [
+                    ("Goals", int(stats.get("goals", 0.0))),
+                    ("Assists", int(stats.get("assists", 0.0))),
+                    ("Shots on target", int(stats.get("shots_on_target", 0.0))),
+                    ("Shots off target", int(stats.get("shots_off_target", 0.0))),
+                    ("Passing", f"{int(round((stats.get('passes_completed', 0.0) / max(1.0, stats.get('passes_attempted', 0.0))) * 100))}%"),
+                    ("Tackles", int(stats.get("tackles", 0.0))),
+                    ("Interceptions", int(stats.get("interceptions", 0.0))),
+                    ("Clearances", int(stats.get("clearances", 0.0))),
+                    ("Fouls committed", int(stats.get("fouls_committed", 0.0))),
+                    ("Fouls suffered", int(stats.get("fouls_suffered", 0.0))),
+                    ("Yellow cards", int(stats.get("yellow_cards", 0.0))),
+                    ("Red cards", int(stats.get("red_cards", 0.0))),
+                    ("Dribbles", int(stats.get("dribbles_completed", 0.0))),
+                    ("Duels won", f"{int(stats.get('duels_won', 0.0))}/{int(stats.get('duels_total', 0.0))}"),
+                    ("Minutes", int(round(stats.get("minutes", 0.0)))),
+                    ("Player rating", f"{self._report_player_rating(report, selected_player['id']):.1f}"),
+                ]
             rows_top = card_top.bottom + 14
             available_h = detail_rect.bottom - rows_top - 10
             columns = 2 if len(detail_rows) * 24 > available_h and detail_rect.width >= 420 else 1
@@ -1072,11 +1340,12 @@ class Renderer:
         self.ui_click_targets = {}
         self.screen.fill((18, 18, 22))
         self._layout_pitch()
+        pygame.draw.rect(self.screen, (10, 10, 12), pygame.Rect(0, 0, SCREEN_W, TOP_BAR_H))
         report_view = pygame.Rect(0, VIEWPORT_Y, SCREEN_W, VIEWPORT_H)
         pygame.draw.rect(self.screen, (108, 142, 63), report_view)
         self._draw_post_match_report(report, selected_player_id, pygame.Rect(14, VIEWPORT_Y + 10, SCREEN_W - 28, VIEWPORT_H - 18))
         self._draw_ui_button(
-            pygame.Rect(SCREEN_W - 146, TOP_BAR_H + 10, 120, 34),
+            pygame.Rect(SCREEN_W - 146, 3, 120, 34),
             "BACK",
             (36, 52, 96),
             (245, 245, 245),
