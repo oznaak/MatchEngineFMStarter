@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List
 
-from .models import Club, PlayerProfile
+from .models import Club, PlayerProfile, normalize_player_instruction_map, normalize_team_instructions
 
 DEFAULT_TACTICS = {
     "tempo": 50.0,
@@ -233,6 +233,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             formation TEXT NOT NULL DEFAULT '4-3-3',
             xi_json TEXT NOT NULL DEFAULT '[]',
             bench_json TEXT NOT NULL DEFAULT '[]',
+            instructions_json TEXT NOT NULL DEFAULT '{}',
+            player_instructions_json TEXT NOT NULL DEFAULT '{}',
             PRIMARY KEY (save_id, club_id),
             FOREIGN KEY (save_id) REFERENCES saves(id),
             FOREIGN KEY (club_id) REFERENCES clubs(id)
@@ -303,6 +305,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "saves", "current_date", "TEXT")
     _ensure_column(conn, "fixtures", "fixture_date", "TEXT")
     _ensure_column(conn, "fixtures", "report_json", "TEXT")
+    _ensure_column(conn, "save_club_setups", "instructions_json", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(conn, "save_club_setups", "player_instructions_json", "TEXT NOT NULL DEFAULT '{}'")
     _backfill_calendar_fields(conn)
     conn.commit()
 
@@ -515,7 +519,7 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
     attribute_rows = conn.execute("SELECT player_id, key, value FROM player_attributes").fetchall()
     setup_rows = conn.execute(
         """
-        SELECT save_id, club_id, formation, xi_json, bench_json
+        SELECT save_id, club_id, formation, xi_json, bench_json, instructions_json, player_instructions_json
         FROM save_club_setups
         WHERE ? IS NOT NULL AND save_id = ?
         """,
@@ -554,10 +558,20 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
             bench_ids = [str(player_id) for player_id in json.loads(str(row["bench_json"] or "[]"))]
         except json.JSONDecodeError:
             bench_ids = []
+        try:
+            instructions = normalize_team_instructions(json.loads(str(row["instructions_json"] or "{}")))
+        except json.JSONDecodeError:
+            instructions = normalize_team_instructions(None)
+        try:
+            player_instructions = normalize_player_instruction_map(json.loads(str(row["player_instructions_json"] or "{}")))
+        except json.JSONDecodeError:
+            player_instructions = {}
         setups_by_club[club_id] = {
             "formation": str(row["formation"] or "4-3-3"),
             "lineup_xi": xi_ids,
             "lineup_bench": bench_ids,
+            "instructions": instructions,
+            "player_instructions": player_instructions,
         }
 
     players_by_club: Dict[str, List[PlayerProfile]] = {}
@@ -588,6 +602,8 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
             formation=str(setups_by_club.get(club_id, {}).get("formation", "4-3-3")),
             lineup_xi=list(setups_by_club.get(club_id, {}).get("lineup_xi", [])),
             lineup_bench=list(setups_by_club.get(club_id, {}).get("lineup_bench", [])),
+            instructions=dict(setups_by_club.get(club_id, {}).get("instructions", normalize_team_instructions(None))),
+            player_instructions=dict(setups_by_club.get(club_id, {}).get("player_instructions", {})),
         )
     return clubs
 
@@ -607,8 +623,8 @@ def seed_save_club_setups(conn: sqlite3.Connection, save_id: int) -> None:
         xi, bench = pick_best_xi(club, formation_name=club.formation)
         conn.execute(
             """
-            INSERT INTO save_club_setups (save_id, club_id, formation, xi_json, bench_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO save_club_setups (save_id, club_id, formation, xi_json, bench_json, instructions_json, player_instructions_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(save_id, club_id) DO NOTHING
             """,
             (
@@ -617,6 +633,8 @@ def seed_save_club_setups(conn: sqlite3.Connection, save_id: int) -> None:
                 str(club.formation or "4-3-3"),
                 json.dumps([player.id for player in xi]),
                 json.dumps([player.id for player in bench]),
+                json.dumps(normalize_team_instructions(getattr(club, "instructions", None))),
+                json.dumps(normalize_player_instruction_map(getattr(club, "player_instructions", None))),
             ),
         )
 
@@ -625,7 +643,7 @@ def load_save_club_setups(conn: sqlite3.Connection, save_id: int) -> Dict[str, d
     seed_save_club_setups(conn, save_id)
     rows = conn.execute(
         """
-        SELECT club_id, formation, xi_json, bench_json
+        SELECT club_id, formation, xi_json, bench_json, instructions_json, player_instructions_json
         FROM save_club_setups
         WHERE save_id = ?
         """,
@@ -642,10 +660,20 @@ def load_save_club_setups(conn: sqlite3.Connection, save_id: int) -> Dict[str, d
             bench_ids = [str(player_id) for player_id in json.loads(str(row["bench_json"] or "[]"))]
         except json.JSONDecodeError:
             bench_ids = []
+        try:
+            instructions = normalize_team_instructions(json.loads(str(row["instructions_json"] or "{}")))
+        except json.JSONDecodeError:
+            instructions = normalize_team_instructions(None)
+        try:
+            player_instructions = normalize_player_instruction_map(json.loads(str(row["player_instructions_json"] or "{}")))
+        except json.JSONDecodeError:
+            player_instructions = {}
         setups[club_id] = {
             "formation": str(row["formation"] or "4-3-3"),
             "xi_ids": xi_ids,
             "bench_ids": bench_ids,
+            "instructions": instructions,
+            "player_instructions": player_instructions,
         }
     return setups
 
@@ -657,15 +685,19 @@ def save_save_club_setup(
     formation: str,
     xi_ids: List[str],
     bench_ids: List[str],
+    instructions: Dict[str, str] | None = None,
+    player_instructions: Dict[str, Dict[str, int]] | None = None,
 ) -> None:
     conn.execute(
         """
-        INSERT INTO save_club_setups (save_id, club_id, formation, xi_json, bench_json)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO save_club_setups (save_id, club_id, formation, xi_json, bench_json, instructions_json, player_instructions_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(save_id, club_id) DO UPDATE SET
             formation=excluded.formation,
             xi_json=excluded.xi_json,
-            bench_json=excluded.bench_json
+            bench_json=excluded.bench_json,
+            instructions_json=excluded.instructions_json,
+            player_instructions_json=excluded.player_instructions_json
         """,
         (
             int(save_id),
@@ -673,6 +705,8 @@ def save_save_club_setup(
             str(formation or "4-3-3"),
             json.dumps(list(xi_ids)),
             json.dumps(list(bench_ids)),
+            json.dumps(normalize_team_instructions(instructions)),
+            json.dumps(normalize_player_instruction_map(player_instructions)),
         ),
     )
 
@@ -722,6 +756,20 @@ def list_league_clubs(conn: sqlite3.Connection, league_id: str) -> List[dict]:
 
 
 def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | None = None) -> List[dict]:
+    attribute_rows = conn.execute(
+        """
+        SELECT p.id AS player_id, pa.key, pa.value
+        FROM players p
+        LEFT JOIN player_attributes pa ON pa.player_id = p.id
+        WHERE p.club_id = ?
+        """,
+        (club_id,),
+    ).fetchall()
+    attrs_by_player: Dict[str, Dict[str, float]] = {}
+    for row in attribute_rows:
+        if row["key"] is None:
+            continue
+        attrs_by_player.setdefault(str(row["player_id"]), {})[str(row["key"])] = float(row["value"])
     if save_id is None:
         rows = conn.execute(
             """
@@ -776,9 +824,39 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
             "position": str(row["position"]),
             "ovr": int(row["ovr"]),
             "current_stamina": float(row["current_stamina"]) if row["current_stamina"] is not None else 100.0,
+            "attributes": dict(attrs_by_player.get(str(row["id"]), {})),
         }
         for row in rows
     ]
+
+
+def _season_player_totals(conn: sqlite3.Connection, save_id: int) -> Dict[str, Dict[str, int]]:
+    rows = conn.execute(
+        """
+        SELECT report_json
+        FROM fixtures
+        WHERE save_id = ? AND played = 1 AND report_json IS NOT NULL
+        """,
+        (int(save_id),),
+    ).fetchall()
+    totals: Dict[str, Dict[str, int]] = {}
+    for row in rows:
+        try:
+            report = json.loads(str(row["report_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        player_stats = report.get("player_stats", {})
+        for player_id, stats in player_stats.items():
+            if not isinstance(stats, dict):
+                continue
+            minutes = float(stats.get("minutes", 0.0) or 0.0)
+            if minutes <= 0.01:
+                continue
+            entry = totals.setdefault(str(player_id), {"apps": 0, "goals": 0, "assists": 0})
+            entry["apps"] += 1
+            entry["goals"] += int(float(stats.get("goals", 0.0) or 0.0))
+            entry["assists"] += int(float(stats.get("assists", 0.0) or 0.0))
+    return totals
 
 
 def load_app_options(conn: sqlite3.Connection) -> Dict[str, str]:
@@ -1072,6 +1150,13 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     clubs = list_league_clubs(conn, league_id)
     club_setups = load_save_club_setups(conn, save_id)
     players_by_club = {club["id"]: list_club_players(conn, club["id"], save_id=save_id) for club in clubs}
+    season_totals = _season_player_totals(conn, save_id)
+    for club_players in players_by_club.values():
+        for player in club_players:
+            totals = season_totals.get(player["id"], {})
+            player["apps"] = int(totals.get("apps", 0))
+            player["goals"] = int(totals.get("goals", 0))
+            player["assists"] = int(totals.get("assists", 0))
     next_fixture = get_next_fixture_for_save(conn, save_id, club_id)
     current_date = str(save_row["current_date"] or season_start_date(int(save_row["season_year"] or current_season_year())).isoformat())
     today_fixture = get_playable_fixture_for_save(conn, save_id, club_id, current_date)

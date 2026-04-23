@@ -2,6 +2,91 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+DEFAULT_TEAM_INSTRUCTIONS = {
+    "passing": "balanced",
+    "width": "balanced",
+    "playstyle": "balanced",
+    "set_pieces": "balanced",
+    "tempo": "balanced",
+    "gameplan": "balanced",
+    "time_management": "balanced",
+}
+
+DEFAULT_PLAYER_INSTRUCTIONS = {
+    "pressure": 50,
+    "mindset": 50,
+}
+
+TEAM_INSTRUCTION_OPTIONS = {
+    "passing": ["shorter", "balanced", "long_balls"],
+    "width": ["narrow", "balanced", "wide"],
+    "playstyle": ["park_the_bus", "defending", "balanced", "attacking", "all_out_attack"],
+    "set_pieces": ["possession", "balanced", "direct"],
+    "tempo": ["lower", "balanced", "higher"],
+    "gameplan": ["possession", "balanced", "quick_play"],
+    "time_management": ["often", "balanced", "ball_out"],
+}
+
+TEAM_INSTRUCTION_LABELS = {
+    "passing": {"shorter": "SHORTER", "balanced": "BALANCED", "long_balls": "LONG BALLS"},
+    "width": {"narrow": "NARROW", "balanced": "BALANCED", "wide": "WIDE"},
+    "playstyle": {
+        "park_the_bus": "PARK THE BUS",
+        "defending": "DEFENDING",
+        "balanced": "BALANCED",
+        "attacking": "ATTACKING",
+        "all_out_attack": "ALL OUT ATTACK",
+    },
+    "set_pieces": {"possession": "POSSESSION", "balanced": "BALANCED", "direct": "DIRECT"},
+    "tempo": {"lower": "LOWER", "balanced": "BALANCED", "higher": "HIGHER"},
+    "gameplan": {"possession": "POSSESSION", "balanced": "BALANCED", "quick_play": "QUICK PLAY"},
+    "time_management": {"often": "OFTEN", "balanced": "BALANCED", "ball_out": "BALL OUT"},
+}
+
+PLAYER_INSTRUCTION_LABELS = {
+    "pressure": ("CALM", "AGGRESSIVE"),
+    "mindset": ("HELP TEAM DEFEND", "FOCUS ON ATTACK"),
+}
+
+
+def normalize_team_instructions(custom: Dict[str, str] | None) -> Dict[str, str]:
+    instructions = dict(DEFAULT_TEAM_INSTRUCTIONS)
+    if not custom:
+        return instructions
+    for key, default in DEFAULT_TEAM_INSTRUCTIONS.items():
+        value = str(custom.get(key, default))
+        instructions[key] = value if value in TEAM_INSTRUCTION_OPTIONS[key] else default
+    return instructions
+
+
+def normalize_player_instruction_value(key: str, value: int | float | str | None) -> int:
+    default = DEFAULT_PLAYER_INSTRUCTIONS.get(key, 50)
+    try:
+        numeric = int(round(float(value if value is not None else default)))
+    except (TypeError, ValueError):
+        numeric = default
+    return max(0, min(100, numeric))
+
+
+def normalize_player_instructions(custom: Dict[str, int] | None) -> Dict[str, int]:
+    instructions = dict(DEFAULT_PLAYER_INSTRUCTIONS)
+    if not custom:
+        return instructions
+    for key in DEFAULT_PLAYER_INSTRUCTIONS:
+        instructions[key] = normalize_player_instruction_value(key, custom.get(key))
+    return instructions
+
+
+def normalize_player_instruction_map(custom: Dict[str, Dict[str, int]] | None) -> Dict[str, Dict[str, int]]:
+    if not custom:
+        return {}
+    normalized: Dict[str, Dict[str, int]] = {}
+    for player_id, values in custom.items():
+        if not isinstance(player_id, str):
+            continue
+        normalized[player_id] = normalize_player_instructions(values if isinstance(values, dict) else None)
+    return normalized
+
 
 def stamina_ratio_for_player(stamina: float, fatigue: float) -> float:
     usable_capacity = 8.5 + stamina * 0.16
@@ -80,6 +165,8 @@ class Club:
     formation: str = "4-3-3"
     lineup_xi: List[str] = field(default_factory=list)
     lineup_bench: List[str] = field(default_factory=list)
+    instructions: Dict[str, str] = field(default_factory=lambda: dict(DEFAULT_TEAM_INSTRUCTIONS))
+    player_instructions: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     @property
     def badge_id(self) -> str:

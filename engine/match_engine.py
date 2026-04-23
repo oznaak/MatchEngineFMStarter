@@ -8,6 +8,8 @@ from .loader import FALLBACKS, FORMATION_433, formation_slots, pick_best_xi, pos
 from .models import (
     BallState,
     Club,
+    DEFAULT_PLAYER_INSTRUCTIONS,
+    DEFAULT_TEAM_INSTRUCTIONS,
     MatchEvent,
     MatchState,
     PlayerProfile,
@@ -702,8 +704,93 @@ class MatchEngine:
     def _team_state(self, side: str) -> TeamState:
         return self.home if side == "home" else self.away
 
+    def _instruction_value(self, side: str, key: str) -> str:
+        return str(self._team_state(side).club.instructions.get(key, DEFAULT_TEAM_INSTRUCTIONS[key]))
+
+    def _player_instruction_value(self, player: PlayerState, key: str) -> int:
+        values = self._team_state(player.side).club.player_instructions.get(player.profile.id, {})
+        try:
+            return max(0, min(100, int(values.get(key, DEFAULT_PLAYER_INSTRUCTIONS[key]))))
+        except (TypeError, ValueError):
+            return DEFAULT_PLAYER_INSTRUCTIONS[key]
+
+    def _player_pressure_bias(self, player: PlayerState) -> float:
+        return (self._player_instruction_value(player, "pressure") - 50.0) / 50.0
+
+    def _player_mindset_bias(self, player: PlayerState) -> float:
+        return (self._player_instruction_value(player, "mindset") - 50.0) / 50.0
+
+    def _instruction_tactic_delta(self, side: str, key: str) -> float:
+        choice = self._instruction_value(side, key)
+        if key == "directness":
+            return {
+                "shorter": -18.0,
+                "long_balls": 22.0,
+                "possession": -6.0,
+                "quick_play": 10.0,
+            }.get(self._instruction_value(side, "passing"), 0.0) + {
+                "possession": -8.0,
+                "quick_play": 8.0,
+            }.get(self._instruction_value(side, "gameplan"), 0.0)
+        if key == "width":
+            return {
+                "narrow": -22.0,
+                "wide": 22.0,
+            }.get(self._instruction_value(side, "width"), 0.0)
+        if key == "tempo":
+            return {
+                "lower": -20.0,
+                "higher": 20.0,
+            }.get(self._instruction_value(side, "tempo"), 0.0)
+        if key == "counter":
+            return {
+                "possession": -14.0,
+                "quick_play": 18.0,
+            }.get(self._instruction_value(side, "gameplan"), 0.0)
+        if key == "crossing":
+            return {
+                "possession": -16.0,
+                "direct": 16.0,
+            }.get(self._instruction_value(side, "set_pieces"), 0.0)
+        if key == "pressing":
+            return {
+                "park_the_bus": -14.0,
+                "defending": -6.0,
+                "attacking": 6.0,
+                "all_out_attack": 14.0,
+            }.get(self._instruction_value(side, "playstyle"), 0.0)
+        return 0.0
+
     def _tactic_value(self, side: str, key: str, default: float = 50.0) -> float:
-        return float(self._team_state(side).club.tactics.get(key, default))
+        base = float(self._team_state(side).club.tactics.get(key, default))
+        return clamp(base + self._instruction_tactic_delta(side, key), 0.0, 100.0)
+
+    def _playstyle_attack_modifier(self, side: str) -> float:
+        return {
+            "park_the_bus": -0.18,
+            "defending": -0.08,
+            "balanced": 0.0,
+            "attacking": 0.08,
+            "all_out_attack": 0.18,
+        }.get(self._instruction_value(side, "playstyle"), 0.0)
+
+    def _playstyle_defence_modifier(self, side: str) -> float:
+        return {
+            "park_the_bus": 0.18,
+            "defending": 0.08,
+            "balanced": 0.0,
+            "attacking": -0.08,
+            "all_out_attack": -0.18,
+        }.get(self._instruction_value(side, "playstyle"), 0.0)
+
+    def _is_time_wasting(self, side: str) -> bool:
+        margin = (self.state.home_score - self.state.away_score) if side == "home" else (self.state.away_score - self.state.home_score)
+        mode = self._instruction_value(side, "time_management")
+        if mode == "ball_out":
+            return False
+        if mode == "often":
+            return margin >= 2
+        return margin >= 4
 
     def _set_render_state(self, player: PlayerState, state: str, intent: Optional[str] = None) -> None:
         player.render_state = state
@@ -869,6 +956,8 @@ class MatchEngine:
     def _defensive_shape_target(self, player: PlayerState) -> Tuple[float, float]:
         ball_x, ball_y = self.state.ball.x, self.state.ball.y
         sign = self._side_forward_sign(player.side)
+        pressure_bias = self._player_pressure_bias(player)
+        mindset_bias = self._player_mindset_bias(player)
         if player.slot == "GK":
             defend_goal_x = self._defending_goal_x(player.side)
             base_x = 8.0 if defend_goal_x == 0.0 else PITCH_LENGTH - 8.0
@@ -888,6 +977,8 @@ class MatchEngine:
 
         x_target = player.home_x + retreat
         y_target = lerp(player.home_y, ball_y, pull)
+        x_target += sign * pressure_bias * 1.6
+        x_target += sign * (-mindset_bias) * 1.8
 
         if player.slot == "DM":
             x_target = ball_x - sign * 10.0
@@ -1063,6 +1154,7 @@ class MatchEngine:
         run_bias = max(0.0, off_ball - 68.0) / 18.0
         width_tactic = (self._tactic_value(player.side, "width") - 50.0) / 50.0
         dist_to_ball = distance((player.x, player.y), (ball_x, ball_y))
+        mindset_bias = self._player_mindset_bias(player)
 
         if phase == "build_up":
             if player.slot in ("CM", "AM"):
@@ -1099,6 +1191,10 @@ class MatchEngine:
 
         if dist_to_ball > 12.0 and player.slot in ("CM", "AM", "LW", "RW", "ST"):
             tx += sign * 1.6
+        if player.slot in ("LB", "RB", "DM", "CM", "AM", "LW", "RW", "ST"):
+            tx += sign * mindset_bias * (2.8 if player.slot in ("AM", "LW", "RW", "ST") else 1.8)
+        elif player.slot in ("CB", "GK"):
+            tx += sign * mindset_bias * 0.8
 
         tx, ty = clamp(tx, 2, PITCH_LENGTH - 2), clamp(ty, 2, PITCH_WIDTH - 2)
         return self._apply_onside_target_limit(player, tx, ty)
@@ -1168,6 +1264,12 @@ class MatchEngine:
         current = currents.get(kind, 0.0)
         if target <= 0.0:
             return 0.0
+        if kind == "throw_in":
+            width_bias = (
+                (self._tactic_value("home", "width") - 50.0) / 50.0
+                + (self._tactic_value("away", "width") - 50.0) / 50.0
+            ) * 0.5
+            target *= 1.0 + max(0.0, width_bias) * 0.18
         expected = target * elapsed_ratio
         deficit = expected - current
         return clamp(deficit / max(1.0, target * 0.18), 0.0, 3.0)
@@ -1221,6 +1323,7 @@ class MatchEngine:
         attack_forward = self._forwardness(attacking_side, foul_spot[0])
         central_gap = abs(foul_spot[1] - PITCH_WIDTH / 2)
         dogso = attack_forward > 88.0 and central_gap < 10.0
+        pressure_bias = self._player_pressure_bias(offender)
         yellow = (
             severity * 0.78
             + max(0.0, strictness) * 0.08
@@ -1228,6 +1331,7 @@ class MatchEngine:
             + (0.06 if offender.fouls_committed >= 3 else 0.0)
             + (0.04 if offender.yellow_cards >= 1 else 0.0)
             + (self._discipline_intensity(offender.side) - 1.0) * 0.12
+            + pressure_bias * 0.10
         )
         if dogso and severity > 0.84:
             return "red"
@@ -1278,6 +1382,7 @@ class MatchEngine:
 
     def _execute_direct_free_kick(self) -> None:
         side = self.state.restart_side or "home"
+        set_piece_mode = self._instruction_value(side, "set_pieces")
         taker = self.find_player(self.state.restart_taker_id) or min(self.teammates(side), key=lambda p: distance((p.x, p.y), (self.state.ball.x, self.state.ball.y)))
         forwardness = self._forwardness(side, self.state.ball.x)
         central_gap = abs(self.state.ball.y - PITCH_WIDTH / 2)
@@ -1291,11 +1396,27 @@ class MatchEngine:
         self.state.restart_taker_id = None
         self.state.fouled_player_id = None
         self._give_ball_to(taker, note="Free kick", action_type="recovery")
-        if dangerous and self.rng.random() < 0.38:
+        if dangerous and set_piece_mode == "direct" and self.rng.random() < 0.58:
+            self._start_shot(taker)
+            return
+        if dangerous and set_piece_mode != "possession" and self.rng.random() < 0.38:
             self._start_shot(taker)
             return
         if advanced:
-            if wide or self.rng.random() < 0.72:
+            if set_piece_mode == "possession":
+                receivers = [
+                    p for p in self.teammates(side)
+                    if p.profile.id != taker.profile.id and p.slot in ("DM", "CM", "AM", "LB", "RB")
+                ]
+                if not receivers:
+                    receivers = [p for p in self.teammates(side) if p.profile.id != taker.profile.id]
+                receiver = max(
+                    receivers,
+                    key=lambda p: p.profile.attributes["first_touch"] + p.profile.attributes["passing"] + self._receiver_space(p) * 16.0,
+                )
+                pass_type = "short_ground"
+                label = "free kick short"
+            elif wide or set_piece_mode == "direct" or self.rng.random() < 0.72:
                 receivers = [
                     p for p in self.teammates(side)
                     if p.profile.id != taker.profile.id and p.slot in ("ST", "AM", "CM", "LW", "RW", "CB")
@@ -1327,7 +1448,20 @@ class MatchEngine:
                 pass_type = "progressive_ground"
                 label = "free kick"
         elif own_half:
-            if self.rng.random() < 0.68:
+            if set_piece_mode == "direct" and self.rng.random() < 0.6:
+                receivers = [
+                    p for p in self.teammates(side)
+                    if p.profile.id != taker.profile.id and p.slot in ("ST", "LW", "RW", "AM", "CM")
+                ]
+                if not receivers:
+                    receivers = [p for p in self.teammates(side) if p.profile.id != taker.profile.id]
+                receiver = max(
+                    receivers,
+                    key=lambda p: self._forwardness(side, p.x) + p.profile.attributes.get("off_ball", p.profile.attributes["positioning"]) * 0.4,
+                )
+                pass_type = "cross"
+                label = "free kick long"
+            elif self.rng.random() < 0.78:
                 receivers = [
                     p for p in self.teammates(side)
                     if p.profile.id != taker.profile.id and p.slot in ("DM", "CM", "CB", "LB", "RB")
@@ -1599,6 +1733,7 @@ class MatchEngine:
         width_bias = max(0.0, (self._tactic_value(player.side, "width") - 50.0) / 50.0)
         pressing_bias = max(0.0, (self._tactic_value(player.side, "pressing") - 50.0) / 50.0)
         tempo_bias = max(0.0, (self._tactic_value(player.side, "tempo") - 50.0) / 50.0)
+        tempo_mode = self._instruction_value(player.side, "tempo")
 
         load = 0.0054 * role_factor * state_factor * stamina_factor
         if player.slot in ("LB", "RB", "LW", "RW"):
@@ -1609,6 +1744,10 @@ class MatchEngine:
         if player.slot != "GK":
             load *= 1.0 + pressing_bias * (0.18 if player.slot in ("LW", "RW", "ST", "AM", "CM") else 0.12)
             load *= 1.0 + tempo_bias * (0.14 if player.slot in ("CM", "AM", "LW", "RW", "ST") else 0.08)
+        if tempo_mode == "lower":
+            load *= 0.9
+        elif tempo_mode == "higher":
+            load *= 1.1
 
         if player.has_ball:
             load *= 1.28
@@ -2676,12 +2815,18 @@ class MatchEngine:
         side = self.state.restart_side or "home"
         spot = (self.state.ball.x, self.state.ball.y)
         taker = min(self.teammates(side), key=lambda p: distance((p.x, p.y), spot))
-        receiver = self._pick_restart_receiver(side, taker, ("CM", "AM", "DM", "LW", "RW", "ST", "LB", "RB"))
+        set_piece_mode = self._instruction_value(side, "set_pieces")
+        if set_piece_mode == "direct":
+            receiver = self._pick_restart_receiver(side, taker, ("ST", "LW", "RW", "AM", "CM"))
+            pass_type = "progressive_ground"
+        else:
+            receiver = self._pick_restart_receiver(side, taker, ("CM", "AM", "DM", "LW", "RW", "ST", "LB", "RB"))
+            pass_type = "short_ground"
         self.state.restart_mode = None
         self.state.restart_timer = 0.0
         self.state.restart_side = None
         self._give_ball_to(taker, note="Throw in", action_type="recovery")
-        self._start_pass(taker, receiver, "throw in", "short_ground")
+        self._start_pass(taker, receiver, "throw in", pass_type)
 
     def _start_corner_setup(self, attacking_side: str, x: float, y: float) -> None:
         self._prepare_players_for_restart_motion()
@@ -2738,6 +2883,7 @@ class MatchEngine:
 
     def _execute_corner(self) -> None:
         side = self.state.restart_side or "home"
+        set_piece_mode = self._instruction_value(side, "set_pieces")
         taker = min(self.teammates(side), key=lambda p: distance((p.x, p.y), (self.state.ball.x, self.state.ball.y)))
         short_pool = [
             p for p in self.teammates(side)
@@ -2749,7 +2895,11 @@ class MatchEngine:
             target_pool = [p for p in self.teammates(side) if p.profile.id != taker.profile.id and p.slot != "GK"]
         receiver = max(target_pool, key=lambda p: p.profile.attributes["positioning"] + self._receiver_space(p) * 20.0)
         short_chance = 0.18 + max(0.0, (self._tactic_value(side, "crossing") - 55.0) / -220.0)
-        use_short = bool(short_pool) and self.rng.random() < clamp(short_chance, 0.10, 0.28)
+        if set_piece_mode == "possession":
+            short_chance += 0.35
+        elif set_piece_mode == "direct":
+            short_chance -= 0.10
+        use_short = bool(short_pool) and self.rng.random() < clamp(short_chance, 0.08, 0.62)
         if use_short:
             receiver = max(
                 short_pool,
@@ -2862,17 +3012,30 @@ class MatchEngine:
 
     def _team_strength(self, side: str) -> float:
         avg = self.home.avg_ovr if side == "home" else self.away.avg_ovr
-        return clamp((avg - 60.0) / 30.0, 0.0, 1.25)
+        tempo_boost = {
+            "lower": -0.03,
+            "balanced": 0.0,
+            "higher": 0.04,
+        }.get(self._instruction_value(side, "tempo"), 0.0)
+        return clamp((avg - 60.0) / 30.0 + self._playstyle_attack_modifier(side) + tempo_boost, 0.0, 1.25)
 
     def _pressure_on_player(self, player: PlayerState) -> float:
         opps = self.opponents(player.side)
-        nearest = min(distance((player.x, player.y), (o.x, o.y)) for o in opps)
-        return clamp(1.0 - nearest / 16.0, 0.0, 1.0)
+        nearest_opp = min(opps, key=lambda o: distance((player.x, player.y), (o.x, o.y)))
+        nearest = distance((player.x, player.y), (nearest_opp.x, nearest_opp.y))
+        defending_side = "away" if player.side == "home" else "home"
+        intensity = 1.0 + self._playstyle_defence_modifier(defending_side) * 0.85 + self._player_pressure_bias(nearest_opp) * 0.38
+        intensity += max(0.0, -self._player_mindset_bias(nearest_opp)) * 0.16
+        return clamp((1.0 - nearest / 16.0) * intensity, 0.0, 1.0)
 
     def _receiver_space(self, receiver: PlayerState) -> float:
         opps = self.opponents(receiver.side)
-        nearest = min(distance((receiver.x, receiver.y), (o.x, o.y)) for o in opps)
-        return clamp(nearest / 18.0, 0.0, 1.4)
+        nearest_opp = min(opps, key=lambda o: distance((receiver.x, receiver.y), (o.x, o.y)))
+        nearest = distance((receiver.x, receiver.y), (nearest_opp.x, nearest_opp.y))
+        defending_side = "away" if receiver.side == "home" else "home"
+        squeeze = 1.0 - self._playstyle_defence_modifier(defending_side) * 0.55 - self._player_pressure_bias(nearest_opp) * 0.20
+        squeeze -= max(0.0, -self._player_mindset_bias(nearest_opp)) * 0.10
+        return clamp((nearest / 18.0) * squeeze, 0.0, 1.4)
 
     def _goal_distance(self, player: PlayerState) -> float:
         goal = (self._attacking_goal_x(player.side), PITCH_WIDTH / 2)
@@ -2890,10 +3053,16 @@ class MatchEngine:
         phase = self.state.phase_in_possession
         directness = (self._tactic_value(carrier.side, "directness") - 50.0) / 50.0
         crossing_bias = (self._tactic_value(carrier.side, "crossing") - 50.0) / 50.0
+        width_bias = (self._tactic_value(carrier.side, "width") - 50.0) / 50.0
+        side_lane = abs(receiver.y - PITCH_WIDTH / 2) / (PITCH_WIDTH / 2)
         pass_scores["short_ground"] -= max(0.0, directness) * 2.2
         pass_scores["progressive_ground"] += directness * 1.8
         pass_scores["switch"] += directness * 1.0
         pass_scores["cross"] += crossing_bias * 3.8
+        pass_scores["cross"] += width_bias * side_lane * 2.4
+        pass_scores["switch"] += width_bias * side_lane * 1.3
+        pass_scores["short_ground"] += (-width_bias) * (1.0 - side_lane) * 2.2
+        pass_scores["progressive_ground"] += (-width_bias) * (1.0 - side_lane) * 1.0
         if phase == "build_up":
             pass_scores["short_ground"] += 9.0
             pass_scores["progressive_ground"] -= 4.0
@@ -2918,6 +3087,9 @@ class MatchEngine:
         tempo = (self._tactic_value(carrier.side, "tempo") - 50.0) / 50.0
         counter = (self._tactic_value(carrier.side, "counter") - 50.0) / 50.0
         directness = (self._tactic_value(carrier.side, "directness") - 50.0) / 50.0
+        mindset_bias = self._player_mindset_bias(carrier)
+        gameplan = self._instruction_value(carrier.side, "gameplan")
+        time_wasting = self._is_time_wasting(carrier.side)
         pass_options = [self._choose_pass_option(carrier, teammate) for teammate in teammates]
         best_safe = max(pass_options, key=lambda opt: opt["score"])
         best_forward = max(
@@ -2946,9 +3118,22 @@ class MatchEngine:
         short_pass_score += 0.9
         forward_pass_score += directness * 4.2
         short_pass_score -= max(0.0, directness) * 1.5
+        short_pass_score -= max(0.0, mindset_bias) * 1.6
+        short_pass_score += max(0.0, -mindset_bias) * 2.2
+        forward_pass_score += mindset_bias * 3.2
+        carry_bias += mindset_bias * 2.1
+        shot_score += mindset_bias * 4.0
         if self.state.phase_in_possession == "transition":
             forward_pass_score += max(0.0, counter) * 3.5
             carry_bias += max(0.0, counter) * 2.0
+        if gameplan == "possession":
+            short_pass_score += 2.4
+            forward_pass_score -= 1.0
+            carry_bias -= 0.6
+        elif gameplan == "quick_play":
+            short_pass_score -= 0.8
+            forward_pass_score += 1.8
+            carry_bias += 0.7
         if tempo < 0.0:
             short_pass_score += abs(tempo) * 3.0
             forward_pass_score -= abs(tempo) * 1.5
@@ -2968,6 +3153,11 @@ class MatchEngine:
             short_pass_score += 0.6
             forward_pass_score += 2.1
             carry_bias += 1.4
+        if time_wasting:
+            short_pass_score += 4.2
+            forward_pass_score -= 2.4
+            carry_bias -= 2.0
+            shot_score -= 3.0
         scores = {
             "short_pass": short_pass_score + recycle_bonus,
             "forward_pass": forward_pass_score,
@@ -3141,6 +3331,8 @@ class MatchEngine:
                 target_y = nearest_touchline
             elif pressure > 0.62 and carrier.slot in ("LB", "RB", "CB") and self.rng.random() < 0.16:
                 target_y = nearest_touchline if abs(carrier.y - PITCH_WIDTH / 2) > 12.0 else target_y
+            if max(0.0, (self._tactic_value(carrier.side, "width") - 50.0) / 50.0) > 0.2 and self.rng.random() < 0.14:
+                target_y = nearest_touchline
 
         travel_dist = distance((carrier.x, carrier.y), (target_x, target_y))
         self.state.ball.mode = "travelling"
@@ -3216,6 +3408,10 @@ class MatchEngine:
         )
         if defender.yellow_cards >= 1:
             defender_score -= 2.0
+        pressure_bias = self._player_pressure_bias(defender)
+        mindset_bias = self._player_mindset_bias(defender)
+        defender_score += pressure_bias * 4.0
+        defender_score += max(0.0, -mindset_bias) * 3.6
         margin = carrier_score - defender_score
         pressure = self._pressure_on_player(carrier)
         near_touchline = carrier.y < 6.8 or carrier.y > (PITCH_WIDTH - 6.8)
@@ -3228,6 +3424,8 @@ class MatchEngine:
             + defender.fatigue / 340.0
             + pressure * 0.08
             + self._event_frequency_boost("foul") * 0.025
+            + pressure_bias * 0.08
+            + max(0.0, -mindset_bias) * 0.03
         )
         foul_chance *= discipline_intensity
         if near_touchline:
@@ -3241,6 +3439,7 @@ class MatchEngine:
             + pressure * 0.16
             + defender.profile.attributes.get("aggression", 60.0) / 320.0
             + defender.fatigue / 360.0
+            + pressure_bias * 0.10
             + (discipline_intensity - 1.0) * 0.18,
             0.08,
             0.92,

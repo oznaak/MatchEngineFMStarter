@@ -32,6 +32,13 @@ from engine.db import (
 )
 from engine.loader import available_formations, pick_best_xi
 from engine.match_engine import MatchEngine
+from engine.models import (
+    DEFAULT_PLAYER_INSTRUCTIONS,
+    DEFAULT_TEAM_INSTRUCTIONS,
+    TEAM_INSTRUCTION_OPTIONS,
+    normalize_player_instruction_value,
+    normalize_team_instructions,
+)
 from engine.render import Renderer
 
 ROOT = Path(__file__).resolve().parent
@@ -204,10 +211,18 @@ class ManagerGameApp:
         self.modal_paused_match = False
         self.squad_drag_player_id: str | None = None
         self.squad_drag_pos: tuple[int, int] | None = None
+        self.squad_mouse_down_player_id: str | None = None
+        self.squad_mouse_down_pos: tuple[int, int] | None = None
         self.squad_hover_target_id: str | None = None
+        self.squad_hover_player_id: str | None = None
+        self.squad_selected_player_id: str | None = None
+        self.squad_slider_drag_player_id: str | None = None
+        self.squad_slider_drag_key: str | None = None
         self.squad_draft_xi_ids: list[str] = []
         self.squad_draft_bench_ids: list[str] = []
         self.squad_draft_formation = "4-3-3"
+        self.squad_draft_instructions = dict(DEFAULT_TEAM_INSTRUCTIONS)
+        self.squad_draft_player_instructions: dict[str, dict[str, int]] = {}
         self._reload_state(apply_display=True)
 
     def _reload_state(self, apply_display: bool = False) -> None:
@@ -325,11 +340,18 @@ class ManagerGameApp:
             return None
         return str(self.overview.get("club_id"))
 
+    def _is_squad_tab(self, tab: str | None = None) -> bool:
+        current = tab if tab is not None else self.overview_tab
+        return str(current).startswith("squad_")
+
     def _load_squad_draft(self) -> None:
         if not self.overview:
             self.squad_draft_xi_ids = []
             self.squad_draft_bench_ids = []
             self.squad_draft_formation = "4-3-3"
+            self.squad_draft_instructions = dict(DEFAULT_TEAM_INSTRUCTIONS)
+            self.squad_draft_player_instructions = {}
+            self.squad_selected_player_id = None
             return
         club_id = self._managed_club_id()
         setups = self.overview.get("club_setups", {})
@@ -337,6 +359,34 @@ class ManagerGameApp:
         self.squad_draft_formation = str(setup.get("formation", "4-3-3"))
         self.squad_draft_xi_ids = list(setup.get("xi_ids", []))
         self.squad_draft_bench_ids = list(setup.get("bench_ids", []))
+        self.squad_draft_instructions = normalize_team_instructions(setup.get("instructions"))
+        self.squad_draft_player_instructions = {
+            str(player_id): {
+                key: normalize_player_instruction_value(key, value)
+                for key, value in (values or {}).items()
+                if key in DEFAULT_PLAYER_INSTRUCTIONS
+            }
+            for player_id, values in dict(setup.get("player_instructions", {})).items()
+        }
+        self._ensure_squad_selected_player()
+
+    def _ensure_squad_selected_player(self) -> None:
+        active_ids = [player_id for player_id in self.squad_draft_xi_ids + self.squad_draft_bench_ids if player_id]
+        if self.squad_selected_player_id in active_ids:
+            return
+        goalkeeper_id = None
+        players = {}
+        if self.overview:
+            managed_club_id = self._managed_club_id()
+            players = {
+                player["id"]: player
+                for player in self.overview.get("players_by_club", {}).get(managed_club_id, [])
+            }
+        for player_id in self.squad_draft_xi_ids:
+            if players.get(player_id, {}).get("position") == "GK":
+                goalkeeper_id = player_id
+                break
+        self.squad_selected_player_id = goalkeeper_id or (active_ids[0] if active_ids else None)
 
     def _persist_squad_draft(self) -> None:
         club_id = self._managed_club_id()
@@ -350,6 +400,8 @@ class ManagerGameApp:
                 self.squad_draft_formation,
                 self.squad_draft_xi_ids,
                 self.squad_draft_bench_ids,
+                self.squad_draft_instructions,
+                self.squad_draft_player_instructions,
             )
             conn.commit()
         self._reload_state()
@@ -372,7 +424,74 @@ class ManagerGameApp:
         self.squad_draft_formation = formation
         self.squad_draft_xi_ids = [player.id for player in xi]
         self.squad_draft_bench_ids = [player.id for player in bench]
+        self._ensure_squad_selected_player()
         self._persist_squad_draft()
+
+    def _change_squad_instruction(self, key: str, value: str) -> None:
+        if key not in TEAM_INSTRUCTION_OPTIONS:
+            return
+        if value not in TEAM_INSTRUCTION_OPTIONS[key]:
+            return
+        self.squad_draft_instructions[key] = value
+        self._persist_squad_draft()
+
+    def _step_squad_instruction(self, key: str, delta: int) -> None:
+        options = TEAM_INSTRUCTION_OPTIONS.get(key, [])
+        if not options:
+            return
+        current = str(self.squad_draft_instructions.get(key, options[0]))
+        try:
+            index = options.index(current)
+        except ValueError:
+            index = 0
+        next_index = max(0, min(len(options) - 1, index + delta))
+        if next_index == index:
+            return
+        self._change_squad_instruction(key, options[next_index])
+
+    def _player_instruction_values(self, player_id: str | None) -> dict[str, int]:
+        if not player_id:
+            return dict(DEFAULT_PLAYER_INSTRUCTIONS)
+        values = dict(DEFAULT_PLAYER_INSTRUCTIONS)
+        values.update(self.squad_draft_player_instructions.get(player_id, {}))
+        return {key: normalize_player_instruction_value(key, value) for key, value in values.items()}
+
+    def _change_player_instruction(self, player_id: str, key: str, delta: int) -> None:
+        if key not in DEFAULT_PLAYER_INSTRUCTIONS:
+            return
+        values = self._player_instruction_values(player_id)
+        updated = normalize_player_instruction_value(key, values[key] + delta)
+        if updated == values[key]:
+            return
+        self.squad_draft_player_instructions[player_id] = dict(values)
+        self.squad_draft_player_instructions[player_id][key] = updated
+        self._persist_squad_draft()
+
+    def _set_player_instruction(self, player_id: str, key: str, value: int) -> None:
+        if key not in DEFAULT_PLAYER_INSTRUCTIONS:
+            return
+        values = self._player_instruction_values(player_id)
+        updated = normalize_player_instruction_value(key, value)
+        if updated == values[key]:
+            return
+        self.squad_draft_player_instructions[player_id] = dict(values)
+        self.squad_draft_player_instructions[player_id][key] = updated
+        self._persist_squad_draft()
+
+    def _update_player_instruction_from_pos(self, pos: tuple[int, int]) -> None:
+        player_id = self.squad_slider_drag_player_id
+        key = self.squad_slider_drag_key
+        if not player_id or not key:
+            return
+        hit = self.renderer.get_squad_slider_target(player_id, key)
+        if not hit:
+            return
+        track = hit.get("track")
+        if not isinstance(track, pygame.Rect) or track.width <= 0:
+            return
+        ratio = (pos[0] - track.x) / track.width
+        value = round(max(0.0, min(1.0, ratio)) * 100)
+        self._set_player_instruction(player_id, key, value)
 
     def _apply_squad_swap(self, source_id: str, target_id: str) -> None:
         if source_id == target_id:
@@ -380,15 +499,34 @@ class ManagerGameApp:
         if source_id in self.squad_draft_xi_ids and target_id in self.squad_draft_bench_ids:
             xi_index = self.squad_draft_xi_ids.index(source_id)
             bench_index = self.squad_draft_bench_ids.index(target_id)
+            self.squad_draft_xi_ids[xi_index], self.squad_draft_bench_ids[bench_index] = (
+                self.squad_draft_bench_ids[bench_index],
+                self.squad_draft_xi_ids[xi_index],
+            )
         elif source_id in self.squad_draft_bench_ids and target_id in self.squad_draft_xi_ids:
             xi_index = self.squad_draft_xi_ids.index(target_id)
             bench_index = self.squad_draft_bench_ids.index(source_id)
+            self.squad_draft_xi_ids[xi_index], self.squad_draft_bench_ids[bench_index] = (
+                self.squad_draft_bench_ids[bench_index],
+                self.squad_draft_xi_ids[xi_index],
+            )
+        elif source_id in self.squad_draft_xi_ids and target_id in self.squad_draft_xi_ids:
+            source_index = self.squad_draft_xi_ids.index(source_id)
+            target_index = self.squad_draft_xi_ids.index(target_id)
+            self.squad_draft_xi_ids[source_index], self.squad_draft_xi_ids[target_index] = (
+                self.squad_draft_xi_ids[target_index],
+                self.squad_draft_xi_ids[source_index],
+            )
+        elif source_id in self.squad_draft_bench_ids and target_id in self.squad_draft_bench_ids:
+            source_index = self.squad_draft_bench_ids.index(source_id)
+            target_index = self.squad_draft_bench_ids.index(target_id)
+            self.squad_draft_bench_ids[source_index], self.squad_draft_bench_ids[target_index] = (
+                self.squad_draft_bench_ids[target_index],
+                self.squad_draft_bench_ids[source_index],
+            )
         else:
             return
-        self.squad_draft_xi_ids[xi_index], self.squad_draft_bench_ids[bench_index] = (
-            self.squad_draft_bench_ids[bench_index],
-            self.squad_draft_xi_ids[xi_index],
-        )
+        self._ensure_squad_selected_player()
         self._persist_squad_draft()
 
     def _reset_match_sub_state(self, restore_pause: bool = True) -> None:
@@ -893,13 +1031,36 @@ class ManagerGameApp:
             return
         if action.startswith("overview_tab:"):
             tab = action.split(":", 1)[1]
+            self.squad_drag_player_id = None
+            self.squad_drag_pos = None
+            self.squad_mouse_down_player_id = None
+            self.squad_mouse_down_pos = None
+            self.squad_hover_target_id = None
+            self.squad_hover_player_id = None
+            self.squad_slider_drag_player_id = None
+            self.squad_slider_drag_key = None
             self.overview_tab = tab
-            if tab == "squad":
+            if self._is_squad_tab(tab):
                 self.overview_club_id = self._managed_club_id()
                 self._load_squad_draft()
             return
         if action.startswith("squad:formation:"):
             self._change_squad_formation(action.split(":", 2)[2])
+            return
+        if action.startswith("squad:instruction_step:"):
+            _, _, key, delta_text = action.split(":", 3)
+            self._step_squad_instruction(key, int(delta_text))
+            return
+        if action.startswith("squad:instruction:"):
+            _, _, key, value = action.split(":", 3)
+            self._change_squad_instruction(key, value)
+            return
+        if action.startswith("squad:select_player:"):
+            self.squad_selected_player_id = action.split(":", 2)[2]
+            return
+        if action.startswith("squad:player_instruction:"):
+            _, _, _, player_id, key, delta_text = action.split(":", 5)
+            self._change_player_instruction(player_id, key, int(delta_text))
             return
         if action.startswith("select_save:"):
             self.selected_save_id = int(action.split(":", 1)[1])
@@ -1033,9 +1194,13 @@ class ManagerGameApp:
                     "formation": self.squad_draft_formation,
                     "xi_ids": self.squad_draft_xi_ids,
                     "bench_ids": self.squad_draft_bench_ids,
+                    "instructions": self.squad_draft_instructions,
+                    "player_instructions": self.squad_draft_player_instructions,
                     "drag_player_id": self.squad_drag_player_id,
                     "drag_pos": self.squad_drag_pos,
                     "hover_target_id": self.squad_hover_target_id,
+                    "hover_player_id": self.squad_hover_player_id,
+                    "selected_player_id": self.squad_selected_player_id,
                 },
             }
         return {"screen": "menu", "footer_text": footer_text}
@@ -1066,13 +1231,26 @@ class ManagerGameApp:
                             self.match_sub_hover_player_id = target_id if hovering_valid_target else None
                         else:
                             self.match_sub_hover_player_id = None
-                    elif self.screen == "overview" and self.overview_tab == "squad" and self.squad_drag_player_id:
-                        self.squad_drag_pos = event.pos
+                    elif self.screen == "overview" and self.overview_tab == "squad_formation":
+                        if self.squad_slider_drag_player_id and self.squad_slider_drag_key:
+                            self._update_player_instruction_from_pos(event.pos)
                         hit = self.renderer.handle_squad_hit(event.pos)
-                        if hit:
-                            self.squad_hover_target_id = str(hit["player_id"]) if str(hit["player_id"]) != self.squad_drag_player_id else None
-                        else:
+                        hover_player_id = str(hit["player_id"]) if hit else None
+                        self.squad_hover_player_id = hover_player_id
+                        if self.squad_slider_drag_player_id and self.squad_slider_drag_key:
+                            self.squad_drag_player_id = None
+                            self.squad_drag_pos = None
                             self.squad_hover_target_id = None
+                        elif self.squad_drag_player_id:
+                            self.squad_drag_pos = event.pos
+                            self.squad_hover_target_id = hover_player_id if hover_player_id != self.squad_drag_player_id else None
+                        elif self.squad_mouse_down_player_id and self.squad_mouse_down_pos:
+                            dx = event.pos[0] - self.squad_mouse_down_pos[0]
+                            dy = event.pos[1] - self.squad_mouse_down_pos[1]
+                            if (dx * dx + dy * dy) >= 49:
+                                self.squad_drag_player_id = self.squad_mouse_down_player_id
+                                self.squad_drag_pos = event.pos
+                                self.squad_hover_target_id = hover_player_id if hover_player_id != self.squad_drag_player_id else None
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if self.modal:
                         self._handle_action(self.renderer.handle_ui_click(event.pos))
@@ -1106,11 +1284,19 @@ class ManagerGameApp:
                     else:
                         action = self.renderer.handle_ui_click(event.pos)
                         self._handle_action(action)
-                        if self.screen == "overview" and self.overview_tab == "squad":
-                            hit = self.renderer.handle_squad_hit(event.pos)
-                            if hit:
-                                self.squad_drag_player_id = str(hit["player_id"])
-                                self.squad_drag_pos = event.pos
+                        if not action and self.screen == "overview" and self.overview_tab == "squad_formation":
+                            slider_hit = self.renderer.handle_squad_slider_hit(event.pos)
+                            if slider_hit:
+                                self.squad_slider_drag_player_id = str(slider_hit["player_id"])
+                                self.squad_slider_drag_key = str(slider_hit["key"])
+                                self.squad_selected_player_id = self.squad_slider_drag_player_id
+                                self._update_player_instruction_from_pos(event.pos)
+                            else:
+                                hit = self.renderer.handle_squad_hit(event.pos)
+                                if not hit:
+                                    continue
+                                self.squad_mouse_down_player_id = str(hit["player_id"])
+                                self.squad_mouse_down_pos = event.pos
                                 self.squad_hover_target_id = None
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     if self.screen == "match" and self.match_sub_mode and self.match_sub_drag_player_id:
@@ -1120,13 +1306,23 @@ class ManagerGameApp:
                         self.match_sub_drag_player_id = None
                         self.match_sub_drag_pos = None
                         self.match_sub_hover_player_id = None
-                    elif self.screen == "overview" and self.overview_tab == "squad" and self.squad_drag_player_id:
+                    elif self.screen == "overview" and self.overview_tab == "squad_formation":
                         hit = self.renderer.handle_squad_hit(event.pos)
-                        if hit:
-                            self._apply_squad_swap(self.squad_drag_player_id, str(hit["player_id"]))
+                        if self.squad_slider_drag_player_id and self.squad_slider_drag_key:
+                            self._update_player_instruction_from_pos(event.pos)
+                        elif self.squad_drag_player_id:
+                            if hit:
+                                self._apply_squad_swap(self.squad_drag_player_id, str(hit["player_id"]))
+                        elif self.squad_mouse_down_player_id:
+                            if hit and str(hit["player_id"]) == self.squad_mouse_down_player_id:
+                                self.squad_selected_player_id = self.squad_mouse_down_player_id
                         self.squad_drag_player_id = None
                         self.squad_drag_pos = None
+                        self.squad_mouse_down_player_id = None
+                        self.squad_mouse_down_pos = None
                         self.squad_hover_target_id = None
+                        self.squad_slider_drag_player_id = None
+                        self.squad_slider_drag_key = None
             if self.screen == "match" and self.match_engine:
                 if self.match_pending_substitutions and not self.match_sub_animation and not self.match_paused and self._match_has_natural_stoppage():
                     self._start_match_sub_animation()
