@@ -271,7 +271,7 @@ class Renderer:
             badge_surface.set_clip(pygame.Rect(local_rect.width // 2, 0, local_rect.width // 2, local_rect.height))
             pygame.draw.polygon(badge_surface, secondary, local_points)
         elif template_id == "2":
-            stripe_w = max(8, local_rect.width // 4)
+            stripe_w = max(2, min(local_rect.width // 3, max(3, local_rect.width // 4)))
             badge_surface.set_clip(pygame.Rect((local_rect.width - stripe_w) // 2, 0, stripe_w, local_rect.height))
             pygame.draw.polygon(badge_surface, secondary, local_points)
         elif template_id == "3":
@@ -297,7 +297,7 @@ class Renderer:
 
         badge_surface.set_clip(None)
         self.screen.blit(badge_surface, rect.topleft)
-        pygame.draw.polygon(self.screen, border, points, width=max(2, rect.width // 18))
+        pygame.draw.polygon(self.screen, border, points, width=1 if rect.width <= 14 else max(2, rect.width // 18))
 
     def draw(
         self,
@@ -334,7 +334,7 @@ class Renderer:
             self._draw_pitch()
             self._draw_players_and_ball(state, alpha)
             self._draw_pitch_overlay(state, fixture_label)
-        self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds)
+        self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds, managed_side)
         self._draw_events(state, commentary_colors)
         self._draw_goal_banner(state)
         if drag_player_id and drag_pos and not state.is_finished:
@@ -546,6 +546,7 @@ class Renderer:
         label = short_display_name(name, 11)
         draw_text(self.screen, label, rect.x + 28, y + 2, (238, 238, 240), scale=1)
 
+        icon_slots = (1 if goals > 0 else 0) + (1 if assists > 0 else 0)
         icon_x = rect.right - 132
         if goals > 0:
             self._draw_goal_icon(icon_x, y + 8)
@@ -575,7 +576,7 @@ class Renderer:
             pygame.draw.rect(self.screen, (236, 202, 56), (badge_x, y + 1, 12, 14))
             draw_text(self.screen, "Y", badge_x + 2, y + 4, (28, 28, 28), scale=1)
         if subbed_out:
-            self._draw_subbed_out_indicator(rect.right - 146, y + 8)
+            self._draw_subbed_out_indicator(rect.right - 146 - icon_slots * 18, y + 8)
 
     def _draw_sub_controls(self, rect: pygame.Rect, team, subs_mode: bool, subs_pending: bool = False) -> None:
         button_rect = pygame.Rect(rect.x + 10, rect.bottom - 36, rect.width - 20, 26)
@@ -680,9 +681,20 @@ class Renderer:
         pygame.draw.circle(self.screen, (18, 18, 22), (x, y), 2)
 
     def _draw_assist_icon(self, x: int, y: int) -> None:
-        pygame.draw.line(self.screen, (236, 236, 236), (x - 4, y + 3), (x + 3, y - 4), 2)
-        pygame.draw.line(self.screen, (236, 236, 236), (x + 1, y - 5), (x + 5, y - 1), 2)
-        pygame.draw.line(self.screen, (236, 236, 236), (x + 5, y - 1), (x + 3, y + 2), 2)
+        boot = [
+            (x - 5, y + 2),
+            (x - 2, y - 4),
+            (x + 2, y - 4),
+            (x + 4, y - 1),
+            (x + 5, y + 1),
+            (x + 2, y + 2),
+            (x + 1, y + 5),
+            (x - 4, y + 5),
+        ]
+        pygame.draw.polygon(self.screen, (236, 236, 236), boot)
+        pygame.draw.line(self.screen, (18, 18, 22), (x - 1, y - 3), (x + 2, y - 3), 1)
+        pygame.draw.line(self.screen, (18, 18, 22), (x - 3, y + 4), (x + 2, y + 4), 1)
+        pygame.draw.circle(self.screen, (236, 236, 236), (x + 6, y - 4), 1)
 
     def _draw_subbed_out_indicator(self, x: int, y: int) -> None:
         points = [(x + 5, y - 5), (x - 4, y), (x + 5, y + 5)]
@@ -832,24 +844,26 @@ class Renderer:
 
     def _draw_ball_icon(self, surface: pygame.Surface, center: tuple[int, int], radius: int) -> None:
         cx, cy = center
+        outline = (18, 18, 22)
         pygame.draw.circle(surface, (245, 245, 245), center, radius)
-        pygame.draw.circle(surface, (18, 18, 18), center, radius, max(1, radius // 7))
-        pentagon = []
+        pygame.draw.circle(surface, outline, center, radius, max(1, radius // 5))
+        center_patch = []
         for idx in range(5):
             angle = math.radians(-90 + idx * 72)
-            pentagon.append((int(cx + math.cos(angle) * radius * 0.34), int(cy + math.sin(angle) * radius * 0.34)))
-        pygame.draw.polygon(surface, (18, 18, 18), pentagon)
-        for idx in range(5):
-            angle = math.radians(-90 + idx * 72)
-            node_x = cx + math.cos(angle) * radius * 0.72
-            node_y = cy + math.sin(angle) * radius * 0.72
-            pygame.draw.circle(surface, (18, 18, 18), (int(node_x), int(node_y)), max(1, radius // 7))
-            pygame.draw.line(surface, (18, 18, 18), pentagon[idx], (int(node_x), int(node_y)), max(1, radius // 7))
-            next_idx = (idx + 1) % 5
-            next_angle = math.radians(-90 + next_idx * 72)
-            next_x = cx + math.cos(next_angle) * radius * 0.72
-            next_y = cy + math.sin(next_angle) * radius * 0.72
-            pygame.draw.line(surface, (18, 18, 18), (int(node_x), int(node_y)), (int(next_x), int(next_y)), max(1, radius // 9))
+            center_patch.append((int(cx + math.cos(angle) * radius * 0.32), int(cy + math.sin(angle) * radius * 0.32)))
+        pygame.draw.polygon(surface, outline, center_patch)
+
+        seam_arcs = [
+            pygame.Rect(cx - radius + 1, cy - radius // 2, radius + 1, radius),
+            pygame.Rect(cx - 1, cy - radius // 2, radius + 1, radius),
+            pygame.Rect(cx - radius // 2, cy - radius + 1, radius, radius + 1),
+        ]
+        pygame.draw.arc(surface, outline, seam_arcs[0], math.radians(300), math.radians(60), 1)
+        pygame.draw.arc(surface, outline, seam_arcs[1], math.radians(120), math.radians(240), 1)
+        pygame.draw.arc(surface, outline, seam_arcs[2], math.radians(200), math.radians(340), 1)
+
+        for px, py in center_patch:
+            pygame.draw.line(surface, outline, (cx, cy), (px, py), 1)
 
     def _draw_pitch_overlay(self, state: MatchState, fixture_label: str) -> None:
         if state.phase == "pre_match" and state.awaiting_start:
@@ -891,6 +905,7 @@ class Renderer:
         paused: bool,
         speed_label: str,
         clock_seconds: float | None,
+        managed_side: str | None = None,
     ) -> None:
         panel = pygame.Rect(0, 0, SCREEN_W, TOP_BAR_H)
         pygame.draw.rect(self.screen, (10, 10, 12), panel)
@@ -898,7 +913,7 @@ class Renderer:
         minute = min(90, int(shown_seconds // 60))
         second = int(shown_seconds % 60)
         minute_text = f"{minute:02d}:{second:02d}"
-        self._draw_top_bar(state, minute_text, paused, speed_label)
+        self._draw_top_bar(state, minute_text, paused, speed_label, managed_side)
 
     def _draw_events(self, state: MatchState, commentary_colors: tuple[Tuple[int, int, int], Tuple[int, int, int]] | None = None) -> None:
         panel = pygame.Rect(0, SCREEN_H - BOTTOM_TICKER_H, SCREEN_W, BOTTOM_TICKER_H)
@@ -961,6 +976,21 @@ class Renderer:
         home_value = int(round(stats["home"][key]))
         away_value = int(round(stats["away"][key]))
         return f"{home_value}|{away_value}"
+
+    def _report_players_with_minutes(self, report: dict, side: str) -> list[dict]:
+        players = report.get("players", {}).get(side, [])
+        filtered = [
+            player
+            for player in players
+            if float(report.get("player_stats", {}).get(player["id"], {}).get("minutes", player.get("minutes", 0.0))) > 0.01
+        ]
+        filtered.sort(
+            key=lambda player: (
+                -float(report.get("player_stats", {}).get(player["id"], {}).get("minutes", player.get("minutes", 0.0))),
+                player.get("name", ""),
+            )
+        )
+        return filtered
 
     def _player_rating(self, state: MatchState, player_id: str) -> float:
         stats = state.player_match_stats.get(player_id, {})
@@ -1158,15 +1188,21 @@ class Renderer:
             draw_text(self.screen, away_value, away_box.x + (away_box.width - text_width(away_value, 1)) // 2, away_box.y + 5, away_secondary, scale=1)
             y += row_h + row_gap
 
-        home_players = report.get("players", {}).get("home", [])
-        away_players = report.get("players", {}).get("away", [])
+        home_players = self._report_players_with_minutes(report, "home")
+        away_players = self._report_players_with_minutes(report, "away")
         if not selected_player_id:
             if home_players:
                 selected_player_id = home_players[0]["id"]
             elif away_players:
                 selected_player_id = away_players[0]["id"]
 
-        squad_w = 180
+        max_list_count = max(len(home_players), len(away_players), 1)
+        detail_min_w = 430
+        if max_list_count > 11:
+            squad_w = min(260, max(220, (player_rect.width - detail_min_w - 48) // 2))
+        else:
+            squad_w = 180
+        squad_w = max(180, min(squad_w, (player_rect.width - detail_min_w - 48) // 2))
         list_header_h = 28
         home_list = pygame.Rect(player_rect.x + 12, player_rect.y + 48, squad_w, player_rect.height - 60)
         detail_rect = pygame.Rect(home_list.right + 12, player_rect.y + 48, player_rect.width - squad_w * 2 - 48, player_rect.height - 60)
@@ -1180,22 +1216,34 @@ class Renderer:
             draw_text(self.screen, title_text, header.x + (header.width - text_width(title_text, 1)) // 2, header.y + 8, (248, 187, 32), scale=1)
 
         def draw_squad_list(players: list[dict], rect: pygame.Rect, fill_color: Tuple[int, int, int]) -> None:
-            row_y = rect.y + list_header_h + 6
-            for player in players:
+            if not players:
+                return
+
+            inner_x = rect.x + 6
+            inner_y = rect.y + list_header_h + 6
+            inner_w = rect.width - 12
+            inner_h = rect.height - list_header_h - 12
+            row_gap = 3 if len(players) > 11 else 4
+            row_h = max(14, min(26, (inner_h - row_gap * max(0, len(players) - 1)) // len(players)))
+            compact = row_h < 22
+
+            for idx, player in enumerate(players):
+                row_y = inner_y + idx * (row_h + row_gap)
+                row_rect = pygame.Rect(inner_x, row_y, inner_w, row_h)
                 is_selected = player["id"] == selected_player_id
-                row_rect = pygame.Rect(rect.x + 6, row_y, rect.width - 12, 26)
                 if is_selected:
                     pygame.draw.rect(self.screen, fill_color, row_rect, border_radius=4)
                     pygame.draw.rect(self.screen, (248, 187, 32), row_rect, 2, border_radius=4)
                 else:
                     pygame.draw.rect(self.screen, (24, 26, 32), row_rect, border_radius=4)
-                draw_text(self.screen, player.get("short_name", player.get("name", "PLAYER"))[:12], row_rect.x + 8, row_rect.y + 8, (245, 245, 245), scale=1)
+
+                label = player.get("short_name", player.get("name", "PLAYER"))[:10 if compact else 12]
+                text_y = row_rect.y + max(5, (row_rect.height - 7) // 2)
+                draw_text(self.screen, label, row_rect.x + 6, text_y, (245, 245, 245), scale=1)
+
                 rating = f"{self._report_player_rating(report, player['id']):.1f}"
-                draw_text(self.screen, rating, row_rect.right - 8 - text_width(rating, 1), row_rect.y + 8, (245, 245, 245), scale=1)
+                draw_text(self.screen, rating, row_rect.right - 8 - text_width(rating, 1), text_y, (245, 245, 245), scale=1)
                 self._register_ui(f"match:player:{player['id']}", row_rect)
-                row_y += 28
-                if row_y + 26 > rect.bottom:
-                    break
 
         draw_squad_list(home_players, home_list, home_primary)
         draw_squad_list(away_players, away_list, away_primary)
@@ -1205,6 +1253,13 @@ class Renderer:
             if player["id"] == selected_player_id:
                 selected_player = player
                 break
+        if not selected_player:
+            if home_players:
+                selected_player = home_players[0]
+                selected_player_id = selected_player["id"]
+            elif away_players:
+                selected_player = away_players[0]
+                selected_player_id = selected_player["id"]
         if selected_player:
             stats = report.get("player_stats", {}).get(selected_player["id"], {})
             selected_side = selected_player["side"]
@@ -1277,6 +1332,26 @@ class Renderer:
                 pygame.draw.line(self.screen, bar_color, (col_x + 8, row_y + 13), (col_x + col_w - 8, row_y + 13), 2)
 
     def _draw_post_match_screen(self, state: MatchState, selected_player_id: str | None) -> None:
+        def report_players(team, side: str) -> list[dict]:
+            rows = []
+            for profile in team.club.players:
+                minutes = float(state.player_match_stats.get(profile.id, {}).get("minutes", 0.0))
+                if minutes <= 0.01:
+                    continue
+                short_name = profile.name.split()[-1] if profile.name.split() else profile.name
+                rows.append(
+                    {
+                        "id": profile.id,
+                        "name": profile.name,
+                        "short_name": short_name,
+                        "position": profile.position,
+                        "ovr": profile.ovr,
+                        "side": side,
+                        "minutes": minutes,
+                    }
+                )
+            rows.sort(key=lambda player: (-float(player.get("minutes", 0.0)), player["name"]))
+            return rows
         report = {
             "home": {
                 "id": state.home.club.id,
@@ -1309,28 +1384,8 @@ class Renderer:
             "player_goals": state.player_goals,
             "player_assists": state.player_assists,
             "players": {
-                "home": [
-                    {
-                        "id": player.profile.id,
-                        "name": player.profile.name,
-                        "short_name": player.short_name,
-                        "position": player.profile.position,
-                        "ovr": player.profile.ovr,
-                        "side": "home",
-                    }
-                    for player in state.home.xi
-                ],
-                "away": [
-                    {
-                        "id": player.profile.id,
-                        "name": player.profile.name,
-                        "short_name": player.short_name,
-                        "position": player.profile.position,
-                        "ovr": player.profile.ovr,
-                        "side": "away",
-                    }
-                    for player in state.away.xi
-                ],
+                "home": report_players(state.home, "home"),
+                "away": report_players(state.away, "away"),
             },
         }
         panel = pygame.Rect(14, VIEWPORT_Y + 10, SCREEN_W - 28, VIEWPORT_H - 18)
@@ -1343,9 +1398,10 @@ class Renderer:
         pygame.draw.rect(self.screen, (10, 10, 12), pygame.Rect(0, 0, SCREEN_W, TOP_BAR_H))
         report_view = pygame.Rect(0, VIEWPORT_Y, SCREEN_W, VIEWPORT_H)
         pygame.draw.rect(self.screen, (108, 142, 63), report_view)
-        self._draw_post_match_report(report, selected_player_id, pygame.Rect(14, VIEWPORT_Y + 10, SCREEN_W - 28, VIEWPORT_H - 18))
+        panel = pygame.Rect(14, VIEWPORT_Y + 10, SCREEN_W - 28, VIEWPORT_H - 18)
+        self._draw_post_match_report(report, selected_player_id, panel)
         self._draw_ui_button(
-            pygame.Rect(SCREEN_W - 146, 3, 120, 34),
+            pygame.Rect(panel.right - 120, 3, 120, 34),
             "BACK",
             (36, 52, 96),
             (245, 245, 245),
@@ -1355,11 +1411,11 @@ class Renderer:
         if present:
             pygame.display.flip()
 
-    def _draw_top_bar(self, state: MatchState, minute_text: str, paused: bool, speed_label: str) -> None:
+    def _draw_top_bar(self, state: MatchState, minute_text: str, paused: bool, speed_label: str, managed_side: str | None = None) -> None:
         time_box = pygame.Rect(14, 0, 96, TOP_BAR_H)
-        home_box = pygame.Rect(time_box.right, 0, 138, TOP_BAR_H)
+        home_box = pygame.Rect(time_box.right, 0, 160, TOP_BAR_H)
         score_box = pygame.Rect(home_box.right, 0, 116, TOP_BAR_H)
-        away_box = pygame.Rect(score_box.right, 0, 138, TOP_BAR_H)
+        away_box = pygame.Rect(score_box.right, 0, 160, TOP_BAR_H)
         pause_box = pygame.Rect(SCREEN_W - 142, 0, 142, TOP_BAR_H)
 
         home_primary = hex_to_rgb(state.home.club.colors.get("primary", "#F3B729"), (243, 183, 41))
@@ -1371,14 +1427,54 @@ class Renderer:
         pygame.draw.rect(self.screen, home_primary, home_box)
         pygame.draw.rect(self.screen, (10, 10, 12), score_box)
         pygame.draw.rect(self.screen, away_primary, away_box)
-        pygame.draw.rect(self.screen, (248, 187, 32), pause_box)
+        managed_primary = (
+            hex_to_rgb((state.home if managed_side == "home" else state.away).club.colors.get("primary", "#2E3A6A"), (46, 58, 106))
+            if managed_side in ("home", "away")
+            else (46, 58, 106)
+        )
+        managed_secondary = (
+            hex_to_rgb((state.home if managed_side == "home" else state.away).club.colors.get("secondary", "#F5F5F5"), (245, 245, 245))
+            if managed_side in ("home", "away")
+            else (245, 245, 245)
+        )
+        status_fill = (248, 187, 32)
+        status_color = (245, 245, 245)
+        if state.is_finished or state.awaiting_start:
+            status_fill = (88, 170, 104)
+            status_color = (245, 255, 245)
+        else:
+            status_fill = managed_primary
+            status_color = managed_secondary
+        pygame.draw.rect(self.screen, status_fill, pause_box)
 
         draw_text(self.screen, minute_text, time_box.x + 10, 11, (245, 245, 245), scale=2)
 
+        badge_h = 24
+        badge_w = 20
+        home_badge = pygame.Rect(home_box.x + 10, (TOP_BAR_H - badge_h) // 2, badge_w, badge_h)
+        away_badge = pygame.Rect(away_box.x + 10, (TOP_BAR_H - badge_h) // 2, badge_w, badge_h)
+        self._draw_club_badge(
+            {
+                "template_id": state.home.club.badge_id,
+                "primary": state.home.club.badge_primary,
+                "secondary": state.home.club.badge_secondary,
+                "border": state.home.club.badge.get("border", "#F5F5F5"),
+            },
+            home_badge,
+        )
+        self._draw_club_badge(
+            {
+                "template_id": state.away.club.badge_id,
+                "primary": state.away.club.badge_primary,
+                "secondary": state.away.club.badge_secondary,
+                "border": state.away.club.badge.get("border", "#F5F5F5"),
+            },
+            away_badge,
+        )
         home_name = compact_team_name(state.home.name)
         away_name = compact_team_name(state.away.name)
-        draw_text(self.screen, home_name, home_box.x + 16, 11, home_secondary, scale=2)
-        draw_text(self.screen, away_name, away_box.x + 16, 11, away_secondary, scale=2)
+        draw_text(self.screen, home_name, home_badge.right + 8, 11, home_secondary, scale=2)
+        draw_text(self.screen, away_name, away_badge.right + 8, 11, away_secondary, scale=2)
 
         home_score = str(state.home_score)
         away_score = str(state.away_score)
@@ -1396,16 +1492,12 @@ class Renderer:
         draw_text(self.screen, speed_label, speed_x + (speed_w - text_width(speed_label, 2)) // 2, 11, (245, 245, 245), scale=2)
         if state.is_finished:
             status_text = "CONTINUE"
-            status_color = (255, 250, 215)
         elif state.awaiting_start:
             status_text = "START"
-            status_color = (255, 250, 215)
         elif paused:
             status_text = "PAUSE"
-            status_color = (245, 245, 245)
         else:
             status_text = "LIVE"
-            status_color = (230, 245, 255)
         draw_text(self.screen, status_text, pause_box.x + (pause_box.width - text_width(status_text, 2)) // 2, 11, status_color, scale=2)
         self.start_rect = pause_box
         self._draw_speed_menu(speed_label)
@@ -1518,10 +1610,10 @@ class Renderer:
         pygame.draw.rect(self.screen, (22, 22, 26), rect, 2, border_radius=6)
         content_left = rect.x + 16
         if icon == "ball":
-            cx = rect.x + 20
+            cx = rect.x + 22
             cy = rect.centery
-            self._draw_ball_icon(self.screen, (cx, cy), 8)
-            content_left = cx + 16
+            self._draw_ball_icon(self.screen, (cx, cy), 9)
+            content_left = cx + 18
         draw_text(
             self.screen,
             label,
@@ -1847,7 +1939,19 @@ class Renderer:
             gd = f"{row['goal_difference']:+d}"
             color = (245, 245, 245) if row["club_id"] != overview.get("club_id") else (248, 187, 32)
             draw_text(self.screen, str(idx), col_t_pos, y, color, scale=1)
-            draw_text(self.screen, short_display_name(row["club_name"], 10), col_t_club, y, color, scale=1)
+            club_meta = next((club for club in clubs if club["id"] == row["club_id"]), None)
+            badge_rect = pygame.Rect(col_t_club, y - 3, 12, 14)
+            if club_meta:
+                self._draw_club_badge(
+                    {
+                        "template_id": club_meta.get("badge_template_id", "1"),
+                        "primary": club_meta.get("badge_primary", "#2E3A6A"),
+                        "secondary": club_meta.get("badge_secondary", "#F5F5F5"),
+                        "border": club_meta.get("badge_border", "#F5F5F5"),
+                    },
+                    badge_rect,
+                )
+            draw_text(self.screen, short_display_name(row["club_name"], 10), badge_rect.right + 6, y, color, scale=1)
             for value, center_x in (
                 (str(row["played"]), col_t_mp),
                 (str(row["wins"]), col_t_w),

@@ -469,6 +469,26 @@ class ManagerGameApp:
 
     def _build_match_report(self, engine: MatchEngine, fixture: dict) -> dict:
         state = engine.state
+        def report_players(team, side: str) -> list[dict]:
+            rows = []
+            for profile in team.club.players:
+                minutes = float(state.player_match_stats.get(profile.id, {}).get("minutes", 0.0))
+                if minutes <= 0.01:
+                    continue
+                short_name = profile.name.split()[-1] if profile.name.split() else profile.name
+                rows.append(
+                    {
+                        "id": profile.id,
+                        "name": profile.name,
+                        "short_name": short_name,
+                        "position": profile.position,
+                        "ovr": profile.ovr,
+                        "side": side,
+                        "minutes": minutes,
+                    }
+                )
+            rows.sort(key=lambda player: (-float(player.get("minutes", 0.0)), player["name"]))
+            return rows
         return {
             "fixture_id": int(fixture["id"]),
             "save_id": int(self.active_save_id or 0),
@@ -503,28 +523,8 @@ class ManagerGameApp:
             "player_goals": {key: int(value) for key, value in state.player_goals.items()},
             "player_assists": {key: int(value) for key, value in state.player_assists.items()},
             "players": {
-                "home": [
-                    {
-                        "id": player.profile.id,
-                        "name": player.profile.name,
-                        "short_name": player.short_name,
-                        "position": player.profile.position,
-                        "ovr": player.profile.ovr,
-                        "side": "home",
-                    }
-                    for player in state.home.xi
-                ],
-                "away": [
-                    {
-                        "id": player.profile.id,
-                        "name": player.profile.name,
-                        "short_name": player.short_name,
-                        "position": player.profile.position,
-                        "ovr": player.profile.ovr,
-                        "side": "away",
-                    }
-                    for player in state.away.xi
-                ],
+                "home": report_players(state.home, "home"),
+                "away": report_players(state.away, "away"),
             },
         }
 
