@@ -2373,16 +2373,18 @@ class Renderer:
     def _attribute_profile(self, player: dict) -> dict[str, float]:
         attrs = dict(player.get("attributes", {}))
         fallback = float(player.get("ovr", 70))
+
         def avg(*keys: str) -> float:
             values = [float(attrs.get(key, fallback)) for key in keys]
             return sum(values) / max(1, len(values))
+
         return {
-            "MENTAL": avg("decisions", "anticipation", "composure"),
-            "DEFENDING": avg("tackling", "positioning", "strength"),
-            "PHYSICAL": avg("stamina", "pace", "acceleration"),
-            "SPEED": avg("pace", "acceleration", "off_ball"),
-            "VISION": avg("vision", "passing", "long_passing"),
-            "ATTACKING": avg("finishing", "dribbling", "off_ball"),
+            "MENTAL": avg("anticipation", "composure", "concentration", "decisions", "teamwork", "work_rate"),
+            "DEFENDING": avg("tackling", "marking", "positioning", "heading", "strength", "bravery"),
+            "PHYSICAL": avg("strength", "balance", "jumping_reach", "natural_fitness", "stamina"),
+            "SPEED": avg("acceleration", "pace", "agility"),
+            "VISION": avg("vision", "passing", "short_passing", "long_passing", "technique", "crossing"),
+            "ATTACKING": avg("finishing", "dribbling", "first_touch", "off_ball", "long_shots", "technique"),
         }
 
     def _draw_attribute_radar(self, rect: pygame.Rect, player: dict) -> None:

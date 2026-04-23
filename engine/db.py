@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List
 
+from .loader import merge_player_attributes
 from .models import Club, PlayerProfile, infer_preferred_foot, normalize_player_instruction_map, normalize_preferred_foot, normalize_team_instructions
 
 DEFAULT_TACTICS = {
@@ -310,6 +311,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "save_club_setups", "player_instructions_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(conn, "players", "preferred_foot", "TEXT NOT NULL DEFAULT 'right'")
     _backfill_player_feet(conn)
+    _backfill_player_attributes(conn)
     _backfill_calendar_fields(conn)
     conn.commit()
 
@@ -404,6 +406,35 @@ def _backfill_player_feet(conn: sqlite3.Connection) -> None:
                 "UPDATE players SET preferred_foot = ? WHERE id = ?",
                 (inferred, str(row["id"])),
             )
+
+
+def _backfill_player_attributes(conn: sqlite3.Connection) -> None:
+    players = conn.execute("SELECT id, name, position, ovr FROM players").fetchall()
+    attr_rows = conn.execute("SELECT player_id, key, value FROM player_attributes").fetchall()
+    attrs_by_player: Dict[str, Dict[str, float]] = {}
+    for row in attr_rows:
+        attrs_by_player.setdefault(str(row["player_id"]), {})[str(row["key"])] = float(row["value"])
+    upserts: list[tuple[str, str, float]] = []
+    for row in players:
+        player_id = str(row["id"])
+        merged = merge_player_attributes(
+            int(row["ovr"]),
+            str(row["position"]),
+            attrs_by_player.get(player_id, {}),
+            player_id=player_id,
+            name=str(row["name"]),
+        )
+        for key, value in merged.items():
+            upserts.append((player_id, key, float(value)))
+    if upserts:
+        conn.executemany(
+            """
+            INSERT INTO player_attributes (player_id, key, value)
+            VALUES (?, ?, ?)
+            ON CONFLICT(player_id, key) DO UPDATE SET value=excluded.value
+            """,
+            upserts,
+        )
 
 
 def _ensure_default_badges(conn: sqlite3.Connection) -> None:
@@ -602,7 +633,13 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
                 name=str(row["name"]),
                 position=str(row["position"]),
                 ovr=int(row["ovr"]),
-                attributes=dict(attrs_by_player.get(player_id, {})),
+                attributes=merge_player_attributes(
+                    int(row["ovr"]),
+                    str(row["position"]),
+                    dict(attrs_by_player.get(player_id, {})),
+                    player_id=player_id,
+                    name=str(row["name"]),
+                ),
                 preferred_foot=normalize_preferred_foot(row["preferred_foot"]),
                 current_stamina=float(row["current_stamina"]) if row["current_stamina"] is not None else 100.0,
             )
@@ -846,7 +883,13 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
             "ovr": int(row["ovr"]),
             "preferred_foot": normalize_preferred_foot(row["preferred_foot"]),
             "current_stamina": float(row["current_stamina"]) if row["current_stamina"] is not None else 100.0,
-            "attributes": dict(attrs_by_player.get(str(row["id"]), {})),
+            "attributes": merge_player_attributes(
+                int(row["ovr"]),
+                str(row["position"]),
+                dict(attrs_by_player.get(str(row["id"]), {})),
+                player_id=str(row["id"]),
+                name=str(row["name"]),
+            ),
         }
         for row in rows
     ]

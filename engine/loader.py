@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -42,6 +43,61 @@ DEFAULT_COLORS = {
     "secondary": "#F5F5F5",
 }
 
+PLAYER_ATTRIBUTE_KEYS: Tuple[str, ...] = (
+    "corners",
+    "crossing",
+    "dribbling",
+    "finishing",
+    "first_touch",
+    "free_kick_taking",
+    "heading",
+    "long_passing",
+    "long_shots",
+    "long_throws",
+    "marking",
+    "passing",
+    "penalty_taking",
+    "short_passing",
+    "tackling",
+    "technique",
+    "aggression",
+    "anticipation",
+    "bravery",
+    "composure",
+    "concentration",
+    "decisions",
+    "determination",
+    "flair",
+    "leadership",
+    "off_ball",
+    "positioning",
+    "teamwork",
+    "vision",
+    "work_rate",
+    "acceleration",
+    "agility",
+    "balance",
+    "jumping_reach",
+    "natural_fitness",
+    "pace",
+    "stamina",
+    "strength",
+    "handling",
+    "one_on_ones",
+    "reflexes",
+)
+
+
+def _stable_variation(identity: str, key: str, spread: int) -> float:
+    digest = hashlib.sha256(f"{identity}:{key}".encode("utf-8")).digest()
+    raw = int.from_bytes(digest[:2], "big") / 65535.0
+    return (raw * 2.0 - 1.0) * float(spread)
+
+
+def _apply_delta(attrs: Dict[str, float], changes: Dict[str, float]) -> None:
+    for key, delta in changes.items():
+        attrs[key] = attrs.get(key, 50.0) + float(delta)
+
 
 def formation_slots(formation: str | None) -> List[str]:
     return list(FORMATIONS.get(str(formation or "4-3-3"), FORMATION_433))
@@ -68,74 +124,217 @@ def position_fit_label(player_position: str, slot: str) -> str:
     return "wrong"
 
 
-def attribute_map_from_ovr(ovr: int, pos: str) -> Dict[str, float]:
+def attribute_map_from_ovr(ovr: int, pos: str, *, player_id: str = "", name: str = "") -> Dict[str, float]:
     base = float(ovr)
-    attrs = {
-        "passing": base,
-        "short_passing": base,
-        "long_passing": base,
-        "vision": base,
-        "decisions": base,
-        "anticipation": base,
-        "composure": base,
-        "first_touch": base,
-        "dribbling": base,
-        "finishing": base,
-        "crossing": base,
-        "off_ball": base,
-        "tackling": base,
-        "positioning": base,
-        "acceleration": base,
-        "pace": base,
-        "stamina": base,
-    }
+    identity = f"{player_id}|{name}|{pos}|{ovr}"
+    attrs = {key: base + _stable_variation(identity, key, 4) for key in PLAYER_ATTRIBUTE_KEYS}
+    _apply_delta(
+        attrs,
+        {
+            "first_touch": 1.0,
+            "technique": 1.0,
+            "anticipation": 1.0,
+            "decisions": 1.0,
+            "composure": 1.0,
+            "concentration": 1.0,
+            "determination": 1.5,
+            "teamwork": 1.0,
+            "work_rate": 1.0,
+            "natural_fitness": 1.0,
+            "stamina": 1.0,
+            "balance": 1.0,
+            "agility": 0.5,
+            "strength": 0.5,
+        },
+    )
     if pos == "GK":
-        attrs["finishing"] -= 20
-        attrs["dribbling"] -= 20
-        attrs["tackling"] -= 15
-        attrs["positioning"] += 5
-        attrs["long_passing"] += 4
-        attrs["crossing"] -= 18
-        attrs["off_ball"] -= 15
-        attrs["acceleration"] -= 5
+        _apply_delta(
+            attrs,
+            {
+                "handling": 10.0,
+                "reflexes": 11.0,
+                "one_on_ones": 9.0,
+                "positioning": 7.0,
+                "concentration": 6.0,
+                "anticipation": 4.0,
+                "composure": 2.0,
+                "long_passing": 4.0,
+                "passing": 2.0,
+                "jumping_reach": 5.0,
+                "strength": 3.0,
+                "agility": 2.0,
+                "finishing": -24.0,
+                "dribbling": -18.0,
+                "crossing": -22.0,
+                "tackling": -18.0,
+                "marking": -14.0,
+                "off_ball": -18.0,
+                "heading": -12.0,
+                "long_shots": -14.0,
+                "free_kick_taking": -12.0,
+                "corners": -12.0,
+                "acceleration": -5.0,
+            },
+        )
     elif pos in ("CB", "LB", "RB", "DM"):
-        attrs["tackling"] += 6
-        attrs["positioning"] += 4
-        attrs["finishing"] -= 6
-        attrs["anticipation"] += 4
-        attrs["off_ball"] -= 2
-        if pos in ("LB", "RB"):
-            attrs["crossing"] += 4
-            attrs["acceleration"] += 2
+        _apply_delta(
+            attrs,
+            {
+                "tackling": 6.0,
+                "positioning": 5.0,
+                "marking": 5.0,
+                "anticipation": 4.0,
+                "aggression": 2.0,
+                "bravery": 3.0,
+                "strength": 2.0,
+                "heading": 3.0,
+                "off_ball": -2.0,
+                "finishing": -6.0,
+                "flair": -2.0,
+            },
+        )
+        if pos == "CB":
+            _apply_delta(
+                attrs,
+                {
+                    "marking": 4.0,
+                    "heading": 5.0,
+                    "jumping_reach": 5.0,
+                    "strength": 5.0,
+                    "passing": 1.0,
+                    "long_passing": 2.0,
+                    "pace": -1.0,
+                },
+            )
+        elif pos in ("LB", "RB"):
+            _apply_delta(
+                attrs,
+                {
+                    "crossing": 6.0,
+                    "acceleration": 5.0,
+                    "pace": 6.0,
+                    "stamina": 5.0,
+                    "work_rate": 5.0,
+                    "agility": 3.0,
+                    "long_throws": 3.0,
+                },
+            )
+        elif pos == "DM":
+            _apply_delta(
+                attrs,
+                {
+                    "passing": 5.0,
+                    "short_passing": 4.0,
+                    "long_passing": 4.0,
+                    "vision": 3.0,
+                    "decisions": 4.0,
+                    "teamwork": 4.0,
+                    "work_rate": 4.0,
+                    "strength": 3.0,
+                    "concentration": 2.0,
+                },
+            )
     elif pos in ("CM", "AM"):
-        attrs["passing"] += 5
-        attrs["short_passing"] += 6
-        attrs["long_passing"] += 3
-        attrs["vision"] += 5
-        attrs["decisions"] += 3
-        attrs["anticipation"] += 2
+        _apply_delta(
+            attrs,
+            {
+                "passing": 5.0,
+                "short_passing": 6.0,
+                "long_passing": 4.0,
+                "vision": 5.0,
+                "decisions": 4.0,
+                "anticipation": 2.0,
+                "first_touch": 3.0,
+                "technique": 3.0,
+                "teamwork": 3.0,
+            },
+        )
+        if pos == "CM":
+            _apply_delta(
+                attrs,
+                {
+                    "work_rate": 3.0,
+                    "stamina": 2.0,
+                    "tackling": 1.0,
+                    "positioning": 1.0,
+                },
+            )
+        else:
+            _apply_delta(
+                attrs,
+                {
+                    "technique": 3.0,
+                    "flair": 6.0,
+                    "dribbling": 4.0,
+                    "off_ball": 4.0,
+                    "long_shots": 4.0,
+                    "finishing": 1.0,
+                },
+            )
     elif pos in ("LW", "RW"):
-        attrs["dribbling"] += 6
-        attrs["pace"] += 4
-        attrs["acceleration"] += 5
-        attrs["crossing"] += 7
-        attrs["off_ball"] += 4
+        _apply_delta(
+            attrs,
+            {
+                "dribbling": 7.0,
+                "pace": 7.0,
+                "acceleration": 7.0,
+                "agility": 6.0,
+                "crossing": 6.0,
+                "off_ball": 5.0,
+                "flair": 4.0,
+                "technique": 3.0,
+                "first_touch": 3.0,
+                "finishing": 2.0,
+                "stamina": 2.0,
+            },
+        )
     elif pos == "ST":
-        attrs["finishing"] += 7
-        attrs["composure"] += 4
-        attrs["off_ball"] += 8
-        attrs["anticipation"] += 3
-        attrs["passing"] -= 2
+        _apply_delta(
+            attrs,
+            {
+                "finishing": 8.0,
+                "composure": 5.0,
+                "off_ball": 8.0,
+                "anticipation": 4.0,
+                "first_touch": 4.0,
+                "technique": 3.0,
+                "heading": 4.0,
+                "strength": 4.0,
+                "long_shots": 3.0,
+                "penalty_taking": 3.0,
+                "passing": -2.0,
+                "marking": -5.0,
+                "tackling": -6.0,
+            },
+        )
+    if pos != "GK":
+        _apply_delta(
+            attrs,
+            {
+                "handling": -18.0,
+                "reflexes": -16.0,
+                "one_on_ones": -16.0,
+            },
+        )
     for key in attrs:
         attrs[key] = max(35.0, min(99.0, attrs[key]))
     return attrs
 
 
-def merge_player_attributes(ovr: int, pos: str, custom: Dict[str, float] | None) -> Dict[str, float]:
-    attrs = attribute_map_from_ovr(ovr, pos)
+def merge_player_attributes(
+    ovr: int,
+    pos: str,
+    custom: Dict[str, float] | None,
+    *,
+    player_id: str = "",
+    name: str = "",
+) -> Dict[str, float]:
+    attrs = attribute_map_from_ovr(ovr, pos, player_id=player_id, name=name)
     if not custom:
         return attrs
     for key, value in custom.items():
+        if key not in PLAYER_ATTRIBUTE_KEYS:
+            continue
         attrs[key] = max(35.0, min(99.0, float(value)))
     if "passing" in custom:
         if "short_passing" not in custom:
@@ -180,7 +379,13 @@ def load_league(path: Path) -> Dict[str, Club]:
                     name=p["name"],
                     position=p["position"],
                     ovr=int(p["ovr"]),
-                    attributes=merge_player_attributes(int(p["ovr"]), p["position"], p.get("attributes")),
+                    attributes=merge_player_attributes(
+                        int(p["ovr"]),
+                        p["position"],
+                        p.get("attributes"),
+                        player_id=str(p.get("id", "")),
+                        name=str(p.get("name", "")),
+                    ),
                     preferred_foot=normalize_preferred_foot(p.get("preferred_foot", infer_preferred_foot(p.get("name"), p.get("position")))),
                     current_stamina=max(0.0, min(100.0, float(p.get("current_stamina", 100.0)))),
                 )

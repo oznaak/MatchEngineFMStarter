@@ -400,6 +400,59 @@ class MatchEngine:
             role_bonus += 4.0
         return profile.ovr + fit_bonus + stamina_bonus + role_bonus
 
+    def _corner_taker_score(self, player: PlayerState) -> float:
+        attrs = player.profile.attributes
+        return (
+            attrs.get("corners", attrs.get("crossing", attrs["passing"])) * 0.34
+            + attrs.get("crossing", attrs["passing"]) * 0.26
+            + attrs.get("technique", attrs["passing"]) * 0.18
+            + attrs["decisions"] * 0.12
+            + attrs["composure"] * 0.10
+        )
+
+    def _free_kick_taker_score(self, player: PlayerState) -> float:
+        attrs = player.profile.attributes
+        return (
+            attrs.get("free_kick_taking", attrs["passing"]) * 0.36
+            + attrs.get("technique", attrs["passing"]) * 0.22
+            + attrs.get("long_shots", attrs["finishing"]) * 0.12
+            + attrs["decisions"] * 0.12
+            + attrs["composure"] * 0.10
+            + attrs["passing"] * 0.08
+        )
+
+    def _penalty_taker_score(self, player: PlayerState) -> float:
+        attrs = player.profile.attributes
+        return (
+            attrs.get("penalty_taking", attrs["finishing"]) * 0.42
+            + attrs["finishing"] * 0.22
+            + attrs["composure"] * 0.18
+            + attrs["decisions"] * 0.10
+            + attrs.get("technique", attrs["finishing"]) * 0.08
+        )
+
+    def _keeper_save_score(self, keeper: PlayerState) -> float:
+        attrs = keeper.profile.attributes
+        return (
+            attrs.get("reflexes", attrs["positioning"]) * 0.34
+            + attrs.get("one_on_ones", attrs["positioning"]) * 0.20
+            + attrs.get("handling", attrs["positioning"]) * 0.18
+            + attrs["positioning"] * 0.12
+            + attrs.get("agility", attrs.get("acceleration", attrs["pace"])) * 0.10
+            + attrs.get("jumping_reach", attrs.get("strength", attrs["positioning"])) * 0.06
+        )
+
+    def _aerial_target_score(self, player: PlayerState) -> float:
+        attrs = player.profile.attributes
+        return (
+            attrs.get("heading", attrs["positioning"]) * 0.28
+            + attrs.get("jumping_reach", attrs.get("strength", attrs["positioning"])) * 0.24
+            + attrs.get("strength", attrs["positioning"]) * 0.18
+            + attrs["positioning"] * 0.12
+            + attrs.get("off_ball", attrs["positioning"]) * 0.10
+            + attrs.get("bravery", attrs["composure"]) * 0.08
+        )
+
     def choose_ai_substitutions(self, side: str) -> List[Tuple[str, str]]:
         team = self._team_state(side)
         if side in self.human_controlled_sides or not self.can_make_substitution_window(side):
@@ -705,6 +758,8 @@ class MatchEngine:
         return self.home if side == "home" else self.away
 
     def _instruction_value(self, side: str, key: str) -> str:
+        if key not in DEFAULT_TEAM_INSTRUCTIONS:
+            return ""
         return str(self._team_state(side).club.instructions.get(key, DEFAULT_TEAM_INSTRUCTIONS[key]))
 
     def _player_instruction_value(self, player: PlayerState, key: str) -> int:
@@ -721,7 +776,6 @@ class MatchEngine:
         return (self._player_instruction_value(player, "mindset") - 50.0) / 50.0
 
     def _instruction_tactic_delta(self, side: str, key: str) -> float:
-        choice = self._instruction_value(side, key)
         if key == "directness":
             return {
                 "shorter": -18.0,
@@ -1396,10 +1450,12 @@ class MatchEngine:
         self.state.restart_taker_id = None
         self.state.fouled_player_id = None
         self._give_ball_to(taker, note="Free kick", action_type="recovery")
-        if dangerous and set_piece_mode == "direct" and self.rng.random() < 0.58:
+        direct_quality = self._free_kick_taker_score(taker)
+        direct_shot_bias = clamp((direct_quality - 60.0) / 35.0, 0.0, 1.0)
+        if dangerous and set_piece_mode == "direct" and self.rng.random() < clamp(0.36 + direct_shot_bias * 0.34, 0.24, 0.74):
             self._start_shot(taker)
             return
-        if dangerous and set_piece_mode != "possession" and self.rng.random() < 0.38:
+        if dangerous and set_piece_mode != "possession" and self.rng.random() < clamp(0.22 + direct_shot_bias * 0.28, 0.12, 0.58):
             self._start_shot(taker)
             return
         if advanced:
@@ -1531,23 +1587,15 @@ class MatchEngine:
 
     def _execute_penalty(self) -> None:
         side = self.state.restart_side or "home"
-        taker = self.find_player(self.state.restart_taker_id) or max(self.teammates(side), key=lambda p: p.profile.attributes["finishing"])
+        taker = self.find_player(self.state.restart_taker_id) or max(self.teammates(side), key=self._penalty_taker_score)
         keeper = self._goalkeeper("away" if side == "home" else "home")
         self.state.assist_candidate_id = None
         self.state.restart_mode = None
         self.state.restart_timer = 0.0
         self.state.restart_side = None
         self.state.restart_taker_id = None
-        taker_score = (
-            taker.profile.attributes["finishing"] * 0.42
-            + taker.profile.attributes["composure"] * 0.26
-            + taker.profile.attributes["decisions"] * 0.12
-        )
-        keeper_score = (
-            keeper.profile.attributes.get("reflexes", keeper.profile.attributes["positioning"]) * 0.38
-            + keeper.profile.attributes.get("one_on_ones", keeper.profile.attributes["positioning"]) * 0.24
-            + keeper.profile.attributes["positioning"] * 0.18
-        )
+        taker_score = self._penalty_taker_score(taker)
+        keeper_score = self._keeper_save_score(keeper)
         chance = 0.58 + (taker_score - keeper_score) / 260.0
         if self.rng.random() < clamp(chance, 0.42, 0.86):
             self._record_shot(taker, True)
@@ -1585,9 +1633,9 @@ class MatchEngine:
             self._card_event(offender, card)
         self.add_event(f"Foul by {offender.short_name}")
         taker_pool = [p for p in self.teammates(attacking_side) if not p.red_card]
-        taker = fouled if not fouled.red_card else max(taker_pool, key=lambda p: p.profile.attributes["passing"])
+        taker = fouled if not fouled.red_card else max(taker_pool, key=self._free_kick_taker_score)
         if self._is_in_penalty_area(defending_side, foul_spot[0], foul_spot[1]) and attacking_side != defending_side:
-            taker = max(taker_pool, key=lambda p: p.profile.attributes["finishing"] + p.profile.attributes["composure"])
+            taker = max(taker_pool, key=self._penalty_taker_score)
             self._start_penalty_setup(attacking_side, taker)
             return True
         self._start_direct_free_kick_setup(attacking_side, foul_spot[0], foul_spot[1], taker, fouled)
@@ -1921,8 +1969,10 @@ class MatchEngine:
             passing_attr * 0.22
             + attrs["vision"] * 0.18
             + attrs["decisions"] * 0.14
+            + attrs.get("technique", attrs["passing"]) * 0.08
             + recv_attrs["first_touch"] * 0.08
             + recv_attrs.get("off_ball", recv_attrs["positioning"]) * 0.05
+            + recv_attrs.get("technique", recv_attrs["first_touch"]) * 0.03
             + receiver_space * 10.0
             + body_shape * 3.0
             + forward_angle * 8.0
@@ -1952,8 +2002,10 @@ class MatchEngine:
             target_box_bonus = max(0.0, self._forwardness(receiver.side, receiver.x) - 74.0) * 1.2
             central_bonus = max(0.0, 16.0 - abs(receiver.y - PITCH_WIDTH / 2)) * 1.1
             aerial_bonus = (
-                recv_attrs["positioning"] * 0.06
-                + recv_attrs["composure"] * 0.04
+                recv_attrs.get("heading", recv_attrs["positioning"]) * 0.08
+                + recv_attrs.get("jumping_reach", recv_attrs.get("strength", recv_attrs["positioning"])) * 0.06
+                + recv_attrs.get("strength", recv_attrs["positioning"]) * 0.04
+                + recv_attrs["positioning"] * 0.04
             )
             return base + 10.0 + target_box_bonus + central_bonus + aerial_bonus - abs(progression) * 0.04
         if progression > 0.8 and self._is_player_offside(receiver, carrier.x):
@@ -2132,10 +2184,13 @@ class MatchEngine:
 
     def _resolve_first_touch(self, receiver: PlayerState, nearest_opp: PlayerState) -> str:
         pressure = clamp(1.0 - distance((receiver.x, receiver.y), (nearest_opp.x, nearest_opp.y)) / 10.0, 0.0, 1.0)
+        attrs = receiver.profile.attributes
         control = (
             0.44
-            + (receiver.profile.attributes["first_touch"] - 50.0) / 180.0
-            + (receiver.profile.attributes["composure"] - 50.0) / 260.0
+            + (attrs["first_touch"] - 50.0) / 180.0
+            + (attrs.get("technique", attrs["first_touch"]) - 50.0) / 220.0
+            + (attrs["composure"] - 50.0) / 260.0
+            + (attrs.get("balance", attrs["composure"]) - 50.0) / 260.0
             + self._receiver_space(receiver) * 0.05
             - pressure * 0.22
         )
@@ -2775,7 +2830,10 @@ class MatchEngine:
         y = 1.0 if y < PITCH_WIDTH / 2 else PITCH_WIDTH - 1.0
         x = clamp(x, 3.0, PITCH_LENGTH - 3.0)
         self._reset_ball_for_restart(x, y)
-        taker = min(self._restart_taker_candidates(side), key=lambda p: distance((p.x, p.y), (x, y)))
+        taker = max(
+            self._restart_taker_candidates(side),
+            key=lambda p: p.profile.attributes.get("long_throws", p.profile.attributes["passing"]) - distance((p.x, p.y), (x, y)) * 0.45,
+        )
         taker.target_x = x
         taker.target_y = y
         self._set_render_state(taker, "restart", "throw_in")
@@ -2840,7 +2898,10 @@ class MatchEngine:
         self._reset_ball_for_restart(x, y)
         wide_candidates = [p for p in self._restart_taker_candidates(attacking_side) if p.slot in ("LW", "RW", "LB", "RB", "AM")]
         taker_pool = wide_candidates or self._restart_taker_candidates(attacking_side)
-        taker = min(taker_pool, key=lambda p: distance((p.x, p.y), (x, y)))
+        taker = max(
+            taker_pool,
+            key=lambda p: self._corner_taker_score(p) - distance((p.x, p.y), (x, y)) * 0.55,
+        )
         taker.target_x = x
         taker.target_y = y
         self._set_render_state(taker, "restart", "corner")
@@ -2893,7 +2954,7 @@ class MatchEngine:
         target_pool = [p for p in self.teammates(side) if p.profile.id != taker.profile.id and p.slot in ("ST", "AM", "CB", "CM")]
         if not target_pool:
             target_pool = [p for p in self.teammates(side) if p.profile.id != taker.profile.id and p.slot != "GK"]
-        receiver = max(target_pool, key=lambda p: p.profile.attributes["positioning"] + self._receiver_space(p) * 20.0)
+        receiver = max(target_pool, key=lambda p: self._aerial_target_score(p) + self._receiver_space(p) * 18.0)
         short_chance = 0.18 + max(0.0, (self._tactic_value(side, "crossing") - 55.0) / -220.0)
         if set_piece_mode == "possession":
             short_chance += 0.35
@@ -2985,24 +3046,28 @@ class MatchEngine:
         goal_dist = self._goal_distance(shooter)
         pressure = self._pressure_on_player(shooter)
         strength = self._team_strength(shooter.side)
+        shooter_attrs = shooter.profile.attributes
+        keeper_attrs = keeper.profile.attributes
+        long_shot_factor = max(0.0, min(1.0, (goal_dist - 18.0) / 12.0))
         goal = (
             0.045
-            + (shooter.profile.attributes["finishing"] - 50.0) / 255.0
-            + (shooter.profile.attributes["composure"] - 50.0) / 300.0
+            + ((shooter_attrs["finishing"] * (1.0 - long_shot_factor) + shooter_attrs.get("long_shots", shooter_attrs["finishing"]) * long_shot_factor) - 50.0) / 255.0
+            + (shooter_attrs["composure"] - 50.0) / 300.0
+            + (shooter_attrs.get("technique", shooter_attrs["finishing"]) - 50.0) / 340.0
             + strength * 0.02
             - pressure * 0.14
             - max(0.0, goal_dist - 18.0) / 82.0
         )
         if self._success_roll(goal):
             return "goal"
-        save = 0.52 + keeper.profile.attributes["positioning"] / 235.0
+        save = 0.46 + self._keeper_save_score(keeper) / 205.0
         save_roll = self.rng.random()
         if save_roll < clamp(save, 0.2, 0.95):
             parry = (
                 0.14
                 + pressure * 0.10
                 + max(0.0, 22.0 - goal_dist) / 120.0
-                - keeper.profile.attributes.get("handling", keeper.profile.attributes["positioning"]) / 420.0
+                - keeper_attrs.get("handling", keeper_attrs["positioning"]) / 420.0
                 + self._event_frequency_boost("corner") * 0.10
             )
             if save_roll < clamp(parry, 0.06, 0.40):
@@ -3182,6 +3247,8 @@ class MatchEngine:
         open_space = distance((carrier.x, carrier.y), (open_x, open_y))
         return (
             attrs["dribbling"] * 0.31
+            + attrs.get("technique", attrs["dribbling"]) * 0.14
+            + attrs.get("agility", attrs.get("acceleration", attrs["pace"])) * 0.12
             + attrs["pace"] * 0.22
             + attrs["decisions"] * 0.18
             + max(0.0, 34.0 - goal_dist) * 0.34
@@ -3195,9 +3262,13 @@ class MatchEngine:
         goal_dist = self._goal_distance(carrier)
         angle_quality = 1.0 - abs(carrier.y - PITCH_WIDTH / 2) / (PITCH_WIDTH / 2)
         forwardness = self._forwardness(carrier.side, carrier.x)
+        long_shot_factor = max(0.0, min(1.0, (goal_dist - 18.0) / 12.0))
         return (
-            attrs["finishing"] * 0.35
+            (attrs["finishing"] * (0.35 - long_shot_factor * 0.10))
+            + attrs.get("long_shots", attrs["finishing"]) * long_shot_factor * 0.22
             + attrs["composure"] * 0.18
+            + attrs.get("technique", attrs["finishing"]) * 0.10
+            + attrs["first_touch"] * 0.05
             + attrs["decisions"] * 0.10
             + max(0.0, 26.0 - goal_dist) * 1.0
             + angle_quality * 10.0
@@ -3214,6 +3285,7 @@ class MatchEngine:
         forwardness = self._forwardness(carrier.side, carrier.x)
         decisions = carrier.profile.attributes["decisions"]
         finishing = carrier.profile.attributes["finishing"]
+        long_shots = carrier.profile.attributes.get("long_shots", finishing)
 
         if forwardness < (PITCH_LENGTH / 2) - 1.0:
             return False
@@ -3223,7 +3295,9 @@ class MatchEngine:
             return False
         if goal_dist > 25.0 and angle_quality < 0.58:
             return False
-        if goal_dist > 26.0 and decisions < 66.0 and finishing < 70.0:
+        if goal_dist > 28.0 and long_shots < 72.0 and decisions < 68.0:
+            return False
+        if goal_dist > 26.0 and decisions < 66.0 and finishing < 70.0 and long_shots < 74.0:
             return False
         return True
 
@@ -3397,12 +3471,16 @@ class MatchEngine:
         carrier_score = (
             carrier.profile.attributes["dribbling"] * 0.35
             + carrier.profile.attributes["composure"] * 0.2
+            + carrier.profile.attributes.get("technique", carrier.profile.attributes["dribbling"]) * 0.14
+            + carrier.profile.attributes.get("agility", carrier.profile.attributes.get("acceleration", carrier.profile.attributes["pace"])) * 0.12
             + carrier.profile.attributes.get("acceleration", carrier.profile.attributes["pace"]) * 0.14
             + self.rng.uniform(0.0, 12.0)
         )
         defender_score = (
             defender.profile.attributes["tackling"] * 0.34
             + defender.profile.attributes["positioning"] * 0.24
+            + defender.profile.attributes.get("marking", defender.profile.attributes["positioning"]) * 0.16
+            + defender.profile.attributes.get("strength", defender.profile.attributes["positioning"]) * 0.12
             + defender.profile.attributes.get("anticipation", defender.profile.attributes["positioning"]) * 0.12
             + self.rng.uniform(0.0, 12.0)
         )
