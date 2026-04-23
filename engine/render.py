@@ -833,16 +833,38 @@ class Renderer:
         away_scorers = self._format_report_goal_scorers(report, "away")
         draw_text(self.screen, away_scorers, score_band.right - 18 - text_width(away_scorers, 1), score_band.bottom - 20, (190, 194, 204), scale=1)
 
-        left = pygame.Rect(panel.x + 18, panel.y + 174, panel.width // 2 - 28, panel.height - 192)
-        right = pygame.Rect(left.right + 18, left.y, panel.right - left.right - 36, left.height)
-        pygame.draw.rect(self.screen, (12, 14, 18), left, border_radius=8)
-        pygame.draw.rect(self.screen, (12, 14, 18), right, border_radius=8)
-        pygame.draw.rect(self.screen, (50, 52, 58), left, 1, border_radius=8)
-        pygame.draw.rect(self.screen, (50, 52, 58), right, 1, border_radius=8)
-        pygame.draw.rect(self.screen, (248, 187, 32), (left.x, left.y, left.width, 34), border_top_left_radius=8, border_top_right_radius=8)
-        pygame.draw.rect(self.screen, (36, 52, 96), (right.x, right.y, right.width, 34), border_top_left_radius=8, border_top_right_radius=8)
-        draw_text(self.screen, "MATCH STATISTICS", left.x + 12, left.y + 10, (24, 24, 28), scale=2)
-        draw_text(self.screen, "PLAYER STATISTICS", right.x + 12, right.y + 10, (245, 245, 245), scale=2)
+        sections_top = panel.y + 174
+        sections_gap = 16
+        stats_h = 34 + 16 + 9 * 34 + 12
+        player_h = panel.bottom - sections_top - stats_h - sections_gap - 18
+        stats_rect = pygame.Rect(panel.x + 18, sections_top, panel.width - 36, stats_h)
+        player_rect = pygame.Rect(panel.x + 18, stats_rect.bottom + sections_gap, panel.width - 36, player_h)
+        pygame.draw.rect(self.screen, (12, 14, 18), stats_rect, border_radius=8)
+        pygame.draw.rect(self.screen, (12, 14, 18), player_rect, border_radius=8)
+        pygame.draw.rect(self.screen, (50, 52, 58), stats_rect, 1, border_radius=8)
+        pygame.draw.rect(self.screen, (50, 52, 58), player_rect, 1, border_radius=8)
+        left_header = pygame.Rect(stats_rect.x, stats_rect.y, stats_rect.width, 34)
+        right_header = pygame.Rect(player_rect.x, player_rect.y, player_rect.width, 34)
+        pygame.draw.rect(self.screen, (248, 187, 32), left_header, border_top_left_radius=8, border_top_right_radius=8)
+        pygame.draw.rect(self.screen, (36, 52, 96), right_header, border_top_left_radius=8, border_top_right_radius=8)
+        left_title = "MATCH STATISTICS"
+        right_title = "PLAYER STATISTICS"
+        draw_text(
+            self.screen,
+            left_title,
+            left_header.x + (left_header.width - text_width(left_title, 2)) // 2,
+            left_header.y + 10,
+            (24, 24, 28),
+            scale=2,
+        )
+        draw_text(
+            self.screen,
+            right_title,
+            right_header.x + (right_header.width - text_width(right_title, 2)) // 2,
+            right_header.y + 10,
+            (245, 245, 245),
+            scale=2,
+        )
 
         stat_rows = [
             ("BALL POSSESSION", "possession_seconds"),
@@ -856,11 +878,11 @@ class Renderer:
             ("RED CARD", "red_cards"),
         ]
         team_stats = report["team_stats"]
-        y = left.y + 50
-        row_h = 32
-        row_gap = 11
-        value_w = 70
-        label_w = 180
+        y = stats_rect.y + 50
+        row_h = 28
+        row_gap = 6
+        value_w = 78
+        label_w = 220
         for label, key in stat_rows:
             if key == "possession_seconds":
                 home_v = team_stats["home"]["possession_seconds"]
@@ -876,7 +898,7 @@ class Renderer:
             else:
                 home_value = str(int(round(team_stats["home"].get(key, 0.0))))
                 away_value = str(int(round(team_stats["away"].get(key, 0.0))))
-            row_rect = pygame.Rect(left.x + 12, y, left.width - 24, row_h)
+            row_rect = pygame.Rect(stats_rect.x + 12, y, stats_rect.width - 24, row_h)
             pygame.draw.rect(self.screen, (18, 20, 26), row_rect, border_radius=5)
             pygame.draw.rect(self.screen, (38, 40, 46), row_rect, 1, border_radius=5)
             home_box = pygame.Rect(row_rect.x + 4, row_rect.y + 4, value_w, row_h - 8)
@@ -885,9 +907,9 @@ class Renderer:
             pygame.draw.rect(self.screen, home_primary, home_box, border_radius=4)
             pygame.draw.rect(self.screen, (24, 26, 32), label_box, border_radius=4)
             pygame.draw.rect(self.screen, away_primary, away_box, border_radius=4)
-            draw_text(self.screen, home_value, home_box.x + (home_box.width - text_width(home_value, 1)) // 2, home_box.y + 7, home_secondary, scale=1)
-            draw_text(self.screen, label, label_box.x + (label_box.width - text_width(label, 1)) // 2, label_box.y + 7, (236, 236, 240), scale=1)
-            draw_text(self.screen, away_value, away_box.x + (away_box.width - text_width(away_value, 1)) // 2, away_box.y + 7, away_secondary, scale=1)
+            draw_text(self.screen, home_value, home_box.x + (home_box.width - text_width(home_value, 1)) // 2, home_box.y + 5, home_secondary, scale=1)
+            draw_text(self.screen, label, label_box.x + (label_box.width - text_width(label, 1)) // 2, label_box.y + 5, (236, 236, 240), scale=1)
+            draw_text(self.screen, away_value, away_box.x + (away_box.width - text_width(away_value, 1)) // 2, away_box.y + 5, away_secondary, scale=1)
             y += row_h + row_gap
 
         home_players = report.get("players", {}).get("home", [])
@@ -900,9 +922,9 @@ class Renderer:
 
         squad_w = 180
         list_header_h = 28
-        home_list = pygame.Rect(right.x + 12, right.y + 48, squad_w, right.height - 60)
-        detail_rect = pygame.Rect(home_list.right + 12, right.y + 48, right.width - squad_w * 2 - 48, right.height - 60)
-        away_list = pygame.Rect(detail_rect.right + 12, right.y + 48, squad_w, right.height - 60)
+        home_list = pygame.Rect(player_rect.x + 12, player_rect.y + 48, squad_w, player_rect.height - 60)
+        detail_rect = pygame.Rect(home_list.right + 12, player_rect.y + 48, player_rect.width - squad_w * 2 - 48, player_rect.height - 60)
+        away_list = pygame.Rect(detail_rect.right + 12, player_rect.y + 48, squad_w, player_rect.height - 60)
         for rect in (home_list, detail_rect, away_list):
             pygame.draw.rect(self.screen, (18, 20, 26), rect, border_radius=6)
             pygame.draw.rect(self.screen, (50, 52, 58), rect, 1, border_radius=6)
@@ -966,16 +988,25 @@ class Renderer:
                 ("Minutes", int(round(stats.get("minutes", 0.0)))),
                 ("Player rating", f"{self._report_player_rating(report, selected_player['id']):.1f}"),
             ]
-            row_y = card_top.bottom + 14
+            rows_top = card_top.bottom + 14
+            available_h = detail_rect.bottom - rows_top - 10
+            columns = 2 if len(detail_rows) * 24 > available_h and detail_rect.width >= 420 else 1
+            rows_per_col = (len(detail_rows) + columns - 1) // columns
+            col_gap = 12
+            col_w = (detail_rect.width - 24 - (columns - 1) * col_gap) // columns
+            row_step = 24
             for idx, (label, value) in enumerate(detail_rows):
-                stat_row = pygame.Rect(detail_rect.x + 12, row_y - 4, detail_rect.width - 24, 24)
+                col = idx // rows_per_col
+                row = idx % rows_per_col
+                col_x = detail_rect.x + 12 + col * (col_w + col_gap)
+                row_y = rows_top + row * row_step
+                stat_row = pygame.Rect(col_x, row_y - 3, col_w, 20)
                 pygame.draw.rect(self.screen, (22, 24, 30), stat_row, border_radius=4)
-                draw_text(self.screen, str(label), detail_rect.x + 20, row_y, (245, 245, 245), scale=1)
+                draw_text(self.screen, str(label), col_x + 8, row_y, (245, 245, 245), scale=1)
                 value_text = str(value)
-                draw_text(self.screen, value_text, detail_rect.right - 20 - text_width(value_text, 1), row_y, (245, 245, 245), scale=1)
+                draw_text(self.screen, value_text, col_x + col_w - 8 - text_width(value_text, 1), row_y, (245, 245, 245), scale=1)
                 bar_color = home_primary if idx % 2 == 0 else away_primary
-                pygame.draw.line(self.screen, bar_color, (detail_rect.x + 20, row_y + 16), (detail_rect.right - 20, row_y + 16), 2)
-                row_y += 28
+                pygame.draw.line(self.screen, bar_color, (col_x + 8, row_y + 13), (col_x + col_w - 8, row_y + 13), 2)
 
     def _draw_post_match_screen(self, state: MatchState, selected_player_id: str | None) -> None:
         report = {
