@@ -5,7 +5,14 @@ from typing import Dict, List, Tuple
 
 from .models import Club, PlayerProfile
 
-FORMATION_433 = ["GK", "LB", "CB", "CB", "RB", "DM", "CM", "AM", "LW", "ST", "RW"]
+FORMATIONS: Dict[str, List[str]] = {
+    "4-3-3": ["GK", "LB", "CB", "CB", "RB", "DM", "CM", "AM", "LW", "ST", "RW"],
+    "4-2-3-1": ["GK", "LB", "CB", "CB", "RB", "DM", "DM", "AM", "LW", "RW", "ST"],
+    "4-4-2": ["GK", "LB", "CB", "CB", "RB", "CM", "CM", "LW", "RW", "ST", "ST"],
+    "4-1-4-1": ["GK", "LB", "CB", "CB", "RB", "DM", "CM", "CM", "LW", "RW", "ST"],
+}
+
+FORMATION_433 = FORMATIONS["4-3-3"]
 
 FALLBACKS = {
     "GK": ["GK"],
@@ -34,6 +41,31 @@ DEFAULT_COLORS = {
     "primary": "#2E3A6A",
     "secondary": "#F5F5F5",
 }
+
+
+def formation_slots(formation: str | None) -> List[str]:
+    return list(FORMATIONS.get(str(formation or "4-3-3"), FORMATION_433))
+
+
+def available_formations() -> List[str]:
+    return list(FORMATIONS.keys())
+
+
+def position_fit_level(player_position: str, slot: str) -> int:
+    if player_position == slot:
+        return 2
+    if player_position in FALLBACKS.get(slot, []):
+        return 1
+    return 0
+
+
+def position_fit_label(player_position: str, slot: str) -> str:
+    fit = position_fit_level(player_position, slot)
+    if fit >= 2:
+        return "natural"
+    if fit == 1:
+        return "cover"
+    return "wrong"
 
 
 def attribute_map_from_ovr(ovr: int, pos: str) -> Dict[str, float]:
@@ -158,15 +190,39 @@ def load_league(path: Path) -> Dict[str, Club]:
             players=players,
             tactics=merge_team_tactics(club_data.get("tactics")),
             colors=merge_team_colors(club_data.get("colors")),
+            formation=str(club_data.get("formation", "4-3-3")),
         )
     return clubs
 
 
-def pick_best_xi(club: Club) -> Tuple[List[PlayerProfile], List[PlayerProfile]]:
+def _lineup_from_saved_ids(club: Club, formation_name: str) -> Tuple[List[PlayerProfile], List[PlayerProfile]] | None:
+    if len(club.lineup_xi) != 11:
+        return None
+    players_by_id = {player.id: player for player in club.players}
+    if any(player_id not in players_by_id for player_id in club.lineup_xi):
+        return None
+
+    xi = [players_by_id[player_id] for player_id in club.lineup_xi]
+    used_ids = set(club.lineup_xi)
+
+    bench_ids = [player_id for player_id in club.lineup_bench if player_id in players_by_id and player_id not in used_ids]
+    remaining_ids = [player.id for player in club.players if player.id not in used_ids and player.id not in bench_ids]
+    bench = [players_by_id[player_id] for player_id in bench_ids + remaining_ids]
+    if len(xi) != len(formation_slots(formation_name)):
+        return None
+    return xi, bench
+
+
+def pick_best_xi(club: Club, formation_name: str | None = None) -> Tuple[List[PlayerProfile], List[PlayerProfile]]:
+    formation_name = str(formation_name or club.formation or "4-3-3")
+    saved = _lineup_from_saved_ids(club, formation_name)
+    if saved is not None:
+        return saved
+
     used_ids = set()
     xi: List[PlayerProfile] = []
 
-    for slot in FORMATION_433:
+    for slot in formation_slots(formation_name):
         candidates = [
             p for p in club.players
             if p.id not in used_ids and p.position in FALLBACKS[slot]

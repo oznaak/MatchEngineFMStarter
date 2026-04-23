@@ -227,6 +227,17 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (player_id) REFERENCES players(id)
         );
 
+        CREATE TABLE IF NOT EXISTS save_club_setups (
+            save_id INTEGER NOT NULL,
+            club_id TEXT NOT NULL,
+            formation TEXT NOT NULL DEFAULT '4-3-3',
+            xi_json TEXT NOT NULL DEFAULT '[]',
+            bench_json TEXT NOT NULL DEFAULT '[]',
+            PRIMARY KEY (save_id, club_id),
+            FOREIGN KEY (save_id) REFERENCES saves(id),
+            FOREIGN KEY (club_id) REFERENCES clubs(id)
+        );
+
         CREATE TABLE IF NOT EXISTS leagues (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL
@@ -502,6 +513,14 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
             (int(save_id),),
         ).fetchall()
     attribute_rows = conn.execute("SELECT player_id, key, value FROM player_attributes").fetchall()
+    setup_rows = conn.execute(
+        """
+        SELECT save_id, club_id, formation, xi_json, bench_json
+        FROM save_club_setups
+        WHERE ? IS NOT NULL AND save_id = ?
+        """,
+        (None if save_id is None else int(save_id), None if save_id is None else int(save_id)),
+    ).fetchall() if save_id is not None else []
 
     tactics_by_club: Dict[str, Dict[str, float]] = {}
     for row in tactic_rows:
@@ -523,6 +542,23 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
     attrs_by_player: Dict[str, Dict[str, float]] = {}
     for row in attribute_rows:
         attrs_by_player.setdefault(str(row["player_id"]), {})[str(row["key"])] = float(row["value"])
+
+    setups_by_club: Dict[str, dict] = {}
+    for row in setup_rows:
+        club_id = str(row["club_id"])
+        try:
+            xi_ids = [str(player_id) for player_id in json.loads(str(row["xi_json"] or "[]"))]
+        except json.JSONDecodeError:
+            xi_ids = []
+        try:
+            bench_ids = [str(player_id) for player_id in json.loads(str(row["bench_json"] or "[]"))]
+        except json.JSONDecodeError:
+            bench_ids = []
+        setups_by_club[club_id] = {
+            "formation": str(row["formation"] or "4-3-3"),
+            "lineup_xi": xi_ids,
+            "lineup_bench": bench_ids,
+        }
 
     players_by_club: Dict[str, List[PlayerProfile]] = {}
     for row in player_rows:
@@ -549,8 +585,96 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
             tactics=dict(tactics_by_club.get(club_id, DEFAULT_TACTICS)),
             colors=dict(colors_by_club.get(club_id, DEFAULT_COLORS)),
             badge=dict(badges_by_club.get(club_id, DEFAULT_BADGE)),
+            formation=str(setups_by_club.get(club_id, {}).get("formation", "4-3-3")),
+            lineup_xi=list(setups_by_club.get(club_id, {}).get("lineup_xi", [])),
+            lineup_bench=list(setups_by_club.get(club_id, {}).get("lineup_bench", [])),
         )
     return clubs
+
+
+def seed_save_club_setups(conn: sqlite3.Connection, save_id: int) -> None:
+    from .loader import pick_best_xi
+
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM save_club_setups WHERE save_id = ?",
+        (int(save_id),),
+    ).fetchone()
+    if row is not None and int(row["count"] or 0) > 0:
+        return
+
+    clubs = load_clubs_from_db(conn, save_id=save_id)
+    for club in clubs.values():
+        xi, bench = pick_best_xi(club, formation_name=club.formation)
+        conn.execute(
+            """
+            INSERT INTO save_club_setups (save_id, club_id, formation, xi_json, bench_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(save_id, club_id) DO NOTHING
+            """,
+            (
+                int(save_id),
+                club.id,
+                str(club.formation or "4-3-3"),
+                json.dumps([player.id for player in xi]),
+                json.dumps([player.id for player in bench]),
+            ),
+        )
+
+
+def load_save_club_setups(conn: sqlite3.Connection, save_id: int) -> Dict[str, dict]:
+    seed_save_club_setups(conn, save_id)
+    rows = conn.execute(
+        """
+        SELECT club_id, formation, xi_json, bench_json
+        FROM save_club_setups
+        WHERE save_id = ?
+        """,
+        (int(save_id),),
+    ).fetchall()
+    setups: Dict[str, dict] = {}
+    for row in rows:
+        club_id = str(row["club_id"])
+        try:
+            xi_ids = [str(player_id) for player_id in json.loads(str(row["xi_json"] or "[]"))]
+        except json.JSONDecodeError:
+            xi_ids = []
+        try:
+            bench_ids = [str(player_id) for player_id in json.loads(str(row["bench_json"] or "[]"))]
+        except json.JSONDecodeError:
+            bench_ids = []
+        setups[club_id] = {
+            "formation": str(row["formation"] or "4-3-3"),
+            "xi_ids": xi_ids,
+            "bench_ids": bench_ids,
+        }
+    return setups
+
+
+def save_save_club_setup(
+    conn: sqlite3.Connection,
+    save_id: int,
+    club_id: str,
+    formation: str,
+    xi_ids: List[str],
+    bench_ids: List[str],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO save_club_setups (save_id, club_id, formation, xi_json, bench_json)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(save_id, club_id) DO UPDATE SET
+            formation=excluded.formation,
+            xi_json=excluded.xi_json,
+            bench_json=excluded.bench_json
+        """,
+        (
+            int(save_id),
+            club_id,
+            str(formation or "4-3-3"),
+            json.dumps(list(xi_ids)),
+            json.dumps(list(bench_ids)),
+        ),
+    )
 
 
 def list_leagues(conn: sqlite3.Connection) -> List[dict]:
@@ -879,6 +1003,7 @@ def create_save_game(conn: sqlite3.Connection, manager_name: str, league_id: str
     save_id = int(cursor.lastrowid)
     _seed_fixtures_for_save(conn, save_id, league_id, season_year)
     seed_save_player_condition_defaults(conn, save_id)
+    seed_save_club_setups(conn, save_id)
     set_metadata(conn, "active_save_id", str(save_id))
     conn.commit()
     return save_id
@@ -908,6 +1033,8 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
         return
     manager_id = int(row["manager_id"])
     conn.execute("DELETE FROM fixtures WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM save_player_condition WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM save_club_setups WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM saves WHERE id = ?", (int(save_id),))
     remaining = conn.execute(
         "SELECT COUNT(*) AS count FROM saves WHERE manager_id = ?",
@@ -922,6 +1049,7 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
 
 def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     seed_save_player_condition_defaults(conn, save_id)
+    seed_save_club_setups(conn, save_id)
     normalize_new_save_player_condition(conn, save_id)
     conn.commit()
     save_row = conn.execute(
@@ -942,6 +1070,7 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     league_id = str(save_row["league_id"])
     club_id = str(save_row["club_id"])
     clubs = list_league_clubs(conn, league_id)
+    club_setups = load_save_club_setups(conn, save_id)
     players_by_club = {club["id"]: list_club_players(conn, club["id"], save_id=save_id) for club in clubs}
     next_fixture = get_next_fixture_for_save(conn, save_id, club_id)
     current_date = str(save_row["current_date"] or season_start_date(int(save_row["season_year"] or current_season_year())).isoformat())
@@ -958,6 +1087,7 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
         "club_id": club_id,
         "club_name": str(save_row["club_name"]),
         "clubs": clubs,
+        "club_setups": club_setups,
         "players_by_club": players_by_club,
         "standings": load_save_standings(conn, save_id),
         "fixtures": list_save_fixtures(conn, save_id),

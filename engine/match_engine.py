@@ -4,7 +4,7 @@ import math
 import random
 from typing import Dict, List, Optional, Tuple
 
-from .loader import FORMATION_433, pick_best_xi
+from .loader import FALLBACKS, FORMATION_433, formation_slots, pick_best_xi, position_fit_level
 from .models import (
     BallState,
     Club,
@@ -62,6 +62,43 @@ AWAY_FORMATION_XY = {
     "RW": (35, 12),
 }
 
+FORMATION_LAYOUTS = {
+    "4-3-3": {
+        "home": HOME_FORMATION_XY,
+        "away": AWAY_FORMATION_XY,
+    },
+    "4-2-3-1": {
+        "home": {
+            "GK": (8, 34), "LB": (23, 12), "CB1": (20, 27), "CB2": (20, 41), "RB": (23, 56),
+            "DM1": (36, 26), "DM2": (36, 42), "AM": (56, 34), "LW": (71, 13), "RW": (71, 55), "ST": (80, 34),
+        },
+        "away": {
+            "GK": (97, 34), "LB": (82, 56), "CB1": (85, 41), "CB2": (85, 27), "RB": (82, 12),
+            "DM1": (69, 42), "DM2": (69, 26), "AM": (49, 34), "LW": (34, 55), "RW": (34, 13), "ST": (25, 34),
+        },
+    },
+    "4-4-2": {
+        "home": {
+            "GK": (8, 34), "LB": (23, 12), "CB1": (20, 27), "CB2": (20, 41), "RB": (23, 56),
+            "CM1": (45, 26), "CM2": (45, 42), "LW": (56, 12), "RW": (56, 56), "ST1": (76, 27), "ST2": (76, 41),
+        },
+        "away": {
+            "GK": (97, 34), "LB": (82, 56), "CB1": (85, 41), "CB2": (85, 27), "RB": (82, 12),
+            "CM1": (60, 42), "CM2": (60, 26), "LW": (49, 56), "RW": (49, 12), "ST1": (29, 41), "ST2": (29, 27),
+        },
+    },
+    "4-1-4-1": {
+        "home": {
+            "GK": (8, 34), "LB": (23, 12), "CB1": (20, 27), "CB2": (20, 41), "RB": (23, 56),
+            "DM": (34, 34), "CM1": (49, 22), "CM2": (49, 46), "LW": (63, 12), "RW": (63, 56), "ST": (80, 34),
+        },
+        "away": {
+            "GK": (97, 34), "LB": (82, 56), "CB1": (85, 41), "CB2": (85, 27), "RB": (82, 12),
+            "DM": (71, 34), "CM1": (56, 46), "CM2": (56, 22), "LW": (42, 56), "RW": (42, 12), "ST": (25, 34),
+        },
+    },
+}
+
 PASS_SPEEDS = {
     "short_ground": 28.0,
     "progressive_ground": 33.0,
@@ -110,11 +147,18 @@ def weighted_choice(scores: Dict[str, float], rng: random.Random) -> str:
 
 
 class MatchEngine:
-    def __init__(self, home_club: Club, away_club: Club, seed: int = 42) -> None:
+    def __init__(
+        self,
+        home_club: Club,
+        away_club: Club,
+        seed: int = 42,
+        human_controlled_sides: set[str] | None = None,
+    ) -> None:
         self.rng = random.Random(seed)
         self.playback_multiplier = 1.0
-        self.home_xi_profiles, self.home_bench = pick_best_xi(home_club)
-        self.away_xi_profiles, self.away_bench = pick_best_xi(away_club)
+        self.human_controlled_sides = set(human_controlled_sides or set())
+        self.home_xi_profiles, self.home_bench = pick_best_xi(home_club, formation_name=home_club.formation)
+        self.away_xi_profiles, self.away_bench = pick_best_xi(away_club, formation_name=away_club.formation)
         self.home = self._make_team_state(home_club, "home", self.home_xi_profiles, self.home_bench)
         self.away = self._make_team_state(away_club, "away", self.away_xi_profiles, self.away_bench)
         self.state = MatchState(
@@ -147,16 +191,19 @@ class MatchEngine:
         bench: List[PlayerProfile],
     ) -> TeamState:
         xi_states: List[PlayerState] = []
+        formation_name = str(club.formation or "4-3-3")
+        formation_slots_list = formation_slots(formation_name)
         slot_counts: Dict[str, int] = {}
         formation_counts: Dict[str, int] = {}
-        for formation_slot in FORMATION_433:
+        for formation_slot in formation_slots_list:
             formation_counts[formation_slot] = formation_counts.get(formation_slot, 0) + 1
+        layout = FORMATION_LAYOUTS.get(formation_name, FORMATION_LAYOUTS["4-3-3"])[side]
 
         for idx, profile in enumerate(xi_profiles):
-            slot = FORMATION_433[idx]
+            slot = formation_slots_list[idx]
             slot_counts[slot] = slot_counts.get(slot, 0) + 1
             named_slot = f"{slot}{slot_counts[slot]}" if formation_counts[slot] > 1 else slot
-            coords = HOME_FORMATION_XY[named_slot] if side == "home" else AWAY_FORMATION_XY[named_slot]
+            coords = layout[named_slot]
             pace = profile.attributes["pace"]
             acceleration = profile.attributes.get("acceleration", pace)
             speed_rating = pace * 0.65 + acceleration * 0.35
@@ -180,7 +227,7 @@ class MatchEngine:
                 )
             )
         avg = round(sum(p.profile.ovr for p in xi_states) / len(xi_states), 2)
-        return TeamState(club=club, side=side, xi=xi_states, bench=bench, avg_ovr=avg)
+        return TeamState(club=club, side=side, xi=xi_states, bench=bench, avg_ovr=avg, formation=formation_name)
 
     def _make_player_state_from_profile(
         self,
@@ -320,6 +367,104 @@ class MatchEngine:
         team = self._team_state(side)
         return team.substitutions_used < 5 and team.substitution_windows_used < 3 and not self.state.is_finished
 
+    def _player_live_rating(self, player: PlayerState) -> float:
+        stats = self._player_match_stats(player)
+        rating = 6.5
+        rating += stats.get("goals", 0.0) * 0.8
+        rating += stats.get("assists", 0.0) * 0.5
+        rating += stats.get("passes_completed", 0.0) * 0.008
+        rating += stats.get("tackles", 0.0) * 0.06
+        rating += stats.get("interceptions", 0.0) * 0.06
+        rating += stats.get("goalkeeper_saves", 0.0) * 0.16
+        rating -= stats.get("goalkeeper_goals_conceded", 0.0) * 0.28
+        rating -= stats.get("yellow_cards", 0.0) * 0.18
+        rating -= stats.get("red_cards", 0.0) * 1.0
+        live_stamina = current_stamina_from_fatigue(player.fatigue)
+        stamina_penalty = max(0.0, 45.0 - live_stamina) / 40.0
+        return rating - stamina_penalty
+
+    def _bench_sub_score(self, profile: PlayerProfile, slot: str, stamina_override: float | None = None) -> float:
+        fit = position_fit_level(profile.position, slot)
+        fit_bonus = 20.0 if fit == 2 else 10.0 if fit == 1 else -18.0
+        stamina_bonus = (profile.current_stamina if stamina_override is None else stamina_override) * 0.12
+        role_bonus = 0.0
+        if slot == "GK" and profile.position == "GK":
+            role_bonus += 12.0
+        if slot in ("LW", "RW") and profile.attributes.get("pace", 50.0) >= 70.0:
+            role_bonus += 4.0
+        if slot in ("DM", "CM") and profile.attributes.get("passing", 50.0) >= 70.0:
+            role_bonus += 4.0
+        if slot in ("CB", "LB", "RB", "DM") and profile.attributes.get("tackling", 50.0) >= 70.0:
+            role_bonus += 4.0
+        return profile.ovr + fit_bonus + stamina_bonus + role_bonus
+
+    def choose_ai_substitutions(self, side: str) -> List[Tuple[str, str]]:
+        team = self._team_state(side)
+        if side in self.human_controlled_sides or not self.can_make_substitution_window(side):
+            return []
+        if self.state.minute < 55 or team.last_ai_sub_minute >= self.state.minute - 10:
+            return []
+
+        candidates: list[tuple[float, str, str]] = []
+        for player in team.xi:
+            if player.slot == "GK":
+                continue
+            fit = position_fit_level(player.profile.position, player.slot)
+            live_stamina = current_stamina_from_fatigue(player.fatigue)
+            fatigue_score = max(0.0, 58.0 - live_stamina) * 0.18
+            rating_penalty = max(0.0, 6.4 - self._player_live_rating(player)) * 7.0
+            card_penalty = player.yellow_cards * 2.5
+            fit_penalty = 4.0 if fit == 1 else 10.0 if fit == 0 else 0.0
+            replace_score = fatigue_score + rating_penalty + card_penalty + fit_penalty
+            if self.state.minute < 70 and replace_score < 4.5:
+                continue
+            best_bench = None
+            best_gain = 0.0
+            for bench_player in team.bench:
+                if bench_player.id in team.subbed_out_ids:
+                    continue
+                gain = self._bench_sub_score(bench_player, player.slot) - self._bench_sub_score(
+                    player.profile,
+                    player.slot,
+                    stamina_override=current_stamina_from_fatigue(player.fatigue),
+                )
+                if gain > best_gain:
+                    best_gain = gain
+                    best_bench = bench_player
+            if best_bench is None:
+                continue
+            total_score = replace_score + best_gain
+            threshold = 7.0 if self.state.minute < 75 else 4.5
+            if total_score >= threshold:
+                candidates.append((total_score, player.profile.id, best_bench.id))
+
+        candidates.sort(reverse=True)
+        remaining = min(2 if self.state.minute < 80 else 3, 5 - team.substitutions_used)
+        chosen: list[Tuple[str, str]] = []
+        used_out: set[str] = set()
+        used_in: set[str] = set()
+        for _, outgoing_id, incoming_id in candidates:
+            if outgoing_id in used_out or incoming_id in used_in:
+                continue
+            chosen.append((outgoing_id, incoming_id))
+            used_out.add(outgoing_id)
+            used_in.add(incoming_id)
+            if len(chosen) >= remaining:
+                break
+        return chosen
+
+    def _maybe_apply_ai_substitutions(self) -> None:
+        if self.state.is_finished:
+            return
+        for side in ("home", "away"):
+            team = self._team_state(side)
+            pairs = self.choose_ai_substitutions(side)
+            if not pairs:
+                continue
+            applied = self.apply_substitution_window(side, pairs)
+            if applied > 0:
+                team.last_ai_sub_minute = self.state.minute
+
     def make_substitution(self, side: str, outgoing_id: str, incoming_id: str) -> bool:
         team = self._team_state(side)
         if team.substitutions_used >= 5 or self.state.is_finished:
@@ -435,6 +580,8 @@ class MatchEngine:
         self.state.real_elapsed_seconds += SLICE_SECONDS
         self._update_match_clock()
         self._record_live_stats_slice(self.state.elapsed_seconds - previous_display_seconds)
+        if self.state.celebration_timer > 0 or self.state.restart_timer > 0:
+            self._maybe_apply_ai_substitutions()
 
         if was_first_half and self.state.real_elapsed_seconds >= HALF_REAL_SECONDS:
             self._start_halftime_break()

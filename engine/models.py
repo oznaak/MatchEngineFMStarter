@@ -77,6 +77,9 @@ class Club:
     tactics: Dict[str, float] = field(default_factory=dict)
     colors: Dict[str, str] = field(default_factory=dict)
     badge: Dict[str, str] = field(default_factory=dict)
+    formation: str = "4-3-3"
+    lineup_xi: List[str] = field(default_factory=list)
+    lineup_bench: List[str] = field(default_factory=list)
 
     @property
     def badge_id(self) -> str:
@@ -144,9 +147,11 @@ class TeamState:
     xi: List[PlayerState]
     bench: List[PlayerProfile]
     avg_ovr: float
+    formation: str = "4-3-3"
     substitutions_used: int = 0
     substitution_windows_used: int = 0
     subbed_out_ids: set[str] = field(default_factory=set)
+    last_ai_sub_minute: int = -99
 
     @property
     def name(self) -> str:

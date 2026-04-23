@@ -26,9 +26,11 @@ from engine.db import (
     load_save_overview,
     save_fixture_result,
     save_app_option,
+    save_save_club_setup,
     set_save_current_day,
     set_active_save_id,
 )
+from engine.loader import available_formations, pick_best_xi
 from engine.match_engine import MatchEngine
 from engine.render import Renderer
 
@@ -176,6 +178,7 @@ class ManagerGameApp:
         self.active_save_id: int | None = None
         self.overview: dict | None = None
         self.overview_club_id: str | None = None
+        self.overview_tab = "overview"
         self.match_engine: MatchEngine | None = None
         self.match_fixture: dict | None = None
         self.match_clubs: dict | None = None
@@ -199,6 +202,12 @@ class ManagerGameApp:
         self.modal: dict | None = None
         self.options_return_screen: str | None = None
         self.modal_paused_match = False
+        self.squad_drag_player_id: str | None = None
+        self.squad_drag_pos: tuple[int, int] | None = None
+        self.squad_hover_target_id: str | None = None
+        self.squad_draft_xi_ids: list[str] = []
+        self.squad_draft_bench_ids: list[str] = []
+        self.squad_draft_formation = "4-3-3"
         self._reload_state(apply_display=True)
 
     def _reload_state(self, apply_display: bool = False) -> None:
@@ -232,6 +241,8 @@ class ManagerGameApp:
                     self.overview_club_id = self.overview["club_id"]
             else:
                 self.overview = None
+        if self.overview:
+            self._load_squad_draft()
         if apply_display:
             self._apply_renderer_options()
 
@@ -256,6 +267,7 @@ class ManagerGameApp:
         self.active_save_id = save_id
         if self.overview:
             self.overview_club_id = self.overview["club_id"]
+            self.overview_tab = "overview"
             self.screen = "overview"
 
     def _create_new_save(self) -> None:
@@ -270,6 +282,7 @@ class ManagerGameApp:
         self.active_save_id = self.overview["save_id"] if self.overview else None
         self.overview_club_id = self.selected_club_id
         self.saves = []
+        self.overview_tab = "overview"
         self.screen = "overview"
 
     def _save_option(self, key: str, value: str) -> None:
@@ -306,6 +319,77 @@ class ManagerGameApp:
         if side == "away":
             return self.match_engine.away
         return None
+
+    def _managed_club_id(self) -> str | None:
+        if not self.overview:
+            return None
+        return str(self.overview.get("club_id"))
+
+    def _load_squad_draft(self) -> None:
+        if not self.overview:
+            self.squad_draft_xi_ids = []
+            self.squad_draft_bench_ids = []
+            self.squad_draft_formation = "4-3-3"
+            return
+        club_id = self._managed_club_id()
+        setups = self.overview.get("club_setups", {})
+        setup = setups.get(club_id or "", {})
+        self.squad_draft_formation = str(setup.get("formation", "4-3-3"))
+        self.squad_draft_xi_ids = list(setup.get("xi_ids", []))
+        self.squad_draft_bench_ids = list(setup.get("bench_ids", []))
+
+    def _persist_squad_draft(self) -> None:
+        club_id = self._managed_club_id()
+        if self.active_save_id is None or not club_id or not self.squad_draft_xi_ids:
+            return
+        with db_session(self.db_path) as conn:
+            save_save_club_setup(
+                conn,
+                self.active_save_id,
+                club_id,
+                self.squad_draft_formation,
+                self.squad_draft_xi_ids,
+                self.squad_draft_bench_ids,
+            )
+            conn.commit()
+        self._reload_state()
+
+    def _change_squad_formation(self, formation: str) -> None:
+        if self.active_save_id is None or not self.overview:
+            return
+        club_id = self._managed_club_id()
+        if not club_id or formation not in available_formations():
+            return
+        with db_session(self.db_path) as conn:
+            clubs = load_clubs_from_db(conn, save_id=self.active_save_id)
+        club = clubs.get(club_id)
+        if not club:
+            return
+        club.formation = formation
+        club.lineup_xi = []
+        club.lineup_bench = []
+        xi, bench = pick_best_xi(club, formation_name=formation)
+        self.squad_draft_formation = formation
+        self.squad_draft_xi_ids = [player.id for player in xi]
+        self.squad_draft_bench_ids = [player.id for player in bench]
+        self._persist_squad_draft()
+
+    def _apply_squad_swap(self, source_id: str, target_id: str) -> None:
+        if source_id == target_id:
+            return
+        if source_id in self.squad_draft_xi_ids and target_id in self.squad_draft_bench_ids:
+            xi_index = self.squad_draft_xi_ids.index(source_id)
+            bench_index = self.squad_draft_bench_ids.index(target_id)
+        elif source_id in self.squad_draft_bench_ids and target_id in self.squad_draft_xi_ids:
+            xi_index = self.squad_draft_xi_ids.index(target_id)
+            bench_index = self.squad_draft_bench_ids.index(source_id)
+        else:
+            return
+        self.squad_draft_xi_ids[xi_index], self.squad_draft_bench_ids[bench_index] = (
+            self.squad_draft_bench_ids[bench_index],
+            self.squad_draft_xi_ids[xi_index],
+        )
+        self._persist_squad_draft()
 
     def _reset_match_sub_state(self, restore_pause: bool = True) -> None:
         if restore_pause and self.match_engine and not self.match_engine.state.is_finished:
@@ -433,7 +517,14 @@ class ManagerGameApp:
         away_id = fixture["away_club_id"]
         if home_id not in clubs or away_id not in clubs:
             return
-        self.match_engine = MatchEngine(clubs[home_id], clubs[away_id], seed=hash((self.active_save_id, fixture["id"])) & 0xFFFFFFFF)
+        managed_side = "home" if home_id == self.overview["club_id"] else "away" if away_id == self.overview["club_id"] else None
+        controlled_sides = {managed_side} if managed_side else set()
+        self.match_engine = MatchEngine(
+            clubs[home_id],
+            clubs[away_id],
+            seed=hash((self.active_save_id, fixture["id"])) & 0xFFFFFFFF,
+            human_controlled_sides=controlled_sides,
+        )
         self.match_engine.set_speed(SPEED_MULTIPLIERS[self.match_speed_label])
         self.match_fixture = fixture
         self.match_clubs = clubs
@@ -800,6 +891,16 @@ class ManagerGameApp:
                 self.fixture_report_selected_player_id = home_players[0]["id"] if home_players else away_players[0]["id"] if away_players else None
                 self.screen = "match_report"
             return
+        if action.startswith("overview_tab:"):
+            tab = action.split(":", 1)[1]
+            self.overview_tab = tab
+            if tab == "squad":
+                self.overview_club_id = self._managed_club_id()
+                self._load_squad_draft()
+            return
+        if action.startswith("squad:formation:"):
+            self._change_squad_formation(action.split(":", 2)[2])
+            return
         if action.startswith("select_save:"):
             self.selected_save_id = int(action.split(":", 1)[1])
             return
@@ -927,6 +1028,15 @@ class ManagerGameApp:
                 "screen": "overview",
                 "overview": self.overview or {},
                 "selected_club_id": self.overview_club_id,
+                "overview_tab": self.overview_tab,
+                "squad_draft": {
+                    "formation": self.squad_draft_formation,
+                    "xi_ids": self.squad_draft_xi_ids,
+                    "bench_ids": self.squad_draft_bench_ids,
+                    "drag_player_id": self.squad_drag_player_id,
+                    "drag_pos": self.squad_drag_pos,
+                    "hover_target_id": self.squad_hover_target_id,
+                },
             }
         return {"screen": "menu", "footer_text": footer_text}
 
@@ -956,6 +1066,13 @@ class ManagerGameApp:
                             self.match_sub_hover_player_id = target_id if hovering_valid_target else None
                         else:
                             self.match_sub_hover_player_id = None
+                    elif self.screen == "overview" and self.overview_tab == "squad" and self.squad_drag_player_id:
+                        self.squad_drag_pos = event.pos
+                        hit = self.renderer.handle_squad_hit(event.pos)
+                        if hit:
+                            self.squad_hover_target_id = str(hit["player_id"]) if str(hit["player_id"]) != self.squad_drag_player_id else None
+                        else:
+                            self.squad_hover_target_id = None
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if self.modal:
                         self._handle_action(self.renderer.handle_ui_click(event.pos))
@@ -989,6 +1106,12 @@ class ManagerGameApp:
                     else:
                         action = self.renderer.handle_ui_click(event.pos)
                         self._handle_action(action)
+                        if self.screen == "overview" and self.overview_tab == "squad":
+                            hit = self.renderer.handle_squad_hit(event.pos)
+                            if hit:
+                                self.squad_drag_player_id = str(hit["player_id"])
+                                self.squad_drag_pos = event.pos
+                                self.squad_hover_target_id = None
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     if self.screen == "match" and self.match_sub_mode and self.match_sub_drag_player_id:
                         hit = self.renderer.handle_sub_row_hit(event.pos)
@@ -997,6 +1120,13 @@ class ManagerGameApp:
                         self.match_sub_drag_player_id = None
                         self.match_sub_drag_pos = None
                         self.match_sub_hover_player_id = None
+                    elif self.screen == "overview" and self.overview_tab == "squad" and self.squad_drag_player_id:
+                        hit = self.renderer.handle_squad_hit(event.pos)
+                        if hit:
+                            self._apply_squad_swap(self.squad_drag_player_id, str(hit["player_id"]))
+                        self.squad_drag_player_id = None
+                        self.squad_drag_pos = None
+                        self.squad_hover_target_id = None
             if self.screen == "match" and self.match_engine:
                 if self.match_pending_substitutions and not self.match_sub_animation and not self.match_paused and self._match_has_natural_stoppage():
                     self._start_match_sub_animation()
