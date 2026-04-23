@@ -1953,6 +1953,7 @@ class Renderer:
             ("SCOUTING", "scouting"),
         ]
         x = brand.right + 20
+        squad_submenu_anchor_x = x
         for label, tab_key in nav_items:
             active = overview_tab == tab_key or (tab_key == "squad" and overview_tab.startswith("squad_"))
             color = (248, 187, 32) if active else (220, 220, 224)
@@ -1960,16 +1961,16 @@ class Renderer:
             draw_text(self.screen, label, x, 20, color, scale=2)
             action = "overview_tab:squad_formation" if tab_key == "squad" else f"overview_tab:{tab_key}"
             self._register_ui(action, rect)
-            x += text_width(label, 2) + 26
             if tab_key == "squad" and overview_tab.startswith("squad_"):
-                sub_x = x - 6
+                sub_x = squad_submenu_anchor_x
+                sub_y = 44
                 for sub_label, sub_tab in (("FORMATION", "squad_formation"), ("TACTICS", "squad_tactics")):
                     sub_color = (248, 187, 32) if overview_tab == sub_tab else (170, 174, 182)
-                    sub_rect = pygame.Rect(sub_x - 4, 10, text_width(sub_label, 2) + 8, 28)
-                    draw_text(self.screen, sub_label, sub_x, 20, sub_color, scale=2)
+                    sub_rect = pygame.Rect(sub_x - 3, sub_y - 2, text_width(sub_label, 1) + 6, 12)
+                    draw_text(self.screen, sub_label, sub_x, sub_y, sub_color, scale=1)
                     self._register_ui(f"overview_tab:{sub_tab}", sub_rect)
-                    sub_x += text_width(sub_label, 2) + 20
-                x = sub_x + 6
+                    sub_x += text_width(sub_label, 1) + 12
+            x += text_width(label, 2) + 26
 
         next_fixture = overview.get("next_fixture")
         today_fixture = overview.get("today_fixture")
@@ -2225,15 +2226,15 @@ class Renderer:
             pygame.draw.rect(self.screen, color, pygame.Rect(lx, legend_y + 1, 10, 10))
             draw_text(self.screen, label, lx + 16, legend_y, (220, 224, 232), scale=1)
 
-        helper = "Drag across the pitch to swap XI roles, or drag between pitch and bench to change the lineup."
-        draw_text(self.screen, helper[:70], cards_x, legend_y, (190, 194, 204), scale=1)
-
         bench_rect = pygame.Rect(panel.x + 18, legend_y + 24, pitch_rect.width, panel.bottom - legend_y - 52)
         pygame.draw.rect(self.screen, (18, 20, 26), bench_rect, border_radius=8)
         pygame.draw.rect(self.screen, (50, 52, 58), bench_rect, 1, border_radius=8)
         header = pygame.Rect(bench_rect.x, bench_rect.y, bench_rect.width, 24)
         pygame.draw.rect(self.screen, (24, 26, 32), header, border_top_left_radius=8, border_top_right_radius=8)
         draw_text(self.screen, "BENCH", header.x + 8, header.y + 7, (248, 187, 32), scale=1)
+        helper = "DRAG ACROSS THE PITCH TO SWAP XI ROLES OR DRAG BETWEEN PITCH AND BENCH TO CHANGE THE LINEUP."
+        helper_y = bench_rect.y - 15
+        draw_text(self.screen, helper, cards_x, helper_y, (190, 194, 204), scale=1)
         row_y = bench_rect.y + 32
         row_h = 24
         row_gap = 6
@@ -2339,9 +2340,9 @@ class Renderer:
 
     def _draw_team_instruction_preview(self, card: pygame.Rect, key: str, current_value: str) -> None:
         left_label, center_label, right_label = instruction_preview_labels(key, current_value)
-        arrow_y = card.bottom - 28
-        left_rect = pygame.Rect(card.x + 10, arrow_y + 1, 8, 8)
-        right_rect = pygame.Rect(card.right - 18, arrow_y + 1, 8, 8)
+        center_y = card.bottom - 18
+        left_rect = pygame.Rect(card.x + 8, center_y + 2, 7, 7)
+        right_rect = pygame.Rect(card.right - 15, center_y + 2, 7, 7)
         left_enabled = left_label is not None
         right_enabled = right_label is not None
         left_color = (220, 224, 232) if left_enabled else (88, 92, 104)
@@ -2358,13 +2359,12 @@ class Renderer:
             [(right_rect.x, right_rect.y), (right_rect.right, right_rect.centery), (right_rect.x, right_rect.bottom)],
             0,
         )
-        center_y = card.bottom - 18
         if left_label:
-            draw_text(self.screen, left_label, card.x + 22, center_y, (112, 116, 128), scale=1)
+            draw_text(self.screen, left_label, card.x + 28, center_y, (112, 116, 128), scale=1)
         center_x = card.centerx - text_width(center_label, 1) // 2
         draw_text(self.screen, center_label, center_x, center_y, (245, 245, 245), scale=1)
         if right_label:
-            draw_text(self.screen, right_label, card.right - 22 - text_width(right_label, 1), center_y, (112, 116, 128), scale=1)
+            draw_text(self.screen, right_label, card.right - 28 - text_width(right_label, 1), center_y, (112, 116, 128), scale=1)
         if left_enabled:
             self._register_ui(f"squad:instruction_step:{key}:-1", left_rect.inflate(8, 8))
         if right_enabled:
@@ -2440,19 +2440,19 @@ class Renderer:
     def _draw_stat_icon(self, kind: str, rect: pygame.Rect, color: Tuple[int, int, int]) -> None:
         if kind == "apps":
             body = rect.inflate(-4, -2)
-            pygame.draw.rect(self.screen, color, body, 2, border_radius=2)
-            pygame.draw.line(self.screen, color, (body.x + 3, body.y + 5), (body.right - 3, body.y + 5), 2)
-            pygame.draw.line(self.screen, color, (body.x + 4, body.y - 1), (body.x + 4, body.y + 5), 2)
-            pygame.draw.line(self.screen, color, (body.right - 4, body.y - 1), (body.right - 4, body.y + 5), 2)
+            pygame.draw.rect(self.screen, color, body, 1, border_radius=2)
+            pygame.draw.line(self.screen, color, (body.x + 3, body.y + 5), (body.right - 3, body.y + 5), 1)
+            pygame.draw.line(self.screen, color, (body.x + 4, body.y - 1), (body.x + 4, body.y + 5), 1)
+            pygame.draw.line(self.screen, color, (body.right - 4, body.y - 1), (body.right - 4, body.y + 5), 1)
         elif kind == "goals":
-            pygame.draw.circle(self.screen, color, rect.center, max(5, rect.width // 3), 2)
-            pygame.draw.line(self.screen, color, (rect.centerx - 3, rect.centery), (rect.centerx + 3, rect.centery), 2)
-            pygame.draw.line(self.screen, color, (rect.centerx, rect.centery - 3), (rect.centerx, rect.centery + 3), 2)
+            pygame.draw.circle(self.screen, color, rect.center, max(5, rect.width // 3), 1)
+            pygame.draw.line(self.screen, color, (rect.centerx - 3, rect.centery), (rect.centerx + 3, rect.centery), 1)
+            pygame.draw.line(self.screen, color, (rect.centerx, rect.centery - 3), (rect.centerx, rect.centery + 3), 1)
         else:
             boot_rect = rect.inflate(-2, -3)
             boot = [(0.1, 0.5), (0.42, 0.5), (0.58, 0.62), (0.84, 0.62), (0.9, 0.8), (0.18, 0.8), (0.08, 0.66)]
-            pygame.draw.polygon(self.screen, color, scale_points(boot, boot_rect), 2)
-            pygame.draw.line(self.screen, color, (boot_rect.x + 4, boot_rect.y + 6), (boot_rect.x + 10, boot_rect.y + 6), 2)
+            pygame.draw.polygon(self.screen, color, scale_points(boot, boot_rect), 1)
+            pygame.draw.line(self.screen, color, (boot_rect.x + 4, boot_rect.y + 6), (boot_rect.x + 10, boot_rect.y + 6), 1)
 
     def _draw_stat_chip(self, rect: pygame.Rect, kind: str, value: int) -> None:
         icon_rect = pygame.Rect(rect.x, rect.y, 16, 16)
@@ -2470,7 +2470,8 @@ class Renderer:
         title = key.upper()
         low_label, high_label = PLAYER_INSTRUCTION_LABELS[key]
         draw_text(self.screen, title, rect.x, rect.y, (248, 187, 32), scale=1)
-        draw_text(self.screen, f"{value:03d}%", rect.right - text_width("000%", 1), rect.y, (245, 245, 245), scale=1)
+        value_text = f"{value}%"
+        draw_text(self.screen, value_text, rect.right - text_width(value_text, 1), rect.y, (245, 245, 245), scale=1)
         track = pygame.Rect(rect.x, rect.y + 20, rect.width, 12)
         pygame.draw.rect(self.screen, (34, 38, 46), track, border_radius=6)
         fill_w = max(8, int(track.width * (value / 100.0)))
@@ -2515,9 +2516,10 @@ class Renderer:
         mindset_rect = pygame.Rect(side_rect.x, side_rect.y + 130, side_rect.width, 82)
         self._draw_slider_control(pressure_rect, player["id"], "pressure", int(instructions.get("pressure", 50)))
         self._draw_slider_control(mindset_rect, player["id"], "mindset", int(instructions.get("mindset", 50)))
-        helper = "PLAYER SLIDERS OVERRIDE TEAM TENDENCIES. 50% MEANS BALANCED WITH THE TEAM PLAN."
-        draw_text(self.screen, helper[:72], side_rect.x, side_rect.bottom - 36, (170, 174, 182), scale=1)
-        draw_text(self.screen, helper[72:], side_rect.x, side_rect.bottom - 20, (170, 174, 182), scale=1)
+        helper_a = "PLAYER SLIDERS OVERRIDE TEAM TENDENCIES."
+        helper_b = "50% MEANS BALANCED WITH THE TEAM PLAN."
+        draw_text(self.screen, helper_a, side_rect.x, side_rect.bottom - 36, (170, 174, 182), scale=1)
+        draw_text(self.screen, helper_b, side_rect.x, side_rect.bottom - 20, (170, 174, 182), scale=1)
 
     def _draw_compare_player_card(self, rect: pygame.Rect, player: dict, tint: Tuple[int, int, int]) -> None:
         pygame.draw.rect(self.screen, (20, 22, 28), rect, border_radius=8)
