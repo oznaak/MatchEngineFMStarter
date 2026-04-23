@@ -238,6 +238,7 @@ class Renderer:
         self.sub_row_targets: dict[str, dict[str, object]] = {}
         self.squad_targets: dict[str, dict[str, object]] = {}
         self.squad_slider_targets: dict[str, dict[str, object]] = {}
+        self.match_slider_targets: dict[str, dict[str, object]] = {}
         self.fullscreen = fullscreen
         self.display_index = 0
         self.screen = pygame.Surface((1, 1))
@@ -252,10 +253,20 @@ class Renderer:
         return self.clock.tick(60) / 1000.0
 
     def set_display_mode(self, width: int, height: int, fullscreen: bool, display_index: int = 0) -> None:
-        configure_display_metrics(width, height)
         self.fullscreen = fullscreen
         display_count = max(1, pygame.display.get_num_displays())
         self.display_index = max(0, min(display_count - 1, int(display_index)))
+        desktop_sizes = pygame.display.get_desktop_sizes() or []
+        if self.display_index < len(desktop_sizes):
+            desktop_w, desktop_h = desktop_sizes[self.display_index]
+        else:
+            desktop_w, desktop_h = width, height
+        target_w = int(width)
+        target_h = int(height)
+        if not fullscreen:
+            target_w = min(target_w, max(960, int(desktop_w) - 80))
+            target_h = min(target_h, max(640, int(desktop_h) - 80))
+        configure_display_metrics(target_w, target_h)
         flags = pygame.FULLSCREEN if fullscreen else 0
         self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), flags, display=self.display_index)
 
@@ -315,6 +326,16 @@ class Renderer:
 
     def get_squad_slider_target(self, player_id: str, key: str) -> dict[str, object] | None:
         return self.squad_slider_targets.get(f"{player_id}:{key}")
+
+    def handle_match_slider_hit(self, pos: Tuple[int, int]) -> dict[str, object] | None:
+        for info in self.match_slider_targets.values():
+            rect = info.get("rect")
+            if isinstance(rect, pygame.Rect) and rect.collidepoint(pos):
+                return info
+        return None
+
+    def get_match_slider_target(self, player_id: str, key: str) -> dict[str, object] | None:
+        return self.match_slider_targets.get(f"{player_id}:{key}")
 
     def _draw_club_badge(self, badge: dict | None, rect: pygame.Rect) -> None:
         badge = badge or {}
@@ -386,33 +407,71 @@ class Renderer:
         drag_pos: tuple[int, int] | None = None,
         hover_player_id: str | None = None,
         sub_animation: dict | None = None,
+        instruction_mode: str | None = None,
+        live_formation: str | None = None,
+        live_team_instructions: dict[str, str] | None = None,
+        live_player_instructions: dict[str, dict[str, int]] | None = None,
+        selected_player_id_for_instructions: str | None = None,
+        instruction_animation: dict | None = None,
+        instructions_pending: bool = False,
         subs_pending: bool = False,
         present: bool = True,
     ) -> None:
         self.ui_click_targets = {}
         self.sub_row_targets = {}
         self.squad_slider_targets = {}
+        self.match_slider_targets = {}
         self.screen.fill((18, 18, 22))
         self._layout_pitch()
         if state.is_finished:
             report_view = pygame.Rect(0, VIEWPORT_Y, SCREEN_W, VIEWPORT_H)
             pygame.draw.rect(self.screen, (108, 142, 63), report_view)
             self._draw_post_match_screen(state, selected_player_id)
+            self._draw_finished_match_top_bar()
         else:
             self._draw_side_panel(state, managed_side, subs_mode, draft_xi_ids, draft_bench_ids, drag_player_id, hover_player_id, subs_pending)
             pygame.draw.rect(self.screen, (108, 142, 63), PITCH_PANEL)
             self._draw_pitch()
             self._draw_players_and_ball(state, alpha)
             self._draw_pitch_overlay(state, fixture_label)
-        self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds, managed_side)
-        self._draw_events(state, commentary_colors)
+            self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds, managed_side)
+            self._draw_events(state, commentary_colors, instruction_mode, instructions_pending, managed_side)
         self._draw_goal_banner(state)
         if drag_player_id and drag_pos and not state.is_finished:
             self._draw_drag_preview(state, managed_side, drag_player_id, drag_pos)
         if sub_animation and not state.is_finished:
             self._draw_substitution_animation(state, sub_animation)
+        if instruction_animation and not state.is_finished:
+            self._draw_instruction_change_animation(instruction_animation)
+        if instruction_mode and not state.is_finished:
+            self._draw_match_instruction_overlay(
+                state,
+                managed_side,
+                instruction_mode,
+                live_formation or "4-3-3",
+                live_team_instructions or dict(DEFAULT_TEAM_INSTRUCTIONS),
+                live_player_instructions or {},
+                selected_player_id_for_instructions,
+            )
         if present:
             pygame.display.flip()
+
+    def _draw_finished_match_top_bar(self) -> None:
+        panel = pygame.Rect(0, 0, SCREEN_W, TOP_BAR_H)
+        pygame.draw.rect(self.screen, (10, 10, 12), panel)
+        pause_box = pygame.Rect(SCREEN_W - 142, 0, 142, TOP_BAR_H)
+        pygame.draw.rect(self.screen, (88, 170, 104), pause_box)
+        draw_text(
+            self.screen,
+            "CONTINUE",
+            pause_box.x + (pause_box.width - text_width("CONTINUE", 2)) // 2,
+            11,
+            (245, 255, 245),
+            scale=2,
+        )
+        self.start_rect = pause_box
+        self.speed_rect = None
+        self.speed_option_rects = {}
 
     def _layout_pitch(self) -> None:
         global PITCH_X, PITCH_Y, PITCH_W, PITCH_H
@@ -985,17 +1044,34 @@ class Renderer:
         minute_text = f"{minute:02d}:{second:02d}"
         self._draw_top_bar(state, minute_text, paused, speed_label, managed_side)
 
-    def _draw_events(self, state: MatchState, commentary_colors: tuple[Tuple[int, int, int], Tuple[int, int, int]] | None = None) -> None:
+    def _draw_events(
+        self,
+        state: MatchState,
+        commentary_colors: tuple[Tuple[int, int, int], Tuple[int, int, int]] | None = None,
+        instruction_mode: str | None = None,
+        instructions_pending: bool = False,
+        managed_side: str | None = None,
+    ) -> None:
         panel = pygame.Rect(0, SCREEN_H - BOTTOM_TICKER_H, SCREEN_W, BOTTOM_TICKER_H)
         pygame.draw.rect(self.screen, (12, 12, 14), panel)
         left_pad = 14
         right_pad = 14
         icon_box = pygame.Rect(left_pad, SCREEN_H - BOTTOM_TICKER_H + 6, 54, BOTTOM_TICKER_H - 12)
         right_icon_box = pygame.Rect(SCREEN_W - right_pad - 54, SCREEN_H - BOTTOM_TICKER_H + 6, 54, BOTTOM_TICKER_H - 12)
-        pygame.draw.rect(self.screen, (8, 8, 10), icon_box)
-        pygame.draw.rect(self.screen, (8, 8, 10), right_icon_box)
-        draw_text(self.screen, "S", icon_box.x + 20, icon_box.y + 8, (240, 240, 240), scale=2)
-        draw_text(self.screen, "S", right_icon_box.x + 20, right_icon_box.y + 8, (240, 240, 240), scale=2)
+        team_fill = (30, 58, 102) if instruction_mode == "team" else (18, 20, 24)
+        player_fill = (30, 58, 102) if instruction_mode == "player" else (18, 20, 24)
+        if instructions_pending and instruction_mode is None:
+            team_fill = (92, 72, 28)
+            player_fill = (92, 72, 28)
+        pygame.draw.rect(self.screen, team_fill, icon_box, border_radius=6)
+        pygame.draw.rect(self.screen, player_fill, right_icon_box, border_radius=6)
+        pygame.draw.rect(self.screen, (72, 76, 88), icon_box, 1, border_radius=6)
+        pygame.draw.rect(self.screen, (72, 76, 88), right_icon_box, 1, border_radius=6)
+        if managed_side in ("home", "away"):
+            self._draw_tactics_board_icon(icon_box, (240, 240, 244))
+            self._draw_player_button_icon(right_icon_box, (240, 240, 244))
+            self._register_ui("match:instructions:team", icon_box)
+            self._register_ui("match:instructions:player", right_icon_box)
 
         ticker_x = icon_box.right + 14
         ticker_w = right_icon_box.x - ticker_x - 14
@@ -1018,6 +1094,24 @@ class Renderer:
             ticker_secondary,
             scale=2,
         )
+
+    def _draw_tactics_board_icon(self, rect: pygame.Rect, color: Tuple[int, int, int]) -> None:
+        board = rect.inflate(-18, -12)
+        pygame.draw.rect(self.screen, color, board, 2, border_radius=3)
+        pygame.draw.line(self.screen, color, (board.centerx, board.y + 2), (board.centerx, board.bottom - 2), 1)
+        pygame.draw.circle(self.screen, color, (board.x + 8, board.y + 8), 3, 1)
+        pygame.draw.circle(self.screen, color, (board.right - 8, board.bottom - 8), 3, 1)
+        pygame.draw.line(self.screen, color, (board.x + 10, board.bottom - 8), (board.centerx - 2, board.centery), 1)
+        pygame.draw.line(self.screen, color, (board.centerx + 2, board.centery), (board.right - 10, board.y + 8), 1)
+        pygame.draw.line(self.screen, color, (board.centerx - 2, board.centery), (board.centerx + 4, board.centery - 4), 1)
+        pygame.draw.line(self.screen, color, (board.centerx - 2, board.centery), (board.centerx + 4, board.centery + 4), 1)
+
+    def _draw_player_button_icon(self, rect: pygame.Rect, color: Tuple[int, int, int]) -> None:
+        cx = rect.centerx
+        pygame.draw.circle(self.screen, color, (cx, rect.y + 11), 5, 1)
+        body = pygame.Rect(cx - 9, rect.y + 18, 18, 10)
+        pygame.draw.rect(self.screen, color, body, 1, border_radius=4)
+        pygame.draw.line(self.screen, color, (cx - 12, rect.bottom - 8), (cx + 12, rect.bottom - 8), 1)
 
     def _draw_goal_banner(self, state: MatchState) -> None:
         if not state.goal_banner_text:
@@ -1964,7 +2058,7 @@ class Renderer:
             if tab_key == "squad" and overview_tab.startswith("squad_"):
                 sub_x = squad_submenu_anchor_x
                 sub_y = 44
-                for sub_label, sub_tab in (("FORMATION", "squad_formation"), ("TACTICS", "squad_tactics")):
+                for sub_label, sub_tab in (("TACTICS", "squad_formation"), ("TRAINING", "squad_tactics")):
                     sub_color = (248, 187, 32) if overview_tab == sub_tab else (170, 174, 182)
                     sub_rect = pygame.Rect(sub_x - 3, sub_y - 2, text_width(sub_label, 1) + 6, 12)
                     draw_text(self.screen, sub_label, sub_x, sub_y, sub_color, scale=1)
@@ -2135,7 +2229,7 @@ class Renderer:
         content_y = 74
         content_h = SCREEN_H - content_y - 24
         panel = pygame.Rect(20, content_y, SCREEN_W - 40, content_h)
-        self._draw_panel(panel, "FORMATION", (16, 18, 20), (245, 245, 245))
+        self._draw_panel(panel, "TACTICS", (16, 18, 20), (245, 245, 245))
 
         selector_y = panel.y + 48
         selector_x = panel.x + 14
@@ -2148,7 +2242,7 @@ class Renderer:
             self._draw_ui_button(rect, name, fill, text, f"squad:formation:{name}", scale=1)
             selector_x += width + 8
 
-        pitch_w = max(420, int(panel.width * 0.58))
+        pitch_w = max(360, min(int(panel.width * 0.6), panel.width - 320))
         pitch_rect = pygame.Rect(panel.x + 18, panel.y + 84, pitch_w, min(448, panel.height - 228))
         pygame.draw.rect(self.screen, (26, 30, 38), pitch_rect, border_radius=10)
         pygame.draw.rect(self.screen, (64, 70, 82), pitch_rect, 2, border_radius=10)
@@ -2205,12 +2299,14 @@ class Renderer:
             ("time_management", "TIME MANAGEMENT"),
             ("set_pieces", "SET PIECES"),
         ]
-        card_w = (cards_w - 12) // 2
+        card_gap = 12
+        card_columns = 2 if cards_w >= 420 else 1
+        card_w = cards_w if card_columns == 1 else (cards_w - card_gap) // 2
         card_h = 90
         for idx, (key, title) in enumerate(cards):
-            col = idx % 2
-            row = idx // 2
-            card = pygame.Rect(cards_x + col * (card_w + 12), cards_title_y + row * (card_h + 12), card_w, card_h)
+            col = idx % card_columns
+            row = idx // card_columns
+            card = pygame.Rect(cards_x + col * (card_w + card_gap), cards_title_y + row * (card_h + 12), card_w, card_h)
             current_value = str(instructions.get(key, DEFAULT_TEAM_INSTRUCTIONS[key]))
             pygame.draw.rect(self.screen, (22, 24, 30), card, border_radius=10)
             pygame.draw.rect(self.screen, (58, 62, 76), card, 1, border_radius=10)
@@ -2294,8 +2390,8 @@ class Renderer:
         content_h = SCREEN_H - content_y - 24
         left = pygame.Rect(20, content_y, (SCREEN_W - 58) // 2, content_h)
         right = pygame.Rect(left.right + 18, content_y, SCREEN_W - left.right - 38, content_h)
-        self._draw_panel(left, "TACTICAL HUB", (16, 18, 20), (245, 245, 245))
-        self._draw_panel(right, "INSTRUCTIONS", (16, 18, 20), (245, 245, 245))
+        self._draw_panel(left, "TRAINING HUB", (16, 18, 20), (245, 245, 245))
+        self._draw_panel(right, "TRAINING NOTES", (16, 18, 20), (245, 245, 245))
 
         settings = [
             ("Passing", TEAM_INSTRUCTION_LABELS["passing"][instructions["passing"]]),
@@ -2314,7 +2410,7 @@ class Renderer:
             chip_y += 64
 
         columns = [
-            ("PASSING", [TEAM_INSTRUCTION_LABELS["passing"][instructions["passing"]], "AFFECTS PASS RISK", "LIVE IN ENGINE", "CLICK IN FORMATION"]),
+            ("PASSING", [TEAM_INSTRUCTION_LABELS["passing"][instructions["passing"]], "AFFECTS PASS RISK", "LIVE IN ENGINE", "CLICK IN TACTICS"]),
             ("WIDTH", [TEAM_INSTRUCTION_LABELS["width"][instructions["width"]], "CENTER OR WINGS", "SHAPE + THROW-INS", "LIVE IN ENGINE"]),
             ("SET PIECES", [TEAM_INSTRUCTION_LABELS["set_pieces"][instructions["set_pieces"]], "CORNERS", "FREE KICKS", "THROW-INS"]),
             ("CLOCK", [TEAM_INSTRUCTION_LABELS["time_management"][instructions["time_management"]], "LEAD MANAGEMENT", "GAME STATE RULES", "LIVE IN ENGINE"]),
@@ -2335,10 +2431,10 @@ class Renderer:
                 draw_text(self.screen, item.upper(), card.x + 12, line_y, (210, 214, 224), scale=1)
                 line_y += 20
 
-        helper = "Use FORMATION to change the live instructions quickly. This panel now mirrors the real saved settings."
+        helper = "Use TACTICS to change the live instructions quickly. This panel now mirrors the real saved settings."
         draw_text(self.screen, helper[:86], right.x + 18, right.bottom - 28, (190, 194, 204), scale=1)
 
-    def _draw_team_instruction_preview(self, card: pygame.Rect, key: str, current_value: str) -> None:
+    def _draw_team_instruction_preview(self, card: pygame.Rect, key: str, current_value: str, action_prefix: str = "squad") -> None:
         left_label, center_label, right_label = instruction_preview_labels(key, current_value)
         center_y = card.bottom - 18
         left_rect = pygame.Rect(card.x + 8, center_y + 2, 7, 7)
@@ -2366,9 +2462,9 @@ class Renderer:
         if right_label:
             draw_text(self.screen, right_label, card.right - 28 - text_width(right_label, 1), center_y, (112, 116, 128), scale=1)
         if left_enabled:
-            self._register_ui(f"squad:instruction_step:{key}:-1", left_rect.inflate(8, 8))
+            self._register_ui(f"{action_prefix}:instruction_step:{key}:-1", left_rect.inflate(8, 8))
         if right_enabled:
-            self._register_ui(f"squad:instruction_step:{key}:1", right_rect.inflate(8, 8))
+            self._register_ui(f"{action_prefix}:instruction_step:{key}:1", right_rect.inflate(8, 8))
 
     def _attribute_profile(self, player: dict) -> dict[str, float]:
         attrs = dict(player.get("attributes", {}))
@@ -2468,6 +2564,7 @@ class Renderer:
         player_id: str,
         key: str,
         value: int,
+        target_store: str = "squad",
     ) -> None:
         title = key.upper()
         low_label, high_label = PLAYER_INSTRUCTION_LABELS[key]
@@ -2486,16 +2583,24 @@ class Renderer:
         pygame.draw.rect(self.screen, (26, 28, 34), knob_rect, 1, border_radius=4)
         draw_text(self.screen, low_label, rect.x, rect.y + 38, (170, 174, 182), scale=1)
         draw_text(self.screen, high_label, rect.right - text_width(high_label, 1), rect.y + 38, (170, 174, 182), scale=1)
-        self.squad_slider_targets[f"{player_id}:{key}"] = {
+        target_map = self.squad_slider_targets if target_store == "squad" else self.match_slider_targets
+        target_map[f"{player_id}:{key}"] = {
             "player_id": player_id,
             "key": key,
             "rect": pygame.Rect(track.x - 4, track.y - 6, track.width + 8, track.height + 12),
             "track": track.copy(),
         }
 
-    def _draw_single_player_focus(self, rect: pygame.Rect, player: dict, instructions: dict[str, int]) -> None:
-        info_rect = pygame.Rect(rect.x + 18, rect.y + 18, max(240, rect.width // 2 - 22), rect.height - 36)
-        side_rect = pygame.Rect(info_rect.right + 18, rect.y + 18, rect.right - info_rect.right - 36, rect.height - 36)
+    def _draw_single_player_focus(self, rect: pygame.Rect, player: dict, instructions: dict[str, int], target_store: str = "squad") -> None:
+        stacked = rect.width < 520
+        if stacked:
+            info_h = min(rect.height - 140, max(260, int(rect.height * 0.58)))
+            info_rect = pygame.Rect(rect.x + 18, rect.y + 18, rect.width - 36, info_h)
+            side_rect = pygame.Rect(rect.x + 18, info_rect.bottom + 14, rect.width - 36, rect.bottom - info_rect.bottom - 32)
+        else:
+            info_w = max(220, min(290, rect.width // 2 - 18))
+            info_rect = pygame.Rect(rect.x + 18, rect.y + 18, info_w, rect.height - 36)
+            side_rect = pygame.Rect(info_rect.right + 18, rect.y + 18, rect.right - info_rect.right - 36, rect.height - 36)
         name = player["name"].upper()
         number = "".join(ch for ch in player["id"] if ch.isdigit())[-2:] or "0"
         preferred_foot = str(player.get("preferred_foot", "right")).lower()
@@ -2510,18 +2615,21 @@ class Renderer:
         self._draw_stat_chip(pygame.Rect(info_rect.x, stats_y, 48, 18), "apps", int(player.get("apps", 0)))
         self._draw_stat_chip(pygame.Rect(info_rect.x + 74, stats_y, 48, 18), "goals", int(player.get("goals", 0)))
         self._draw_stat_chip(pygame.Rect(info_rect.x + 148, stats_y, 48, 18), "assists", int(player.get("assists", 0)))
-        radar_rect = pygame.Rect(info_rect.x + 6, info_rect.y + 82, min(info_rect.width - 12, 270), min(info_rect.height - 96, 270))
+        radar_size = min(info_rect.width - 12, info_rect.height - 108, 270 if not stacked else 230)
+        radar_rect = pygame.Rect(info_rect.x + (info_rect.width - radar_size) // 2, info_rect.y + 82, radar_size, radar_size)
         self._draw_attribute_radar(radar_rect, player)
 
         draw_text(self.screen, "PLAYER INSTRUCTIONS", side_rect.x, side_rect.y, (248, 187, 32), scale=1)
+        slider_gap = 18 if stacked else 20
         pressure_rect = pygame.Rect(side_rect.x, side_rect.y + 28, side_rect.width, 82)
-        mindset_rect = pygame.Rect(side_rect.x, side_rect.y + 130, side_rect.width, 82)
-        self._draw_slider_control(pressure_rect, player["id"], "pressure", int(instructions.get("pressure", 50)))
-        self._draw_slider_control(mindset_rect, player["id"], "mindset", int(instructions.get("mindset", 50)))
+        mindset_rect = pygame.Rect(side_rect.x, pressure_rect.bottom + slider_gap, side_rect.width, 82)
+        self._draw_slider_control(pressure_rect, player["id"], "pressure", int(instructions.get("pressure", 50)), target_store=target_store)
+        self._draw_slider_control(mindset_rect, player["id"], "mindset", int(instructions.get("mindset", 50)), target_store=target_store)
         helper_a = "PLAYER SLIDERS OVERRIDE TEAM TENDENCIES."
         helper_b = "50% MEANS BALANCED WITH THE TEAM PLAN."
-        draw_text(self.screen, helper_a, side_rect.x, side_rect.bottom - 36, (170, 174, 182), scale=1)
-        draw_text(self.screen, helper_b, side_rect.x, side_rect.bottom - 20, (170, 174, 182), scale=1)
+        helper_y = max(mindset_rect.bottom + 10, side_rect.bottom - 36)
+        draw_text(self.screen, helper_a, side_rect.x, helper_y, (170, 174, 182), scale=1)
+        draw_text(self.screen, helper_b, side_rect.x, helper_y + 16, (170, 174, 182), scale=1)
 
     def _draw_compare_player_card(self, rect: pygame.Rect, player: dict, tint: Tuple[int, int, int]) -> None:
         pygame.draw.rect(self.screen, (20, 22, 28), rect, border_radius=8)
@@ -2549,8 +2657,12 @@ class Renderer:
             draw_text(self.screen, "SELECT A PLAYER TO VIEW DETAILS.", rect.x + 18, rect.y + 18, (170, 174, 182), scale=1)
             return
         if compare:
-            left = pygame.Rect(rect.x + 14, rect.y + 14, (rect.width - 42) // 2, rect.height - 28)
-            right = pygame.Rect(left.right + 14, rect.y + 14, (rect.width - 42) // 2, rect.height - 28)
+            if rect.width < 520:
+                left = pygame.Rect(rect.x + 14, rect.y + 14, rect.width - 28, (rect.height - 42) // 2)
+                right = pygame.Rect(rect.x + 14, left.bottom + 14, rect.width - 28, rect.height - left.height - 42)
+            else:
+                left = pygame.Rect(rect.x + 14, rect.y + 14, (rect.width - 42) // 2, rect.height - 28)
+                right = pygame.Rect(left.right + 14, rect.y + 14, (rect.width - 42) // 2, rect.height - 28)
             self._draw_compare_player_card(left, selected, (84, 148, 98))
             self._draw_compare_player_card(right, compare, (206, 96, 84))
             return
@@ -2616,6 +2728,146 @@ class Renderer:
             pygame.draw.polygon(self.screen, color, [(cx - 18, cy - 12), (cx - 6, cy - 8), (cx - 18, cy - 4)], 0)
             pygame.draw.arc(self.screen, (220, 64, 64), pygame.Rect(cx - 2, cy - 18, 32, 28), 4.8, 5.8, 2)
             pygame.draw.line(self.screen, (220, 64, 64), (cx + 22, cy - 10), (cx + 28, cy - 16), 2)
+
+    def _match_popup_players(self, state: MatchState, side: str) -> list[dict]:
+        team = state.home if side == "home" else state.away
+        rows: list[dict] = []
+        for player in team.xi:
+            stats = state.player_match_stats.get(player.profile.id, {})
+            rows.append(
+                {
+                    "id": player.profile.id,
+                    "name": player.profile.name,
+                    "position": player.profile.position,
+                    "ovr": player.profile.ovr,
+                    "attributes": dict(player.profile.attributes),
+                    "preferred_foot": player.profile.preferred_foot,
+                    "apps": 1,
+                    "goals": int(stats.get("goals", 0.0)),
+                    "assists": int(stats.get("assists", 0.0)),
+                    "role": "XI",
+                    "rating": self._player_rating(state, player.profile.id),
+                }
+            )
+        for profile in team.bench:
+            stats = state.player_match_stats.get(profile.id, {})
+            rows.append(
+                {
+                    "id": profile.id,
+                    "name": profile.name,
+                    "position": profile.position,
+                    "ovr": profile.ovr,
+                    "attributes": dict(profile.attributes),
+                    "preferred_foot": profile.preferred_foot,
+                    "apps": 0,
+                    "goals": int(stats.get("goals", 0.0)),
+                    "assists": int(stats.get("assists", 0.0)),
+                    "role": "BENCH",
+                    "rating": self._player_rating(state, profile.id),
+                }
+            )
+        return rows
+
+    def _draw_match_instruction_overlay(
+        self,
+        state: MatchState,
+        managed_side: str | None,
+        mode: str,
+        formation: str,
+        instructions: dict[str, str],
+        player_instructions: dict[str, dict[str, int]],
+        selected_player_id: str | None,
+    ) -> None:
+        if managed_side not in ("home", "away"):
+            return
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 168))
+        self.screen.blit(overlay, (0, 0))
+        panel_w = min(1080, SCREEN_W - 96)
+        panel_h = min(700, SCREEN_H - 112)
+        panel = pygame.Rect((SCREEN_W - panel_w) // 2, (SCREEN_H - panel_h) // 2, panel_w, panel_h)
+        self._draw_panel(panel)
+        title = "TEAM INSTRUCTIONS" if mode == "team" else "PLAYER INSTRUCTIONS"
+        draw_text(self.screen, title, panel.x + 22, panel.y + 18, (248, 187, 32), scale=2)
+        managed_team = state.home if managed_side == "home" else state.away
+        club_name = compact_team_name(managed_team.name)
+        draw_text(self.screen, club_name, panel.right - text_width(club_name, 2) - 22, panel.y + 18, (220, 224, 232), scale=2)
+        if mode == "team":
+            inner = pygame.Rect(panel.x + 22, panel.y + 56, panel.width - 44, panel.height - 128)
+            formation_rect = pygame.Rect(inner.x, inner.y, inner.width, 44)
+            pygame.draw.rect(self.screen, (20, 22, 28), formation_rect, border_radius=8)
+            pygame.draw.rect(self.screen, (72, 76, 88), formation_rect, 1, border_radius=8)
+            draw_text(self.screen, "FORMATION", formation_rect.x + 14, formation_rect.y + 14, (248, 187, 32), scale=1)
+            fx = formation_rect.x + 116
+            for name in available_formations():
+                w = text_width(name, 1) + 18
+                button = pygame.Rect(fx, formation_rect.y + 8, w, 26)
+                active = formation == name
+                fill = (248, 187, 32) if active else (36, 52, 96)
+                text = (24, 24, 28) if active else (245, 245, 245)
+                self._draw_ui_button(button, name, fill, text, f"match:formation:{name}", scale=1)
+                fx += w + 8
+            cards = list(instructions.items())
+            inner = pygame.Rect(inner.x, formation_rect.bottom + 14, inner.width, inner.height - 58)
+            columns = 2 if inner.width >= 520 else 1
+            gap = 14
+            card_w = (inner.width - gap) // columns if columns == 2 else inner.width
+            card_h = 108
+            for idx, (key, value) in enumerate(cards):
+                row = idx // columns
+                col = idx % columns
+                card = pygame.Rect(inner.x + col * (card_w + gap), inner.y + row * (card_h + gap), card_w, card_h)
+                pygame.draw.rect(self.screen, (24, 26, 32), card, border_radius=8)
+                pygame.draw.rect(self.screen, (72, 76, 88), card, 1, border_radius=8)
+                draw_text(self.screen, key.replace("_", " ").upper(), card.x + 14, card.y + 12, (248, 187, 32), scale=1)
+                icon_rect = pygame.Rect(card.centerx - 34, card.y + 26, 68, 38)
+                self._draw_instruction_icon(key, icon_rect, (228, 232, 238))
+                self._draw_team_instruction_preview(card, key, str(value), action_prefix="match:team")
+        else:
+            list_rect = pygame.Rect(panel.x + 22, panel.y + 56, min(270, panel.width // 3), panel.height - 128)
+            detail_rect = pygame.Rect(list_rect.right + 18, list_rect.y, panel.right - list_rect.right - 40, list_rect.height)
+            pygame.draw.rect(self.screen, (20, 22, 28), list_rect, border_radius=8)
+            pygame.draw.rect(self.screen, (72, 76, 88), list_rect, 1, border_radius=8)
+            draw_text(self.screen, "SQUAD", list_rect.x + 12, list_rect.y + 10, (248, 187, 32), scale=1)
+            players = self._match_popup_players(state, managed_side)
+            y = list_rect.y + 34
+            row_h = 24
+            for player in players[:18]:
+                row = pygame.Rect(list_rect.x + 8, y, list_rect.width - 16, row_h)
+                selected = str(player["id"]) == str(selected_player_id)
+                if selected:
+                    pygame.draw.rect(self.screen, (36, 78, 124), row, border_radius=4)
+                pygame.draw.rect(self.screen, (58, 62, 74), row, 1, border_radius=4)
+                draw_text(self.screen, str(player["role"]), row.x + 6, row.y + 7, (168, 172, 182), scale=1)
+                draw_text(self.screen, short_display_name(str(player["name"]), 12), row.x + 34, row.y + 7, (245, 245, 245), scale=1)
+                rating = f"{float(player['rating']):.1f}"
+                draw_text(self.screen, rating, row.right - text_width(rating, 1) - 8, row.y + 7, (220, 224, 232), scale=1)
+                self._register_ui(f"match:instruction_player:select:{player['id']}", row)
+                y += row_h + 6
+                if y + row_h > list_rect.bottom - 8:
+                    break
+            selected = next((player for player in players if str(player["id"]) == str(selected_player_id)), None)
+            if selected:
+                values = dict(DEFAULT_PLAYER_INSTRUCTIONS)
+                values.update(player_instructions.get(selected["id"], {}))
+                self._draw_single_player_focus(detail_rect, selected, values, target_store="match")
+        cancel_rect = pygame.Rect(panel.x + 22, panel.bottom - 50, 150, 32)
+        confirm_rect = pygame.Rect(panel.right - 172, panel.bottom - 50, 150, 32)
+        self._draw_ui_button(cancel_rect, "CANCEL", (70, 74, 92), (245, 245, 245), "match:instructions:cancel", scale=2)
+        self._draw_ui_button(confirm_rect, "CONFIRM", (88, 170, 104), (18, 18, 22), "match:instructions:confirm", scale=2)
+
+    def _draw_instruction_change_animation(self, animation: dict) -> None:
+        panel = pygame.Rect(0, 0, min(420, SCREEN_W - 120), 72)
+        panel.center = (SCREEN_W // 2, TOP_BAR_H + 74)
+        pygame.draw.rect(self.screen, (18, 20, 24), panel, border_radius=8)
+        pygame.draw.rect(self.screen, (88, 170, 104), panel, 2, border_radius=8)
+        cx = panel.x + 28
+        cy = panel.centery
+        pygame.draw.circle(self.screen, (88, 170, 104), (cx, cy), 14, 2)
+        pygame.draw.line(self.screen, (88, 170, 104), (cx - 5, cy + 1), (cx - 1, cy + 6), 3)
+        pygame.draw.line(self.screen, (88, 170, 104), (cx - 1, cy + 6), (cx + 7, cy - 6), 3)
+        message = str(animation.get("message", "INSTRUCTIONS CHANGED!"))
+        draw_text(self.screen, message, panel.x + 52, panel.y + 28, (245, 245, 245), scale=2)
 
     def draw_modal(self, modal: dict) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)

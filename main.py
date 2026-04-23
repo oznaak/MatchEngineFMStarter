@@ -204,6 +204,16 @@ class ManagerGameApp:
         self.match_sub_draft_bench_ids: list[str] = []
         self.match_pending_substitutions: list[tuple[str, str]] = []
         self.match_sub_animation: dict | None = None
+        self.match_instruction_mode: str | None = None
+        self.match_instruction_restore_paused = False
+        self.match_instruction_team_draft = dict(DEFAULT_TEAM_INSTRUCTIONS)
+        self.match_instruction_player_draft: dict[str, dict[str, int]] = {}
+        self.match_instruction_formation_draft = "4-3-3"
+        self.match_pending_instruction_update: dict[str, object] | None = None
+        self.match_instruction_animation: dict | None = None
+        self.match_live_instruction_baseline: dict[str, dict] = {}
+        self.match_instruction_slider_drag_player_id: str | None = None
+        self.match_instruction_slider_drag_key: str | None = None
         self.fixture_report: dict | None = None
         self.fixture_report_selected_player_id: str | None = None
         self.modal: dict | None = None
@@ -334,6 +344,10 @@ class ManagerGameApp:
         if side == "away":
             return self.match_engine.away
         return None
+
+    def _managed_match_club(self):
+        team = self._managed_match_team()
+        return team.club if team else None
 
     def _managed_club_id(self) -> str | None:
         if not self.overview:
@@ -493,6 +507,193 @@ class ManagerGameApp:
         value = round(max(0.0, min(1.0, ratio)) * 100)
         self._set_player_instruction(player_id, key, value)
 
+    def _match_player_instruction_values(self, player_id: str | None) -> dict[str, int]:
+        if not player_id:
+            return dict(DEFAULT_PLAYER_INSTRUCTIONS)
+        values = dict(DEFAULT_PLAYER_INSTRUCTIONS)
+        values.update(self.match_instruction_player_draft.get(player_id, {}))
+        return {key: normalize_player_instruction_value(key, value) for key, value in values.items()}
+
+    def _set_match_player_instruction(self, player_id: str, key: str, value: int) -> None:
+        if key not in DEFAULT_PLAYER_INSTRUCTIONS:
+            return
+        values = self._match_player_instruction_values(player_id)
+        updated = normalize_player_instruction_value(key, value)
+        if updated == values[key]:
+            return
+        self.match_instruction_player_draft[player_id] = dict(values)
+        self.match_instruction_player_draft[player_id][key] = updated
+
+    def _update_match_player_instruction_from_pos(self, pos: tuple[int, int]) -> None:
+        player_id = self.match_instruction_slider_drag_player_id
+        key = self.match_instruction_slider_drag_key
+        if not player_id or not key:
+            return
+        hit = self.renderer.get_match_slider_target(player_id, key)
+        if not hit:
+            return
+        track = hit.get("track")
+        if not isinstance(track, pygame.Rect) or track.width <= 0:
+            return
+        ratio = (pos[0] - track.x) / track.width
+        value = round(max(0.0, min(1.0, ratio)) * 100)
+        self._set_match_player_instruction(player_id, key, value)
+
+    def _match_has_active_popup(self) -> bool:
+        return bool(self.match_sub_mode or self.match_instruction_mode)
+
+    def _reset_match_instruction_state(self, restore_pause: bool = True) -> None:
+        if restore_pause and self.match_engine and not self.match_engine.state.is_finished:
+            self.match_paused = self.match_instruction_restore_paused
+        self.match_instruction_mode = None
+        self.match_instruction_restore_paused = False
+        self.match_instruction_slider_drag_player_id = None
+        self.match_instruction_slider_drag_key = None
+        self.match_instruction_formation_draft = "4-3-3"
+
+    def _restore_match_live_instructions(self) -> None:
+        if not self.match_engine:
+            return
+        for side, baseline in self.match_live_instruction_baseline.items():
+            team = self.match_engine.home if side == "home" else self.match_engine.away
+            formation = str(baseline.get("formation", team.formation))
+            self.match_engine.apply_formation(side, formation)
+            team.club.instructions = normalize_team_instructions(baseline.get("instructions"))
+            team.club.player_instructions = {
+                str(player_id): {
+                    key: normalize_player_instruction_value(key, value)
+                    for key, value in (values or {}).items()
+                    if key in DEFAULT_PLAYER_INSTRUCTIONS
+                }
+                for player_id, values in dict(baseline.get("player_instructions", {})).items()
+            }
+
+    def _enter_match_instruction_mode(self, mode: str) -> None:
+        team = self._managed_match_team()
+        if not self.match_engine or not team or mode not in {"team", "player"}:
+            return
+        if self.match_pending_substitutions or self.match_sub_animation or self.match_instruction_animation:
+            return
+        self.match_instruction_restore_paused = self.match_paused
+        self.match_paused = True
+        self.match_instruction_mode = mode
+        self.match_instruction_slider_drag_player_id = None
+        self.match_instruction_slider_drag_key = None
+        self.match_instruction_team_draft = normalize_team_instructions(team.club.instructions)
+        self.match_instruction_formation_draft = str(team.formation or team.club.formation or "4-3-3")
+        self.match_instruction_player_draft = {
+            str(player_id): {
+                key: normalize_player_instruction_value(key, value)
+                for key, value in (values or {}).items()
+                if key in DEFAULT_PLAYER_INSTRUCTIONS
+            }
+            for player_id, values in dict(team.club.player_instructions).items()
+        }
+        active_ids = [player.profile.id for player in team.xi] + [profile.id for profile in team.bench]
+        if self.match_selected_player_id not in active_ids:
+            self.match_selected_player_id = active_ids[0] if active_ids else None
+
+    def _confirm_match_instruction_changes(self) -> None:
+        team = self._managed_match_team()
+        if not self.match_engine or not team or not self.match_instruction_mode:
+            return
+        current_instructions = normalize_team_instructions(team.club.instructions)
+        current_formation = str(team.formation or team.club.formation or "4-3-3")
+        current_player_map = {
+            str(player_id): {
+                key: normalize_player_instruction_value(key, value)
+                for key, value in (values or {}).items()
+                if key in DEFAULT_PLAYER_INSTRUCTIONS
+            }
+            for player_id, values in dict(team.club.player_instructions).items()
+        }
+        draft_instructions = normalize_team_instructions(self.match_instruction_team_draft)
+        draft_player_map = {
+            str(player_id): {
+                key: normalize_player_instruction_value(key, value)
+                for key, value in (values or {}).items()
+                if key in DEFAULT_PLAYER_INSTRUCTIONS
+            }
+            for player_id, values in dict(self.match_instruction_player_draft).items()
+        }
+        if draft_instructions != current_instructions or draft_player_map != current_player_map:
+            changed = True
+        else:
+            changed = False
+        if self.match_instruction_formation_draft != current_formation:
+            changed = True
+        if changed:
+            self.match_pending_instruction_update = {
+                "side": self._managed_match_side(),
+                "formation": self.match_instruction_formation_draft,
+                "instructions": draft_instructions,
+                "player_instructions": draft_player_map,
+            }
+        self._reset_match_instruction_state(restore_pause=True)
+
+    def _start_match_instruction_animation(self) -> None:
+        update = self.match_pending_instruction_update or {}
+        if not self.match_engine or not update:
+            return
+        side = str(update.get("side") or self._managed_match_side() or "home")
+        team = self.match_engine.home if side == "home" else self.match_engine.away
+        formation = str(update.get("formation") or team.formation or team.club.formation or "4-3-3")
+        self.match_engine.apply_formation(side, formation)
+        team.club.instructions = normalize_team_instructions(update.get("instructions"))
+        team.club.player_instructions = {
+            str(player_id): {
+                key: normalize_player_instruction_value(key, value)
+                for key, value in (values or {}).items()
+                if key in DEFAULT_PLAYER_INSTRUCTIONS
+            }
+            for player_id, values in dict(update.get("player_instructions", {})).items()
+        }
+        self.match_paused = True
+        self.match_instruction_animation = {
+            "message": "INSTRUCTIONS CHANGED!",
+            "duration": 1.5,
+            "elapsed": 0.0,
+        }
+        self.match_pending_instruction_update = None
+
+    def _update_match_instruction_animation(self, dt: float) -> None:
+        if not self.match_instruction_animation:
+            return
+        self.match_instruction_animation["elapsed"] = float(self.match_instruction_animation.get("elapsed", 0.0)) + dt
+        if self.match_instruction_animation["elapsed"] >= float(self.match_instruction_animation.get("duration", 1.5)):
+            self.match_instruction_animation = None
+            self.match_paused = False
+
+    def _detect_ai_sub_animation(self, previous_state: dict[str, dict[str, object]]) -> None:
+        if not self.match_engine or self.match_sub_mode or self.match_pending_substitutions or self.match_sub_animation:
+            return
+        for side in ("home", "away"):
+            if side in self.match_engine.human_controlled_sides:
+                continue
+            team = self.match_engine.home if side == "home" else self.match_engine.away
+            prior = previous_state.get(side, {})
+            previous_xi = list(prior.get("xi_ids", []))
+            previous_subs = int(prior.get("substitutions_used", 0))
+            current_xi = [player.profile.id for player in team.xi]
+            if current_xi == previous_xi or team.substitutions_used <= previous_subs:
+                continue
+            outgoing_ids = [player_id for player_id in previous_xi if player_id not in current_xi]
+            incoming_ids = [player_id for player_id in current_xi if player_id not in previous_xi]
+            if not outgoing_ids or not incoming_ids:
+                continue
+            pairs = list(zip(outgoing_ids, incoming_ids))
+            if not pairs:
+                continue
+            self.match_paused = True
+            self.match_sub_animation = {
+                "side": side,
+                "pairs": pairs,
+                "duration": 1.8,
+                "elapsed": 0.0,
+                "applied": True,
+            }
+            break
+
     def _apply_squad_swap(self, source_id: str, target_id: str) -> None:
         if source_id == target_id:
             return
@@ -584,7 +785,7 @@ class ManagerGameApp:
         side = self._managed_match_side()
         if not self.match_engine or not team or not side:
             return
-        if self.match_pending_substitutions or self.match_sub_animation:
+        if self.match_pending_substitutions or self.match_sub_animation or self.match_instruction_mode or self.match_instruction_animation:
             return
         if not self.match_engine.can_make_substitution_window(side):
             return
@@ -673,8 +874,29 @@ class ManagerGameApp:
         self.match_finish_timer = 0.0
         self.match_selected_player_id = self.match_engine.home.xi[0].profile.id if self.match_engine.home.xi else None
         self._reset_match_sub_state(restore_pause=False)
+        self._reset_match_instruction_state(restore_pause=False)
         self.match_pending_substitutions = []
         self.match_sub_animation = None
+        self.match_pending_instruction_update = None
+        self.match_instruction_animation = None
+        self.match_live_instruction_baseline = {
+            "home": {
+                "instructions": normalize_team_instructions(self.match_engine.home.club.instructions),
+                "formation": str(self.match_engine.home.formation),
+                "player_instructions": {
+                    str(player_id): dict(values or {})
+                    for player_id, values in dict(self.match_engine.home.club.player_instructions).items()
+                },
+            },
+            "away": {
+                "instructions": normalize_team_instructions(self.match_engine.away.club.instructions),
+                "formation": str(self.match_engine.away.formation),
+                "player_instructions": {
+                    str(player_id): dict(values or {})
+                    for player_id, values in dict(self.match_engine.away.club.player_instructions).items()
+                },
+            },
+        }
 
     def _advance_one_day(self) -> None:
         if self.active_save_id is None:
@@ -814,8 +1036,12 @@ class ManagerGameApp:
         self.match_finish_timer = 0.0
         self.match_selected_player_id = None
         self._reset_match_sub_state(restore_pause=False)
+        self._reset_match_instruction_state(restore_pause=False)
         self.match_pending_substitutions = []
         self.match_sub_animation = None
+        self.match_pending_instruction_update = None
+        self.match_instruction_animation = None
+        self.match_live_instruction_baseline = {}
         self.fixture_report = None
         self.fixture_report_selected_player_id = None
         self.screen = "overview"
@@ -1018,6 +1244,41 @@ class ManagerGameApp:
         if action == "match:subs:confirm":
             self._confirm_match_subs()
             return
+        if action == "match:instructions:team":
+            self._enter_match_instruction_mode("team")
+            return
+        if action == "match:instructions:player":
+            self._enter_match_instruction_mode("player")
+            return
+        if action == "match:instructions:cancel":
+            self._reset_match_instruction_state(restore_pause=True)
+            return
+        if action == "match:instructions:confirm":
+            self._confirm_match_instruction_changes()
+            return
+        if action.startswith("match:team_instruction_step:") or action.startswith("match:team:instruction_step:"):
+            if action.startswith("match:team:instruction_step:"):
+                _, _, _, key, delta_text = action.split(":", 4)
+            else:
+                _, _, key, delta_text = action.split(":", 3)
+            options = TEAM_INSTRUCTION_OPTIONS.get(key, [])
+            if options:
+                current = str(self.match_instruction_team_draft.get(key, options[0]))
+                try:
+                    index = options.index(current)
+                except ValueError:
+                    index = 0
+                next_index = max(0, min(len(options) - 1, index + int(delta_text)))
+                self.match_instruction_team_draft[key] = options[next_index]
+            return
+        if action.startswith("match:instruction_player:select:"):
+            self.match_selected_player_id = action.split(":", 3)[3]
+            return
+        if action.startswith("match:formation:"):
+            formation = action.split(":", 2)[2]
+            if formation in available_formations():
+                self.match_instruction_formation_draft = formation
+            return
         if action.startswith("overview:fixture:"):
             fixture_id = int(action.split(":", 2)[2])
             with db_session(self.db_path) as conn:
@@ -1104,6 +1365,9 @@ class ManagerGameApp:
                 if self.match_sub_mode:
                     self._reset_match_sub_state(restore_pause=True)
                     return
+                if self.match_instruction_mode:
+                    self._reset_match_instruction_state(restore_pause=True)
+                    return
                 self._open_escape_modal()
                 return
             if self.match_engine.state.is_finished:
@@ -1117,6 +1381,10 @@ class ManagerGameApp:
             if self.match_sub_mode:
                 if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                     self._confirm_match_subs()
+                return
+            if self.match_instruction_mode:
+                if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    self._confirm_match_instruction_changes()
                 return
             if self._is_bound(event, "bind_pause", "space"):
                 if not self.match_engine.state.awaiting_start and not self.match_engine.state.is_finished:
@@ -1231,6 +1499,9 @@ class ManagerGameApp:
                             self.match_sub_hover_player_id = target_id if hovering_valid_target else None
                         else:
                             self.match_sub_hover_player_id = None
+                    elif self.screen == "match" and self.match_instruction_mode == "player":
+                        if self.match_instruction_slider_drag_player_id and self.match_instruction_slider_drag_key:
+                            self._update_match_player_instruction_from_pos(event.pos)
                     elif self.screen == "overview" and self.overview_tab == "squad_formation":
                         if self.squad_slider_drag_player_id and self.squad_slider_drag_key:
                             self._update_player_instruction_from_pos(event.pos)
@@ -1266,6 +1537,19 @@ class ManagerGameApp:
                                 self.match_sub_drag_player_id = str(hit["player_id"])
                                 self.match_sub_drag_pos = event.pos
                                 self.match_sub_hover_player_id = None
+                            continue
+                        if self.match_instruction_mode:
+                            action = self.renderer.handle_ui_click(event.pos)
+                            if action:
+                                self._handle_action(action)
+                                continue
+                            if self.match_instruction_mode == "player":
+                                slider_hit = self.renderer.handle_match_slider_hit(event.pos)
+                                if slider_hit:
+                                    self.match_instruction_slider_drag_player_id = str(slider_hit["player_id"])
+                                    self.match_instruction_slider_drag_key = str(slider_hit["key"])
+                                    self.match_selected_player_id = self.match_instruction_slider_drag_player_id
+                                    self._update_match_player_instruction_from_pos(event.pos)
                             continue
                         action = self.renderer.handle_ui_click(event.pos)
                         if action:
@@ -1307,6 +1591,11 @@ class ManagerGameApp:
                         self.match_sub_drag_player_id = None
                         self.match_sub_drag_pos = None
                         self.match_sub_hover_player_id = None
+                    elif self.screen == "match" and self.match_instruction_mode == "player":
+                        if self.match_instruction_slider_drag_player_id and self.match_instruction_slider_drag_key:
+                            self._update_match_player_instruction_from_pos(event.pos)
+                        self.match_instruction_slider_drag_player_id = None
+                        self.match_instruction_slider_drag_key = None
                     elif self.screen == "overview" and self.overview_tab == "squad_formation":
                         hit = self.renderer.handle_squad_hit(event.pos)
                         if self.squad_slider_drag_player_id and self.squad_slider_drag_key:
@@ -1325,13 +1614,29 @@ class ManagerGameApp:
                         self.squad_slider_drag_player_id = None
                         self.squad_slider_drag_key = None
             if self.screen == "match" and self.match_engine:
+                if self.match_pending_instruction_update and not self.match_instruction_animation and not self.match_paused and self._match_has_natural_stoppage():
+                    self._start_match_instruction_animation()
                 if self.match_pending_substitutions and not self.match_sub_animation and not self.match_paused and self._match_has_natural_stoppage():
                     self._start_match_sub_animation()
                 if self.match_sub_animation:
                     self._update_match_sub_animation(dt)
+                if self.match_instruction_animation:
+                    self._update_match_instruction_animation(dt)
                 if not self.match_paused:
+                    previous_ai_state = {
+                        "home": {
+                            "xi_ids": [player.profile.id for player in self.match_engine.home.xi],
+                            "substitutions_used": self.match_engine.home.substitutions_used,
+                        },
+                        "away": {
+                            "xi_ids": [player.profile.id for player in self.match_engine.away.xi],
+                            "substitutions_used": self.match_engine.away.substitutions_used,
+                        },
+                    }
                     self.match_engine.update(dt)
+                    self._detect_ai_sub_animation(previous_ai_state)
                 if self.match_engine.state.is_finished and not self.match_condition_saved:
+                    self._restore_match_live_instructions()
                     apply_post_match_condition(self.match_engine.state)
                     self.match_condition_saved = True
                 fixture_label = f"{self.match_engine.state.home.name} vs {self.match_engine.state.away.name}"
@@ -1352,6 +1657,13 @@ class ManagerGameApp:
                     drag_pos=self.match_sub_drag_pos,
                     hover_player_id=self.match_sub_hover_player_id,
                     sub_animation=self.match_sub_animation,
+                    instruction_mode=self.match_instruction_mode,
+                    live_formation=(self.match_instruction_formation_draft if self.match_instruction_mode else str(self._managed_match_team().formation) if self._managed_match_team() else "4-3-3"),
+                    live_team_instructions=(dict(self.match_instruction_team_draft) if self.match_instruction_mode else normalize_team_instructions((self._managed_match_club().instructions if self._managed_match_club() else None))),
+                    live_player_instructions=(dict(self.match_instruction_player_draft) if self.match_instruction_mode else dict(self._managed_match_club().player_instructions) if self._managed_match_club() else {}),
+                    selected_player_id_for_instructions=self.match_selected_player_id,
+                    instruction_animation=self.match_instruction_animation,
+                    instructions_pending=bool(self.match_pending_instruction_update),
                     subs_pending=bool(self.match_pending_substitutions),
                     present=not self.modal,
                 )

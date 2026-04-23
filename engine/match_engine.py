@@ -260,6 +260,37 @@ class MatchEngine:
             facing_x=facing_x,
         )
 
+    def apply_formation(self, side: str, formation_name: str) -> bool:
+        if formation_name not in FORMATION_LAYOUTS:
+            return False
+        team = self._team_state(side)
+        slots = formation_slots(formation_name)
+        if len(slots) != len(team.xi):
+            return False
+        layout = FORMATION_LAYOUTS.get(formation_name, FORMATION_LAYOUTS["4-3-3"])[side]
+        formation_counts: Dict[str, int] = {}
+        for formation_slot in slots:
+            formation_counts[formation_slot] = formation_counts.get(formation_slot, 0) + 1
+        slot_counts: Dict[str, int] = {}
+        for idx, player in enumerate(team.xi):
+            slot = slots[idx]
+            slot_counts[slot] = slot_counts.get(slot, 0) + 1
+            named_slot = f"{slot}{slot_counts[slot]}" if formation_counts[slot] > 1 else slot
+            coords = layout[named_slot]
+            player.slot = slot
+            player.home_x = coords[0]
+            player.home_y = coords[1]
+            player.target_x = coords[0]
+            player.target_y = coords[1]
+            if self.state.awaiting_start or self.state.restart_timer > 0 or self.state.restart_mode == "kickoff_setup":
+                player.x = coords[0]
+                player.y = coords[1]
+                player.prev_x = coords[0]
+                player.prev_y = coords[1]
+        team.formation = formation_name
+        team.club.formation = formation_name
+        return True
+
     def _kickoff(self) -> None:
         self.state.phase = "pre_match"
         self.state.awaiting_start = True
