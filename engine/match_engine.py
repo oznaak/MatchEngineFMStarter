@@ -453,48 +453,104 @@ class MatchEngine:
             + attrs.get("bravery", attrs["composure"]) * 0.08
         )
 
+    def _ai_substitution_targets(self, side: str) -> tuple[int, int]:
+        team = self._team_state(side)
+        margin = (self.state.home_score - self.state.away_score) if side == "home" else (self.state.away_score - self.state.home_score)
+        xi_stamina = [
+            current_stamina_from_fatigue(player.fatigue)
+            for player in team.xi
+            if not player.red_card and player.slot != "GK"
+        ]
+        avg_stamina = sum(xi_stamina) / len(xi_stamina) if xi_stamina else 100.0
+
+        desired_total = 0
+        if self.state.phase == "halftime" or self.state.minute >= 62:
+            desired_total = 1
+        if self.state.minute >= 74:
+            desired_total = 2
+        if self.state.minute >= 84:
+            desired_total = 3
+        if self.state.minute >= 88 and (margin < 0 or avg_stamina < 62.0):
+            desired_total = 4
+
+        if margin <= -2:
+            desired_total += 1
+        elif margin >= 2 and self.state.minute >= 78:
+            desired_total = max(desired_total, 3)
+
+        if avg_stamina < 66.0:
+            desired_total += 1
+        desired_total = min(desired_total, 5)
+
+        batch_size = 1
+        if desired_total - team.substitutions_used >= 2 and self.state.minute >= 70:
+            batch_size = 2
+        if desired_total - team.substitutions_used >= 3 and self.state.minute >= 84:
+            batch_size = 3
+        return desired_total, batch_size
+
     def choose_ai_substitutions(self, side: str) -> List[Tuple[str, str]]:
         team = self._team_state(side)
         if side in self.human_controlled_sides or not self.can_make_substitution_window(side):
             return []
-        if self.state.minute < 55 or team.last_ai_sub_minute >= self.state.minute - 10:
+        if (self.state.minute < 55 and self.state.phase != "halftime") or team.last_ai_sub_minute >= self.state.minute - 10:
+            return []
+
+        desired_total, desired_batch = self._ai_substitution_targets(side)
+        if team.substitutions_used >= desired_total and self.state.minute < 88:
             return []
 
         candidates: list[tuple[float, str, str]] = []
+        reserve_candidates: list[tuple[float, str, str]] = []
         for player in team.xi:
             if player.slot == "GK":
                 continue
             fit = position_fit_level(player.profile.position, player.slot)
             live_stamina = current_stamina_from_fatigue(player.fatigue)
-            fatigue_score = max(0.0, 58.0 - live_stamina) * 0.18
+            fatigue_score = max(0.0, 64.0 - live_stamina) * 0.26
             rating_penalty = max(0.0, 6.4 - self._player_live_rating(player)) * 7.0
             card_penalty = player.yellow_cards * 2.5
             fit_penalty = 4.0 if fit == 1 else 10.0 if fit == 0 else 0.0
             replace_score = fatigue_score + rating_penalty + card_penalty + fit_penalty
-            if self.state.minute < 70 and replace_score < 4.5:
+            management_need = max(0, desired_total - team.substitutions_used)
+            if self.state.minute < 70 and replace_score < (2.0 if management_need > 0 else 3.5):
                 continue
             best_bench = None
-            best_gain = 0.0
+            best_gain = -999.0
             for bench_player in team.bench:
                 if bench_player.id in team.subbed_out_ids:
                     continue
-                gain = self._bench_sub_score(bench_player, player.slot) - self._bench_sub_score(
+                bench_fit = position_fit_level(bench_player.position, player.slot)
+                if bench_fit <= 0:
+                    continue
+                raw_gain = self._bench_sub_score(bench_player, player.slot) - self._bench_sub_score(
                     player.profile,
                     player.slot,
                     stamina_override=current_stamina_from_fatigue(player.fatigue),
                 )
+                freshness_gain = max(0.0, bench_player.current_stamina - live_stamina) * 0.34
+                fit_gain = 3.0 if bench_fit > fit else 0.0
+                late_urgency = max(0.0, 55.0 - live_stamina) * 0.08
+                gain = raw_gain + freshness_gain + fit_gain + late_urgency
                 if gain > best_gain:
                     best_gain = gain
                     best_bench = bench_player
             if best_bench is None:
                 continue
-            total_score = replace_score + best_gain
-            threshold = 7.0 if self.state.minute < 75 else 4.5
+            management_bonus = management_need * (2.2 if self.state.minute < 75 else 3.0)
+            total_score = replace_score + best_gain + management_bonus
+            threshold = 5.0 if self.state.minute < 75 else 2.5
+            if management_need > 0:
+                threshold -= 1.8 if self.state.minute < 75 else 1.2
+            if self.state.minute >= 84 and team.substitutions_used < 2:
+                threshold = min(threshold, 1.0)
+            reserve_candidates.append((total_score, player.profile.id, best_bench.id))
             if total_score >= threshold:
                 candidates.append((total_score, player.profile.id, best_bench.id))
 
         candidates.sort(reverse=True)
-        remaining = min(2 if self.state.minute < 80 else 3, 5 - team.substitutions_used)
+        reserve_candidates.sort(reverse=True)
+        remaining = min(desired_batch if desired_total > team.substitutions_used else 1, 5 - team.substitutions_used)
         chosen: list[Tuple[str, str]] = []
         used_out: set[str] = set()
         used_in: set[str] = set()
@@ -506,6 +562,15 @@ class MatchEngine:
             used_in.add(incoming_id)
             if len(chosen) >= remaining:
                 break
+        if self.state.minute >= 82 and team.substitutions_used + len(chosen) < 2:
+            for score, outgoing_id, incoming_id in reserve_candidates:
+                if outgoing_id in used_out or incoming_id in used_in:
+                    continue
+                chosen.append((outgoing_id, incoming_id))
+                used_out.add(outgoing_id)
+                used_in.add(incoming_id)
+                if team.substitutions_used + len(chosen) >= 2 or len(chosen) >= remaining:
+                    break
         return chosen
 
     def _maybe_apply_ai_substitutions(self) -> None:
@@ -635,6 +700,8 @@ class MatchEngine:
         self.state.real_elapsed_seconds += SLICE_SECONDS
         self._update_match_clock()
         self._record_live_stats_slice(self.state.elapsed_seconds - previous_display_seconds)
+        if self.state.minute >= 82 and (self.home.substitutions_used < 2 or self.away.substitutions_used < 2):
+            self._maybe_apply_ai_substitutions()
         if self.state.celebration_timer > 0 or self.state.restart_timer > 0:
             self._maybe_apply_ai_substitutions()
 
@@ -707,6 +774,7 @@ class MatchEngine:
         self.state.awaiting_start = True
         for player in self.home.xi + self.away.xi:
             player.fatigue = max(0.0, player.fatigue - 0.7)
+        self._maybe_apply_ai_substitutions()
         self.add_event("Half time")
         self._switch_team_sides()
         self._prepare_kickoff_positions("away")
