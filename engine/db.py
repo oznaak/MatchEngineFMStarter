@@ -1641,6 +1641,12 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     next_fixture = get_next_fixture_for_save(conn, save_id, club_id)
     current_date = str(save_row["current_date"] or season_start_date(int(save_row["season_year"] or current_season_year())).isoformat())
     today_fixture = get_playable_fixture_for_save(conn, save_id, club_id, current_date)
+    fixtures = list_save_fixtures(conn, save_id)
+    current_fixture = today_fixture or next_fixture
+    if current_fixture:
+        current_gameweek = int(current_fixture.get("gameweek", current_fixture.get("match_day", 1)) or 1)
+    else:
+        current_gameweek = max((int(fixture.get("gameweek", fixture.get("match_day", 1)) or 1) for fixture in fixtures), default=1)
     return {
         "save_id": int(save_row["id"]),
         "current_day": int(save_row["current_day"]),
@@ -1656,7 +1662,8 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
         "club_setups": club_setups,
         "players_by_club": players_by_club,
         "standings": load_save_standings(conn, save_id),
-        "fixtures": list_save_fixtures(conn, save_id),
+        "fixtures": fixtures,
+        "current_gameweek": current_gameweek,
         "next_fixture": next_fixture,
         "today_fixture": today_fixture,
         "training": load_save_training(conn, save_id, club_id),
@@ -1666,7 +1673,8 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
 def list_save_fixtures(conn: sqlite3.Connection, save_id: int) -> List[dict]:
     rows = conn.execute(
         """
-        SELECT f.id, f.match_day, f.fixture_date, hc.name AS home_name, ac.name AS away_name,
+        SELECT f.id, f.match_day, f.fixture_date, f.home_club_id, f.away_club_id,
+               hc.name AS home_name, ac.name AS away_name,
                f.played, f.home_goals, f.away_goals, f.report_json
         FROM fixtures f
         JOIN clubs hc ON hc.id = f.home_club_id
@@ -1680,8 +1688,11 @@ def list_save_fixtures(conn: sqlite3.Connection, save_id: int) -> List[dict]:
         {
             "id": int(row["id"]),
             "match_day": int(row["match_day"]),
+            "gameweek": int(row["match_day"]),
             "fixture_date": str(row["fixture_date"] or ""),
             "fixture_date_label": format_game_date(str(row["fixture_date"] or "")),
+            "home_club_id": str(row["home_club_id"]),
+            "away_club_id": str(row["away_club_id"]),
             "home_name": str(row["home_name"]),
             "away_name": str(row["away_name"]),
             "played": bool(row["played"]),

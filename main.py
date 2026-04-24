@@ -237,7 +237,38 @@ class ManagerGameApp:
         self.squad_draft_formation = "4-3-3"
         self.squad_draft_instructions = dict(DEFAULT_TEAM_INSTRUCTIONS)
         self.squad_draft_player_instructions: dict[str, dict[str, int]] = {}
+        self.fixtures_page: int = 1
         self._reload_state(apply_display=True)
+
+    def _fixture_gameweeks(self) -> list[int]:
+        if not self.overview:
+            return [1]
+        weeks = {
+            int(fixture.get("gameweek", fixture.get("match_day", 1)) or 1)
+            for fixture in self.overview.get("fixtures", [])
+        }
+        return sorted(week for week in weeks if week > 0) or [1]
+
+    def _clamp_fixtures_page(self) -> None:
+        weeks = self._fixture_gameweeks()
+        if self.fixtures_page < weeks[0]:
+            self.fixtures_page = weeks[0]
+            return
+        if self.fixtures_page > weeks[-1]:
+            self.fixtures_page = weeks[-1]
+
+    def _set_fixtures_page_to_current_round(self) -> None:
+        if not self.overview:
+            self.fixtures_page = 1
+            return
+        current = int(self.overview.get("current_gameweek") or 0)
+        if current <= 0:
+            today_fixture = self.overview.get("today_fixture")
+            next_fixture = self.overview.get("next_fixture")
+            fixture = today_fixture or next_fixture
+            current = int((fixture or {}).get("gameweek", (fixture or {}).get("match_day", 1)) or 1)
+        self.fixtures_page = current
+        self._clamp_fixtures_page()
 
     def _reload_state(self, apply_display: bool = False) -> None:
         with db_session(self.db_path) as conn:
@@ -272,6 +303,7 @@ class ManagerGameApp:
                 self.overview = None
         if self.overview:
             self._load_squad_draft()
+            self._clamp_fixtures_page()
         if apply_display:
             self._apply_renderer_options()
 
@@ -1363,6 +1395,10 @@ class ManagerGameApp:
             return
         if action.startswith("overview_tab:"):
             tab = action.split(":", 1)[1]
+            if tab in {"matches", "matches_fixtures"}:
+                self.overview_tab = "matches_fixtures"
+                self._set_fixtures_page_to_current_round()
+                return
             self.squad_drag_player_id = None
             self.squad_drag_pos = None
             self.squad_mouse_down_player_id = None
@@ -1427,6 +1463,25 @@ class ManagerGameApp:
         if action == "back:match_report":
             self.fixture_report = None
             self.fixture_report_selected_player_id = None
+            self.screen = "overview"
+            return
+        if action == "fixtures:page:prev":
+            self.fixtures_page = max(1, self.fixtures_page - 1)
+            self._clamp_fixtures_page()
+            return
+        if action == "fixtures:page:next":
+            self.fixtures_page = self.fixtures_page + 1
+            self._clamp_fixtures_page()
+            return
+        if action == "fixtures:prev_gameweek":
+            self.fixtures_page = max(1, self.fixtures_page - 1)
+            self._clamp_fixtures_page()
+            return
+        if action == "fixtures:next_gameweek":
+            self.fixtures_page = self.fixtures_page + 1
+            self._clamp_fixtures_page()
+            return
+        if action == "back:fixtures":
             self.screen = "overview"
             return
 
@@ -1539,6 +1594,8 @@ class ManagerGameApp:
                 "overview": self.overview or {},
                 "selected_club_id": self.overview_club_id,
                 "overview_tab": self.overview_tab,
+                "fixtures_page": self.fixtures_page,
+                "selected_gameweek": self.fixtures_page,
                 "squad_draft": {
                     "formation": self.squad_draft_formation,
                     "xi_ids": self.squad_draft_xi_ids,

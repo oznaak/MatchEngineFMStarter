@@ -32,7 +32,12 @@
         {"id":"A12","name":"Aaron Ramsdale","position":"GK","ovr":76},
         {"id":"A13","name":"Jakub Kiwior","position":"CB","ovr":77},
         {"id":"A14","name":"Jorginho","position":"CM","ovr":78},
-        {"id":"A15","name":"Leandro Trossard","position":"ST","ovr":77}
+        {"id":"A15","name":"Leandro Trossard","position":"ST","ovr":77},
+        {"id":"A16","name":"Myles Lewis-Skelly","position":"LB","ovr":68},
+        {"id":"A17","name":"Riccardo Calafiori","position":"CB","ovr":75},
+        {"id":"A18","name":"Mikel Arteta","position":"CM","ovr":69},
+        {"id":"A19","name":"Raheem Sterling","position":"LW","ovr":76},
+        {"id":"A20","name":"Ethan Nwaneri","position":"RW","ovr":73}
       ]
     },
     {
@@ -66,7 +71,12 @@
         {"id":"B12","name":"Altay Bayindir","position":"GK","ovr":73},
         {"id":"B13","name":"Victor Lindelof","position":"CB","ovr":74},
         {"id":"B14","name":"Scott McTominay","position":"CM","ovr":75},
-        {"id":"B15","name":"Alejandro Garnacho","position":"ST","ovr":74}
+        {"id":"B15","name":"Alejandro Garnacho","position":"ST","ovr":74},
+        {"id":"B16","name":"Leny Yoro","position":"CB","ovr":75},
+        {"id":"B17","name":"Kobbie Mainoo","position":"CM","ovr":73},
+        {"id":"B18","name":"Amad Diallo","position":"RW","ovr":72},
+        {"id":"B19","name":"Tyrell Malacia","position":"LB","ovr":70},
+        {"id":"B20","name":"Manuel Ugarte","position":"DM","ovr":75}
       ]
     },
     {
@@ -91,7 +101,12 @@
         {"id":"C12","name":"Djordje Petrovic","position":"GK","ovr":68},
         {"id":"C13","name":"Axel Disasi","position":"CB","ovr":69},
         {"id":"C14","name":"Conor Gallagher","position":"CM","ovr":70},
-        {"id":"C15","name":"Christopher Nkunku","position":"ST","ovr":69}
+        {"id":"C15","name":"Christopher Nkunku","position":"ST","ovr":69},
+        {"id":"C16","name":"Marc Cucurella","position":"LB","ovr":74},
+        {"id":"C17","name":"Romeo Lavia","position":"DM","ovr":71},
+        {"id":"C18","name":"Lesley Ugochukwu","position":"CM","ovr":68},
+        {"id":"C19","name":"Deivid Washington","position":"ST","ovr":70},
+        {"id":"C20","name":"Omari Kellyman","position":"CM","ovr":66}
       ]
     },
     {
@@ -116,7 +131,168 @@
         {"id":"D12","name":"Stefan Ortega","position":"GK","ovr":62},
         {"id":"D13","name":"Manuel Akanji","position":"CB","ovr":63},
         {"id":"D14","name":"Mateo Kovacic","position":"CM","ovr":64},
-        {"id":"D15","name":"Julian Alvarez","position":"ST","ovr":63}
+        {"id":"D15","name":"Julian Alvarez","position":"ST","ovr":63},
+        {"id":"D16","name":"Nathan Ake","position":"CB","ovr":71},
+        {"id":"D17","name":"Rico Lewis","position":"RB","ovr":69},
+        {"id":"D18","name":"Jack Grealish","position":"LW","ovr":75},
+        {"id":"D19","name":"Matheus Nunes","position":"CM","ovr":73},
+        {"id":"D20","name":"Oscar Bobb","position":"RW","ovr":70}
+      ]
+    },
+    {
+      "id": "E",
+      "name": "Liverpool",
+      "colors": {
+        "primary": "#C8102E",
+        "secondary": "#F3EAC2"
+      },
+      "tactics": {
+        "tempo": 60,
+        "width": 58,
+        "defensive_line": 52,
+        "pressing": 72,
+        "directness": 55,
+        "crossing": 48,
+        "counter": 68
+      },
+      "players": [
+        {"id":"E01","name":"Alisson Becker","position":"GK","ovr":82},
+        {"id":"E02","name":"Andrew Robertson","position":"LB","ovr":80},
+        {"id":"E03","name":"Virgil van Dijk","position":"CB","ovr":84},
+        {"id":"E04","name":"Ibrahima Konate","position":"CB","ovr":81},
+        {"id":"E05","name":"Trent Alexander-Arnold","position":"RB","ovr":82},
+        {"id":"E06","name":"Alexis Mac Allister","position":"DM","ovr":81},
+        {"id":"E07","name":"Ryan Gravenberch","position":"CM","ovr":78},
+        {"id":"E08","name":"Mohamed Salah","position":"AM","ovr":83},
+        {"id":"E09","name":"Luis Diaz","position":"LW","ovr":81},
+        {"id":"E10","name":"Darwin Nunez","position":"ST","ovr":79},
+        {"id":"E11","name":"Cody Gakpo","position":"RW","ovr":78},
+        {"id":"E12","name":"Caoimhin Kelleher","position":"GK","ovr":75},
+        {"id":"E13","name":"Jarell Quansah","position":"CB","ovr":73},
+        {"id":"E14","name":"Harvey Elliott","position":"CM","ovr":74},
+        {"id":"E15","name":"Conor Bradley","position":"RB","ovr":72},
+        {"id":"E16","name":"Wataru Endo","position":"DM","ovr":71},
+        {"id":"E17","name":"Joe Gomez","position":"LB","ovr":70},
+        {"id":"E18","name":"Dominik Szoboszlai","position":"AM","ovr":76},
+        {"id":"E19","name":"Diogo Jota","position":"LW","ovr":77},
+        {"id":"E20","name":"Curtis Jones","position":"CM","ovr":75}
+      ]
+    },
+    {
+      "id": "F",
+      "name": "Tottenham Hotspur",
+      "colors": {
+        "primary": "#13294B",
+        "secondary": "#FFFFFF"
+      },
+      "tactics": {
+        "tempo": 62,
+        "width": 55,
+        "defensive_line": 45,
+        "pressing": 65,
+        "directness": 58,
+        "crossing": 52,
+        "counter": 72
+      },
+      "players": [
+        {"id":"F01","name":"Guglielmo Vicario","position":"GK","ovr":78},
+        {"id":"F02","name":"Pedro Porro","position":"LB","ovr":77},
+        {"id":"F03","name":"Cristian Romero","position":"CB","ovr":80},
+        {"id":"F04","name":"Mickey van de Ven","position":"CB","ovr":79},
+        {"id":"F05","name":"Destiny Udogie","position":"RB","ovr":76},
+        {"id":"F06","name":"Rodrigo Bentancur","position":"DM","ovr":78},
+        {"id":"F07","name":"James Maddison","position":"CM","ovr":79},
+        {"id":"F08","name":"Son Heung-min","position":"AM","ovr":80},
+        {"id":"F09","name":"Brennan Johnson","position":"LW","ovr":75},
+        {"id":"F10","name":"Dominic Solanke","position":"ST","ovr":78},
+        {"id":"F11","name":"Dejan Kulusevski","position":"RW","ovr":77},
+        {"id":"F12","name":"Fraser Forster","position":"GK","ovr":72},
+        {"id":"F13","name":"Radu Dragusin","position":"CB","ovr":74},
+        {"id":"F14","name":"Yves Bissouma","position":"CM","ovr":75},
+        {"id":"F15","name":"Lucas Bergvall","position":"CM","ovr":73},
+        {"id":"F16","name":"Archie Gray","position":"DM","ovr":71},
+        {"id":"F17","name":"Sergio Reguilon","position":"LB","ovr":70},
+        {"id":"F18","name":"Timo Werner","position":"LW","ovr":72},
+        {"id":"F19","name":"Wilson Odobert","position":"RW","ovr":73},
+        {"id":"F20","name":"Richarlison","position":"ST","ovr":76}
+      ]
+    },
+    {
+      "id": "G",
+      "name": "West Ham United",
+      "colors": {
+        "primary": "#60123B",
+        "secondary": "#1BB1E7"
+      },
+      "tactics": {
+        "tempo": 52,
+        "width": 50,
+        "defensive_line": 48,
+        "pressing": 50,
+        "directness": 55,
+        "crossing": 58,
+        "counter": 60
+      },
+      "players": [
+        {"id":"G01","name":"Alphonse Areola","position":"GK","ovr":76},
+        {"id":"G02","name":"Emerson Palmieri","position":"LB","ovr":74},
+        {"id":"G03","name":"Konstantinos Mavropanos","position":"CB","ovr":76},
+        {"id":"G04","name":"Thilo Kehrer","position":"CB","ovr":73},
+        {"id":"G05","name":"Vladimir Coufal","position":"RB","ovr":74},
+        {"id":"G06","name":"Tomas Soucek","position":"DM","ovr":77},
+        {"id":"G07","name":"Edmond Alvarez","position":"CM","ovr":72},
+        {"id":"G08","name":"Lucas Paqueta","position":"AM","ovr":78},
+        {"id":"G09","name":"Jarrod Bowen","position":"LW","ovr":78},
+        {"id":"G10","name":"Michail Antonio","position":"ST","ovr":75},
+        {"id":"G11","name":"Mohammed Kudus","position":"RW","ovr":76},
+        {"id":"G12","name":"Lukasz Fabianski","position":"GK","ovr":72},
+        {"id":"G13","name":"Nayef Aguerd","position":"CB","ovr":74},
+        {"id":"G14","name":"James Ward-Prowse","position":"CM","ovr":75},
+        {"id":"G15","name":"Carlos Soler","position":"CM","ovr":73},
+        {"id":"G16","name":"Aaron Cresswell","position":"LB","ovr":70},
+        {"id":"G17","name":"Flynn Cornet","position":"LW","ovr":71},
+        {"id":"G18","name":"Danny Ings","position":"ST","ovr":72},
+        {"id":"G19","name":"Ben Johnson","position":"RB","ovr":68},
+        {"id":"G20","name":"Kalvin Phillips","position":"DM","ovr":74}
+      ]
+    },
+    {
+      "id": "H",
+      "name": "Newcastle United",
+      "colors": {
+        "primary": "#241F20",
+        "secondary": "#FFFFFF"
+      },
+      "tactics": {
+        "tempo": 58,
+        "width": 54,
+        "defensive_line": 50,
+        "pressing": 58,
+        "directness": 52,
+        "crossing": 50,
+        "counter": 65
+      },
+      "players": [
+        {"id":"H01","name":"Nick Pope","position":"GK","ovr":77},
+        {"id":"H02","name":"Lewis Hall","position":"LB","ovr":74},
+        {"id":"H03","name":"Fabian Schar","position":"CB","ovr":78},
+        {"id":"H04","name":"Sverre Ingels Nash","position":"CB","ovr":75},
+        {"id":"H05","name":"Kieran Trippier","position":"RB","ovr":76},
+        {"id":"H06","name":"Bruno Guimaraes","position":"DM","ovr":81},
+        {"id":"H07","name":"Joe Willock","position":"CM","ovr":76},
+        {"id":"H08","name":"Anthony Gordon","position":"AM","ovr":77},
+        {"id":"H09","name":"Harvey Barnes","position":"LW","ovr":77},
+        {"id":"H10","name":"Alexander Isak","position":"ST","ovr":80},
+        {"id":"H11","name":"Jacob Murphy","position":"RW","ovr":75},
+        {"id":"H12","name":"Martin Dubravka","position":"GK","ovr":72},
+        {"id":"H13","name":"Jamal Lewis","position":"LB","ovr":70},
+        {"id":"H14","name":"Sandro Tonali","position":"CM","ovr":78},
+        {"id":"H15","name":"Sean Longstaff","position":"CM","ovr":73},
+        {"id":"H16","name":"Matt Ritchie","position":"LM","ovr":68},
+        {"id":"H17","name":"Miguel Almiron","position":"RW","ovr":74},
+        {"id":"H18","name":"Callum Wilson","position":"ST","ovr":75},
+        {"id":"H19","name":"Lewis Miley","position":"CM","ovr":72},
+        {"id":"H20","name":"Dan Burn","position":"CB","ovr":72}
       ]
     }
   ]
