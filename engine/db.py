@@ -9,6 +9,17 @@ from typing import Dict, List
 
 from .loader import merge_player_attributes
 from .models import Club, PlayerProfile, infer_preferred_foot, normalize_player_instruction_map, normalize_preferred_foot, normalize_team_instructions
+from .training import (
+    PLAYER_TRAINING_FOCUS_OPTIONS,
+    TEAM_TRAINING_FOCUS_OPTIONS,
+    TRAINING_INTENSITY_OPTIONS,
+    default_player_training_focus,
+    normalize_player_training_focus,
+    normalize_training_focus,
+    normalize_training_intensity,
+    training_attribute_gain,
+    training_stamina_delta,
+)
 
 DEFAULT_TACTICS = {
     "tempo": 50.0,
@@ -236,6 +247,37 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             suspension_matches_remaining INTEGER NOT NULL DEFAULT 0,
             injury_days_remaining INTEGER NOT NULL DEFAULT 0,
             injury_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (save_id, player_id),
+            FOREIGN KEY (save_id) REFERENCES saves(id),
+            FOREIGN KEY (player_id) REFERENCES players(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS save_player_attributes (
+            save_id INTEGER NOT NULL,
+            player_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value REAL NOT NULL,
+            PRIMARY KEY (save_id, player_id, key),
+            FOREIGN KEY (save_id) REFERENCES saves(id),
+            FOREIGN KEY (player_id) REFERENCES players(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS save_training_settings (
+            save_id INTEGER NOT NULL,
+            club_id TEXT NOT NULL,
+            team_focus TEXT NOT NULL DEFAULT 'balanced',
+            intensity TEXT NOT NULL DEFAULT 'normal',
+            updated_day INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (save_id, club_id),
+            FOREIGN KEY (save_id) REFERENCES saves(id),
+            FOREIGN KEY (club_id) REFERENCES clubs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS save_player_training (
+            save_id INTEGER NOT NULL,
+            player_id TEXT NOT NULL,
+            focus TEXT NOT NULL DEFAULT 'auto',
+            updated_day INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (save_id, player_id),
             FOREIGN KEY (save_id) REFERENCES saves(id),
             FOREIGN KEY (player_id) REFERENCES players(id)
@@ -584,7 +626,19 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
             """,
             (int(save_id), int(save_id)),
         ).fetchall()
-    attribute_rows = conn.execute("SELECT player_id, key, value FROM player_attributes").fetchall()
+    if save_id is None:
+        attribute_rows = conn.execute("SELECT player_id, key, value FROM player_attributes").fetchall()
+    else:
+        attribute_rows = conn.execute(
+            """
+            SELECT p.id AS player_id, pa.key, COALESCE(spa.value, pa.value) AS value
+            FROM players p
+            LEFT JOIN player_attributes pa ON pa.player_id = p.id
+            LEFT JOIN save_player_attributes spa
+              ON spa.save_id = ? AND spa.player_id = p.id AND spa.key = pa.key
+            """,
+            (int(save_id),),
+        ).fetchall()
     setup_rows = conn.execute(
         """
         SELECT save_id, club_id, formation, xi_json, bench_json, instructions_json, player_instructions_json
@@ -835,15 +889,28 @@ def list_league_clubs(conn: sqlite3.Connection, league_id: str) -> List[dict]:
 
 
 def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | None = None) -> List[dict]:
-    attribute_rows = conn.execute(
-        """
-        SELECT p.id AS player_id, pa.key, pa.value
-        FROM players p
-        LEFT JOIN player_attributes pa ON pa.player_id = p.id
-        WHERE p.club_id = ?
-        """,
-        (club_id,),
-    ).fetchall()
+    if save_id is None:
+        attribute_rows = conn.execute(
+            """
+            SELECT p.id AS player_id, pa.key, pa.value
+            FROM players p
+            LEFT JOIN player_attributes pa ON pa.player_id = p.id
+            WHERE p.club_id = ?
+            """,
+            (club_id,),
+        ).fetchall()
+    else:
+        attribute_rows = conn.execute(
+            """
+            SELECT p.id AS player_id, pa.key, COALESCE(spa.value, pa.value) AS value
+            FROM players p
+            LEFT JOIN player_attributes pa ON pa.player_id = p.id
+            LEFT JOIN save_player_attributes spa
+              ON spa.save_id = ? AND spa.player_id = p.id AND spa.key = pa.key
+            WHERE p.club_id = ?
+            """,
+            (int(save_id), club_id),
+        ).fetchall()
     attrs_by_player: Dict[str, Dict[str, float]] = {}
     for row in attribute_rows:
         if row["key"] is None:
@@ -1126,6 +1193,191 @@ def seed_save_player_status_defaults(conn: sqlite3.Connection, save_id: int) -> 
     )
 
 
+def seed_save_training_defaults(conn: sqlite3.Connection, save_id: int, club_id: str | None = None) -> None:
+    if club_id is None:
+        club_rows = conn.execute("SELECT DISTINCT club_id FROM players").fetchall()
+        club_ids = [str(row["club_id"]) for row in club_rows]
+    else:
+        club_ids = [str(club_id)]
+    for target_club_id in club_ids:
+        conn.execute(
+            """
+            INSERT INTO save_training_settings (save_id, club_id, team_focus, intensity, updated_day)
+            VALUES (?, ?, 'balanced', 'normal', 0)
+            ON CONFLICT(save_id, club_id) DO NOTHING
+            """,
+            (int(save_id), target_club_id),
+        )
+    players = conn.execute(
+        """
+        SELECT p.id, p.name, p.position, p.ovr
+        FROM players p
+        WHERE ? IS NULL OR p.club_id = ?
+        """,
+        (club_id, club_id),
+    ).fetchall()
+    if not players:
+        return
+    attr_rows = conn.execute("SELECT player_id, key, value FROM player_attributes").fetchall()
+    attrs_by_player: Dict[str, Dict[str, float]] = {}
+    for row in attr_rows:
+        attrs_by_player.setdefault(str(row["player_id"]), {})[str(row["key"])] = float(row["value"])
+    entries = []
+    for row in players:
+        profile = PlayerProfile(
+            id=str(row["id"]),
+            name=str(row["name"]),
+            position=str(row["position"]),
+            ovr=int(row["ovr"]),
+            attributes=merge_player_attributes(
+                int(row["ovr"]),
+                str(row["position"]),
+                attrs_by_player.get(str(row["id"]), {}),
+                player_id=str(row["id"]),
+                name=str(row["name"]),
+            ),
+        )
+        entries.append((int(save_id), profile.id, default_player_training_focus(profile), 0))
+    conn.executemany(
+        """
+        INSERT INTO save_player_training (save_id, player_id, focus, updated_day)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(save_id, player_id) DO NOTHING
+        """,
+        entries,
+    )
+
+
+def load_save_training(conn: sqlite3.Connection, save_id: int, club_id: str) -> dict:
+    seed_save_training_defaults(conn, save_id, club_id)
+    row = conn.execute(
+        """
+        SELECT team_focus, intensity, updated_day
+        FROM save_training_settings
+        WHERE save_id = ? AND club_id = ?
+        """,
+        (int(save_id), str(club_id)),
+    ).fetchone()
+    player_rows = conn.execute(
+        """
+        SELECT p.id, COALESCE(spt.focus, 'auto') AS focus
+        FROM players p
+        LEFT JOIN save_player_training spt
+          ON spt.save_id = ? AND spt.player_id = p.id
+        WHERE p.club_id = ?
+        ORDER BY p.id
+        """,
+        (int(save_id), str(club_id)),
+    ).fetchall()
+    return {
+        "team_focus": normalize_training_focus(row["team_focus"] if row else "balanced"),
+        "intensity": normalize_training_intensity(row["intensity"] if row else "normal"),
+        "focus_options": [
+            {"value": key, "label": str(value["label"])}
+            for key, value in TEAM_TRAINING_FOCUS_OPTIONS.items()
+        ],
+        "intensity_options": [
+            {"value": key, "label": str(value["label"])}
+            for key, value in TRAINING_INTENSITY_OPTIONS.items()
+        ],
+        "player_focus_options": [
+            {"value": key, "label": str(value["label"])}
+            for key, value in PLAYER_TRAINING_FOCUS_OPTIONS.items()
+        ],
+        "player_focuses": {
+            str(player["id"]): normalize_player_training_focus(player["focus"])
+            for player in player_rows
+        },
+    }
+
+
+def save_training_settings(conn: sqlite3.Connection, save_id: int, club_id: str, team_focus: str, intensity: str) -> None:
+    focus = normalize_training_focus(team_focus)
+    normalized_intensity = normalize_training_intensity(intensity)
+    conn.execute(
+        """
+        INSERT INTO save_training_settings (save_id, club_id, team_focus, intensity, updated_day)
+        VALUES (?, ?, ?, ?, 0)
+        ON CONFLICT(save_id, club_id) DO UPDATE SET
+            team_focus=excluded.team_focus,
+            intensity=excluded.intensity
+        """,
+        (int(save_id), str(club_id), focus, normalized_intensity),
+    )
+
+
+def save_player_training_focus(conn: sqlite3.Connection, save_id: int, player_id: str, focus: str) -> None:
+    normalized = normalize_player_training_focus(focus)
+    conn.execute(
+        """
+        INSERT INTO save_player_training (save_id, player_id, focus, updated_day)
+        VALUES (?, ?, ?, 0)
+        ON CONFLICT(save_id, player_id) DO UPDATE SET focus=excluded.focus
+        """,
+        (int(save_id), str(player_id), normalized),
+    )
+
+
+def _save_training_attribute(conn: sqlite3.Connection, save_id: int, player_id: str, key: str, value: float) -> None:
+    conn.execute(
+        """
+        INSERT INTO save_player_attributes (save_id, player_id, key, value)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(save_id, player_id, key) DO UPDATE SET value=excluded.value
+        """,
+        (int(save_id), str(player_id), str(key), round(float(value), 3)),
+    )
+
+
+def apply_training_day(conn: sqlite3.Connection, save_id: int, club_id: str, current_day: int) -> dict:
+    seed_save_player_condition_defaults(conn, save_id)
+    seed_save_player_status_defaults(conn, save_id)
+    seed_save_training_defaults(conn, save_id, club_id)
+    clubs = load_clubs_from_db(conn, save_id=save_id)
+    club = clubs.get(str(club_id))
+    if club is None:
+        return {"players_trained": 0, "attributes_changed": 0, "stamina_cost": 0.0}
+    training = load_save_training(conn, save_id, club_id)
+    team_focus = normalize_training_focus(training["team_focus"])
+    intensity = normalize_training_intensity(training["intensity"])
+    team_attrs = set(TEAM_TRAINING_FOCUS_OPTIONS[team_focus]["attributes"])
+    players_trained = 0
+    attributes_changed = 0
+    stamina_cost = 0.0
+    for player in club.players:
+        if not player.is_available:
+            continue
+        player_focus = normalize_player_training_focus(training["player_focuses"].get(player.id), player)
+        focus_attrs = tuple(PLAYER_TRAINING_FOCUS_OPTIONS[player_focus]["attributes"]) or tuple(team_attrs)
+        attrs_to_train = sorted(set(team_attrs).union(focus_attrs))
+        for attr in attrs_to_train:
+            current = float(player.attributes.get(attr, player.ovr))
+            gain = training_attribute_gain(
+                player,
+                attr,
+                focus_match=attr in focus_attrs,
+                intensity=intensity,
+                current_day=int(current_day),
+            )
+            if gain <= 0.0:
+                continue
+            updated = min(99.0, current + gain)
+            _save_training_attribute(conn, save_id, player.id, attr, updated)
+            player.attributes[attr] = updated
+            attributes_changed += 1
+        delta = training_stamina_delta(player, team_focus, intensity)
+        if delta < 0:
+            next_stamina = max(35.0, player.current_stamina + delta)
+            stamina_cost += max(0.0, player.current_stamina - next_stamina)
+            save_save_player_condition(conn, save_id, player.id, next_stamina, current_day)
+        players_trained += 1
+    return {
+        "players_trained": players_trained,
+        "attributes_changed": attributes_changed,
+        "stamina_cost": round(stamina_cost, 2),
+    }
+
+
 def advance_save_player_status_days(conn: sqlite3.Connection, save_id: int, days: int) -> None:
     if days <= 0:
         return
@@ -1304,6 +1556,7 @@ def create_save_game(conn: sqlite3.Connection, manager_name: str, league_id: str
     seed_save_player_condition_defaults(conn, save_id)
     seed_save_player_status_defaults(conn, save_id)
     seed_save_club_setups(conn, save_id)
+    seed_save_training_defaults(conn, save_id, club_id)
     set_metadata(conn, "active_save_id", str(save_id))
     conn.commit()
     return save_id
@@ -1335,6 +1588,9 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
     conn.execute("DELETE FROM fixtures WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_player_condition WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_player_status WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM save_player_attributes WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM save_training_settings WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM save_player_training WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_club_setups WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM saves WHERE id = ?", (int(save_id),))
     remaining = conn.execute(
@@ -1352,6 +1608,7 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     seed_save_player_condition_defaults(conn, save_id)
     seed_save_player_status_defaults(conn, save_id)
     seed_save_club_setups(conn, save_id)
+    seed_save_training_defaults(conn, save_id)
     normalize_new_save_player_condition(conn, save_id)
     conn.commit()
     save_row = conn.execute(
@@ -1402,6 +1659,7 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
         "fixtures": list_save_fixtures(conn, save_id),
         "next_fixture": next_fixture,
         "today_fixture": today_fixture,
+        "training": load_save_training(conn, save_id, club_id),
     }
 
 

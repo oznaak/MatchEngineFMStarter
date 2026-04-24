@@ -13,6 +13,7 @@ from engine.db import (
     delete_save_game,
     db_session,
     advance_save_player_status_days,
+    apply_training_day,
     get_current_day,
     get_fixture_report,
     get_next_fixture_for_save,
@@ -27,7 +28,9 @@ from engine.db import (
     load_save_overview,
     save_fixture_result,
     save_app_option,
+    save_player_training_focus,
     save_save_club_setup,
+    save_training_settings,
     set_save_current_day,
     set_active_save_id,
 )
@@ -521,6 +524,28 @@ class ManagerGameApp:
         self.squad_draft_player_instructions[player_id][key] = updated
         self._persist_squad_draft()
 
+    def _change_training_settings(self, team_focus: str | None = None, intensity: str | None = None) -> None:
+        if self.active_save_id is None or not self.overview:
+            return
+        club_id = self._managed_club_id()
+        if not club_id:
+            return
+        training = dict(self.overview.get("training", {}))
+        next_focus = str(team_focus or training.get("team_focus", "balanced"))
+        next_intensity = str(intensity or training.get("intensity", "normal"))
+        with db_session(self.db_path) as conn:
+            save_training_settings(conn, self.active_save_id, club_id, next_focus, next_intensity)
+            conn.commit()
+        self._reload_state()
+
+    def _change_player_training_focus(self, player_id: str, focus: str) -> None:
+        if self.active_save_id is None or not self.overview:
+            return
+        with db_session(self.db_path) as conn:
+            save_player_training_focus(conn, self.active_save_id, player_id, focus)
+            conn.commit()
+        self._reload_state()
+
     def _update_player_instruction_from_pos(self, pos: tuple[int, int]) -> None:
         player_id = self.squad_slider_drag_player_id
         key = self.squad_slider_drag_key
@@ -943,6 +968,10 @@ class ManagerGameApp:
             if save_row is None:
                 return
             next_day = int(save_row["current_day"]) + 1
+            managed_club_id = self._managed_club_id()
+            if managed_club_id:
+                apply_training_day(conn, self.active_save_id, managed_club_id, next_day)
+                clubs = load_clubs_from_db(conn, save_id=self.active_save_id)
             advance_condition_days(clubs, 1)
             advance_save_player_status_days(conn, self.active_save_id, 1)
             save_condition_state_to_conn(conn, clubs, next_day, save_id=self.active_save_id)
@@ -1364,6 +1393,16 @@ class ManagerGameApp:
         if action.startswith("squad:player_instruction:"):
             _, _, _, player_id, key, delta_text = action.split(":", 5)
             self._change_player_instruction(player_id, key, int(delta_text))
+            return
+        if action.startswith("training:team_focus:"):
+            self._change_training_settings(team_focus=action.split(":", 2)[2])
+            return
+        if action.startswith("training:intensity:"):
+            self._change_training_settings(intensity=action.split(":", 2)[2])
+            return
+        if action.startswith("training:player_focus:"):
+            _, _, player_id, focus = action.split(":", 3)
+            self._change_player_training_focus(player_id, focus)
             return
         if action.startswith("select_save:"):
             self.selected_save_id = int(action.split(":", 1)[1])

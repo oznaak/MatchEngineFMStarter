@@ -2570,55 +2570,140 @@ class Renderer:
         secondary: Tuple[int, int, int],
     ) -> None:
         squad_draft = view.get("squad_draft", {})
-        instructions = dict(DEFAULT_TEAM_INSTRUCTIONS)
-        instructions.update(squad_draft.get("instructions", {}))
+        managed_club_id = overview.get("club_id")
+        players = overview.get("players_by_club", {}).get(managed_club_id, [])
+        selected_player_id = squad_draft.get("selected_player_id")
+        selected_player = next((player for player in players if player["id"] == selected_player_id), None)
+        if selected_player is None and players:
+            selected_player = players[0]
+            selected_player_id = selected_player["id"]
+        training = dict(overview.get("training", {}))
+        team_focus = str(training.get("team_focus", "balanced"))
+        intensity = str(training.get("intensity", "normal"))
+        player_focuses = dict(training.get("player_focuses", {}))
+        focus_options = list(training.get("focus_options", []))
+        intensity_options = list(training.get("intensity_options", []))
+        player_focus_options = list(training.get("player_focus_options", []))
         content_y = 106
         content_h = SCREEN_H - content_y - 24
         left = pygame.Rect(20, content_y, (SCREEN_W - 58) // 2, content_h)
         right = pygame.Rect(left.right + 18, content_y, SCREEN_W - left.right - 38, content_h)
-        self._draw_panel(left, "TRAINING HUB", (16, 18, 20), (245, 245, 245))
-        self._draw_panel(right, "TRAINING NOTES", (16, 18, 20), (245, 245, 245))
+        self._draw_panel(left, "TEAM TRAINING", (16, 18, 20), (245, 245, 245))
+        self._draw_panel(right, "INDIVIDUAL FOCUS", (16, 18, 20), (245, 245, 245))
 
-        settings = [
-            ("Passing", TEAM_INSTRUCTION_LABELS["passing"][instructions["passing"]]),
-            ("Width", TEAM_INSTRUCTION_LABELS["width"][instructions["width"]]),
-            ("Playstyle", TEAM_INSTRUCTION_LABELS["playstyle"][instructions["playstyle"]]),
-            ("Tempo", TEAM_INSTRUCTION_LABELS["tempo"][instructions["tempo"]]),
-            ("Gameplan", TEAM_INSTRUCTION_LABELS["gameplan"][instructions["gameplan"]]),
-        ]
-        chip_y = left.y + 52
-        for label, value in settings:
-            card = pygame.Rect(left.x + 18, chip_y, left.width - 36, 54)
-            pygame.draw.rect(self.screen, (22, 24, 30), card, border_radius=8)
-            pygame.draw.rect(self.screen, (54, 58, 70), card, 1, border_radius=8)
-            draw_text(self.screen, label.upper(), card.x + 12, card.y + 10, (248, 187, 32), scale=1)
-            draw_text(self.screen, value, card.x + 12, card.y + 28, (245, 245, 245), scale=1)
-            chip_y += 64
+        draw_text(self.screen, "WEEKLY FOCUS", left.x + 18, left.y + 52, (248, 187, 32), scale=1)
+        button_y = left.y + 74
+        button_x = left.x + 18
+        max_x = left.right - 18
+        for option in focus_options:
+            value = str(option.get("value", "balanced"))
+            label = str(option.get("label", value)).upper()
+            width = min(max(82, text_width(label, 1) + 20), 148)
+            if button_x + width > max_x:
+                button_x = left.x + 18
+                button_y += 34
+            rect = pygame.Rect(button_x, button_y, width, 26)
+            active = value == team_focus
+            fill = (248, 187, 32) if active else (36, 52, 96)
+            text = (24, 24, 28) if active else (245, 245, 245)
+            self._draw_ui_button(rect, label, fill, text, f"training:team_focus:{value}", scale=1)
+            button_x += width + 8
 
-        columns = [
-            ("PASSING", [TEAM_INSTRUCTION_LABELS["passing"][instructions["passing"]], "AFFECTS PASS RISK", "LIVE IN ENGINE", "CLICK IN TACTICS"]),
-            ("WIDTH", [TEAM_INSTRUCTION_LABELS["width"][instructions["width"]], "CENTER OR WINGS", "SHAPE + THROW-INS", "LIVE IN ENGINE"]),
-            ("SET PIECES", [TEAM_INSTRUCTION_LABELS["set_pieces"][instructions["set_pieces"]], "CORNERS", "FREE KICKS", "THROW-INS"]),
-            ("CLOCK", [TEAM_INSTRUCTION_LABELS["time_management"][instructions["time_management"]], "LEAD MANAGEMENT", "GAME STATE RULES", "LIVE IN ENGINE"]),
+        intensity_y = button_y + 46
+        draw_text(self.screen, "INTENSITY", left.x + 18, intensity_y, (248, 187, 32), scale=1)
+        ix = left.x + 18
+        for option in intensity_options:
+            value = str(option.get("value", "normal"))
+            label = str(option.get("label", value)).upper()
+            width = max(92, text_width(label, 1) + 22)
+            rect = pygame.Rect(ix, intensity_y + 22, width, 28)
+            active = value == intensity
+            fill = (248, 187, 32) if active else (46, 48, 56)
+            text = (24, 24, 28) if active else (245, 245, 245)
+            self._draw_ui_button(rect, label, fill, text, f"training:intensity:{value}", scale=1)
+            ix += width + 10
+
+        summary_y = intensity_y + 70
+        load_labels = {"light": "LOW LOAD", "normal": "BALANCED LOAD", "double": "HIGH LOAD"}
+        focus_labels = {str(option.get("value")): str(option.get("label")) for option in focus_options}
+        cards = [
+            ("FOCUS", focus_labels.get(team_focus, team_focus).upper()),
+            ("WORKLOAD", load_labels.get(intensity, intensity.upper())),
+            ("DEVELOPMENT", "SAVE-SCOPED ATTRIBUTE GROWTH"),
+            ("RECOVERY", "INJURED PLAYERS SKIP TRAINING"),
         ]
-        card_w = (right.width - 54) // 2
-        card_h = 132
-        start_x = right.x + 18
-        start_y = right.y + 52
-        for idx, (title, items) in enumerate(columns):
-            col = idx % 2
-            row = idx // 2
-            card = pygame.Rect(start_x + col * (card_w + 18), start_y + row * (card_h + 18), card_w, card_h)
+        for idx, (title, value) in enumerate(cards):
+            card_w = (left.width - 54) // 2
+            card = pygame.Rect(left.x + 18 + (idx % 2) * (card_w + 18), summary_y + (idx // 2) * 86, card_w, 72)
             pygame.draw.rect(self.screen, (22, 24, 30), card, border_radius=8)
             pygame.draw.rect(self.screen, (54, 58, 70), card, 1, border_radius=8)
             draw_text(self.screen, title, card.x + 12, card.y + 10, (248, 187, 32), scale=1)
-            line_y = card.y + 34
-            for item in items:
-                draw_text(self.screen, item.upper(), card.x + 12, line_y, (210, 214, 224), scale=1)
-                line_y += 20
+            draw_text(self.screen, value[:24], card.x + 12, card.y + 34, (230, 234, 240), scale=1)
 
-        helper = "Use TACTICS to change the live instructions quickly. This panel now mirrors the real saved settings."
-        draw_text(self.screen, helper[:86], right.x + 18, right.bottom - 28, (190, 194, 204), scale=1)
+        list_rect = pygame.Rect(right.x + 18, right.y + 52, min(320, right.width // 2 - 24), right.height - 76)
+        detail_rect = pygame.Rect(list_rect.right + 18, right.y + 52, right.right - list_rect.right - 36, right.height - 76)
+        pygame.draw.rect(self.screen, (18, 20, 26), list_rect, border_radius=8)
+        pygame.draw.rect(self.screen, (50, 52, 58), list_rect, 1, border_radius=8)
+        pygame.draw.rect(self.screen, (18, 20, 26), detail_rect, border_radius=8)
+        pygame.draw.rect(self.screen, (50, 52, 58), detail_rect, 1, border_radius=8)
+        draw_text(self.screen, "SQUAD", list_rect.x + 10, list_rect.y + 10, (248, 187, 32), scale=1)
+        row_y = list_rect.y + 34
+        row_h = 24
+        for player in players[:18]:
+            player_id = str(player["id"])
+            row = pygame.Rect(list_rect.x + 8, row_y, list_rect.width - 16, row_h)
+            active = player_id == selected_player_id
+            fill = (50, 58, 84) if active else (24, 26, 32)
+            pygame.draw.rect(self.screen, fill, row, border_radius=6)
+            pygame.draw.rect(self.screen, (84, 88, 98) if active else (58, 60, 68), row, 1, border_radius=6)
+            name_color = (245, 245, 245) if bool(player.get("available", True)) else (190, 154, 154)
+            draw_text(self.screen, player["position"], row.x + 8, row.y + 8, (170, 174, 182), scale=1)
+            draw_text(self.screen, short_display_name(player["name"], 13), row.x + 40, row.y + 8, name_color, scale=1)
+            focus_text = str(player_focuses.get(player_id, "auto")).replace("_", " ").upper()[:10]
+            draw_text(self.screen, focus_text, row.right - 8 - text_width(focus_text, 1), row.y + 8, (210, 214, 224), scale=1)
+            self._register_ui(f"squad:select_player:{player_id}", row)
+            row_y += row_h + 5
+            if row_y + row_h > list_rect.bottom - 8:
+                break
+
+        if selected_player:
+            player_id = str(selected_player["id"])
+            draw_text(self.screen, selected_player["name"].upper()[:28], detail_rect.x + 14, detail_rect.y + 14, (248, 187, 32), scale=2)
+            meta = f"{selected_player['position']}  OVR {selected_player['ovr']}  STM {int(selected_player.get('current_stamina', 100))}"
+            draw_text(self.screen, meta, detail_rect.x + 14, detail_rect.y + 42, (210, 214, 224), scale=1)
+            current_focus = str(player_focuses.get(player_id, "auto"))
+            draw_text(self.screen, "PLAYER FOCUS", detail_rect.x + 14, detail_rect.y + 76, (248, 187, 32), scale=1)
+            fx = detail_rect.x + 14
+            fy = detail_rect.y + 100
+            max_fx = detail_rect.right - 14
+            for option in player_focus_options:
+                value = str(option.get("value", "auto"))
+                label = str(option.get("label", value)).upper()
+                width = min(max(96, text_width(label, 1) + 20), 152)
+                if fx + width > max_fx:
+                    fx = detail_rect.x + 14
+                    fy += 34
+                rect = pygame.Rect(fx, fy, width, 26)
+                active = value == current_focus
+                fill = (248, 187, 32) if active else (36, 52, 96)
+                text = (24, 24, 28) if active else (245, 245, 245)
+                self._draw_ui_button(rect, label, fill, text, f"training:player_focus:{player_id}:{value}", scale=1)
+                fx += width + 8
+            attrs = selected_player.get("attributes", {})
+            focus_attrs = []
+            for option in player_focus_options:
+                if option.get("value") == current_focus:
+                    focus_attrs = []
+                    break
+            top_attrs = sorted(attrs.items(), key=lambda item: float(item[1]), reverse=True)[:6]
+            draw_text(self.screen, "CURRENT PROFILE", detail_rect.x + 14, detail_rect.bottom - 158, (248, 187, 32), scale=1)
+            ay = detail_rect.bottom - 132
+            for key, value in top_attrs:
+                label = str(key).replace("_", " ").upper()[:18]
+                value_text = str(int(round(float(value))))
+                draw_text(self.screen, label, detail_rect.x + 14, ay, (220, 224, 232), scale=1)
+                draw_text(self.screen, value_text, detail_rect.right - 20 - text_width(value_text, 1), ay, (245, 245, 245), scale=1)
+                ay += 18
 
     def _draw_team_instruction_preview(self, card: pygame.Rect, key: str, current_value: str, action_prefix: str = "squad") -> None:
         left_label, center_label, right_label = instruction_preview_labels(key, current_value)
