@@ -2125,11 +2125,16 @@ class Renderer:
         if overview_tab.startswith("squad_"):
             if overview_tab == "squad_tactics":
                 self._draw_overview_tactics_tab(view, overview, primary, secondary)
+            elif overview_tab == "squad_players":
+                self._draw_overview_players_tab(view, overview, clubs, primary, secondary)
             else:
                 self._draw_overview_formation_tab(view, overview, clubs, primary, secondary, squad_draft)
             return
         if overview_tab.startswith("matches_"):
-            self._draw_overview_fixtures_tab(view, overview, clubs, primary, secondary)
+            if overview_tab == "matches_standings":
+                self._draw_overview_standings_tab(overview, clubs, primary, secondary)
+            else:
+                self._draw_overview_fixtures_tab(view, overview, clubs, primary, secondary)
             return
 
         self._draw_overview_home_tab(view, overview, selected_club_id, clubs, players_by_club, standings, fixtures, primary, secondary)
@@ -2181,7 +2186,7 @@ class Renderer:
             if tab_key == "squad" and overview_tab.startswith("squad_"):
                 sub_x = submenu_anchor_x
                 sub_y = 44
-                for sub_label, sub_tab in (("TACTICS", "squad_formation"), ("TRAINING", "squad_tactics")):
+                for sub_label, sub_tab in (("TACTICS", "squad_formation"), ("PLAYERS", "squad_players"), ("TRAINING", "squad_tactics")):
                     sub_color = (248, 187, 32) if overview_tab == sub_tab else (170, 174, 182)
                     sub_rect = pygame.Rect(sub_x - 3, sub_y - 2, text_width(sub_label, 1) + 6, 12)
                     draw_text(self.screen, sub_label, sub_x, sub_y, sub_color, scale=1)
@@ -2190,7 +2195,7 @@ class Renderer:
             if tab_key == "matches" and overview_tab.startswith("matches_"):
                 sub_x = submenu_anchor_x
                 sub_y = 44
-                for sub_label, sub_tab in (("FIXTURES", "matches_fixtures"),):
+                for sub_label, sub_tab in (("FIXTURES", "matches_fixtures"), ("STANDINGS", "matches_standings")):
                     sub_color = (248, 187, 32) if overview_tab == sub_tab else (170, 174, 182)
                     sub_rect = pygame.Rect(sub_x - 3, sub_y - 2, text_width(sub_label, 1) + 6, 12)
                     draw_text(self.screen, sub_label, sub_x, sub_y, sub_color, scale=1)
@@ -2307,18 +2312,24 @@ class Renderer:
             draw_small_badge(opponent, pygame.Rect(rect.x + 12, rect.y + 32, 28, 34))
             opponent_name = str((opponent or {}).get("name") or (fixture.get("away_name") if is_home else fixture.get("home_name")) or "OPPONENT")
             draw_text(self.screen, short_display_name(opponent_name, max(8, (rect.width - 58) // 6)), rect.x + 50, rect.y + 42, (245, 245, 245), scale=1)
-            draw_text(self.screen, short_display_name(league_label, max(10, (rect.width - 20) // 6)), rect.x + 10, rect.y + 80, (248, 187, 32), scale=1)
+            league_chars = max(10, (rect.width - 20) // 6)
+            draw_text(self.screen, str(league_label).upper()[:league_chars], rect.x + 10, rect.y + 80, (248, 187, 32), scale=1)
 
         squad_top = fixture_y + 124
         squad_rect = pygame.Rect(center.x + 14, squad_top, center.width - 28, center.bottom - squad_top - 14)
         pygame.draw.rect(self.screen, (20, 23, 28), squad_rect, border_radius=8)
         pygame.draw.rect(self.screen, (42, 46, 54), squad_rect, 1, border_radius=8)
         draw_text(self.screen, "SQUAD WATCH", squad_rect.x + 12, squad_rect.y + 12, (248, 187, 32), scale=2)
-        draw_text(self.screen, "STATUS", squad_rect.right - text_width("STATUS", 1) - 14, squad_rect.y + 18, (170, 174, 182), scale=1)
-        row_h = 18
-        rows_per_col = max(1, (squad_rect.height - 48) // row_h)
-        columns = max(1, min(3, math.ceil(len(managed_players) / rows_per_col)))
-        col_w = max(180, (squad_rect.width - 24) // columns)
+        draw_text(self.screen, "#", squad_rect.x + 14, squad_rect.y + 38, (170, 174, 182), scale=1)
+        draw_text(self.screen, "POS", squad_rect.x + 44, squad_rect.y + 38, (170, 174, 182), scale=1)
+        draw_text(self.screen, "PLAYER", squad_rect.x + 82, squad_rect.y + 38, (170, 174, 182), scale=1)
+        draw_text(self.screen, "OVR", squad_rect.right - 174, squad_rect.y + 38, (170, 174, 182), scale=1)
+        draw_text(self.screen, "STM", squad_rect.right - 134, squad_rect.y + 38, (170, 174, 182), scale=1)
+        draw_text(self.screen, "STATUS", squad_rect.right - 62, squad_rect.y + 38, (170, 174, 182), scale=1)
+        row_h = max(17, min(22, (squad_rect.height - 70) // max(1, len(managed_players))))
+        rows_per_col = max(1, (squad_rect.height - 68) // row_h)
+        columns = 1
+        col_w = squad_rect.width - 24
         position_order = {"GK": 0, "LB": 1, "CB": 2, "RB": 3, "DM": 4, "CM": 5, "AM": 6, "LW": 7, "ST": 8, "RW": 9}
         squad_rows = sorted(managed_players, key=lambda player: (position_order.get(str(player.get("position")), 99), str(player.get("name", ""))))
         for idx, player in enumerate(squad_rows):
@@ -2327,7 +2338,8 @@ class Renderer:
             if col >= columns:
                 break
             x = squad_rect.x + 12 + col * col_w
-            y = squad_rect.y + 46 + row * row_h
+            y = squad_rect.y + 60 + row * row_h
+            row_rect = pygame.Rect(x - 4, y - 5, col_w - 8, row_h - 2)
             status = "OK"
             status_color = (116, 208, 120)
             icon = ""
@@ -2351,8 +2363,24 @@ class Renderer:
                 status = "DNG"
                 status_color = (232, 190, 72)
             name_color = (245, 245, 245) if status == "OK" else (210, 212, 218)
-            draw_text(self.screen, short_display_name(str(player.get("name", "PLAYER")), max(9, (col_w - 84) // 6)), x, y, name_color, scale=1)
-            status_x = x + col_w - 52
+            if row_rect.collidepoint(pygame.mouse.get_pos()):
+                pygame.draw.rect(self.screen, (30, 34, 42), row_rect, border_radius=5)
+            self._register_ui(f"squad:open_player:{player.get('id')}", row_rect)
+            number = "".join(ch for ch in str(player.get("id", "")) if ch.isdigit())[-2:] or "--"
+            draw_text(self.screen, number, x + 2, y, (170, 174, 182), scale=1)
+            draw_text(self.screen, str(player.get("position", ""))[:3], x + 32, y, (170, 174, 182), scale=1)
+            name_chars = max(9, (col_w - 228) // 6)
+            player_name = str(player.get("name", "PLAYER")).upper()[:name_chars]
+            draw_text(self.screen, player_name, x + 70, y, name_color, scale=1)
+            ovr_text = str(player.get("ovr", ""))
+            draw_text(self.screen, ovr_text, x + col_w - 176, y, (245, 245, 245), scale=1)
+            stamina_rect = pygame.Rect(x + col_w - 136, y + 4, 42, 6)
+            pygame.draw.rect(self.screen, (34, 36, 42), stamina_rect, border_radius=3)
+            stamina_ratio = max(0.0, min(1.0, stamina / 100.0))
+            stamina_color = (116, 208, 120) if stamina_ratio > 0.55 else (232, 190, 72) if stamina_ratio > 0.3 else (220, 96, 96)
+            pygame.draw.rect(self.screen, stamina_color, pygame.Rect(stamina_rect.x, stamina_rect.y, max(2, int(stamina_rect.width * stamina_ratio)), stamina_rect.height), border_radius=3)
+            pygame.draw.rect(self.screen, (76, 78, 88), stamina_rect, 1, border_radius=3)
+            status_x = x + col_w - 62
             if icon == "injury":
                 self._draw_injury_icon(pygame.Rect(status_x - 18, y - 3, 14, 16))
             elif icon == "red":
@@ -2387,7 +2415,8 @@ class Renderer:
             club_meta = next((club for club in clubs if club["id"] == row["club_id"]), None)
             badge_rect = pygame.Rect(col_t_club, y - 4, 14, 17)
             draw_small_badge(club_meta, badge_rect)
-            draw_text(self.screen, short_display_name(row["club_name"], max(8, (right.width - 210) // 6)), badge_rect.right + 7, y, color, scale=1)
+            club_label = str(row["club_name"]).upper()[: max(8, (right.width - 210) // 6)]
+            draw_text(self.screen, club_label, badge_rect.right + 7, y, color, scale=1)
             for value, center_x in (
                 (str(row["played"]), col_t_mp),
                 (f"{row['goal_difference']:+d}", col_t_gd),
@@ -2666,7 +2695,7 @@ class Renderer:
         content_y = 74
         content_h = SCREEN_H - content_y - 24
         panel = pygame.Rect(20, content_y, SCREEN_W - 40, content_h)
-        self._draw_panel(panel, "MATCHES / FIXTURES", (16, 18, 20), (245, 245, 245))
+        self._draw_panel(panel, "FIXTURES", (16, 18, 20), (245, 245, 245))
 
         nav_y = panel.y + 48
         nav_x = panel.x + 14
@@ -2761,6 +2790,238 @@ class Renderer:
                 draw_text(self.screen, "REPORT", row.right - 98, row.y + row.height - 15, (248, 187, 32), scale=1)
             y += row_h
 
+    def _draw_overview_players_tab(
+        self,
+        view: dict,
+        overview: dict,
+        clubs: list[dict],
+        primary: Tuple[int, int, int],
+        secondary: Tuple[int, int, int],
+    ) -> None:
+        squad_draft = view.get("squad_draft", {})
+        managed_club_id = overview.get("club_id")
+        players = overview.get("players_by_club", {}).get(managed_club_id, [])
+        selected_player_id = str(squad_draft.get("selected_player_id") or (players[0]["id"] if players else ""))
+        selected_player = next((player for player in players if str(player.get("id")) == selected_player_id), None)
+        if selected_player is None and players:
+            selected_player = players[0]
+            selected_player_id = str(selected_player["id"])
+
+        content_y = 74
+        content_h = SCREEN_H - content_y - 24
+        panel = pygame.Rect(20, content_y, SCREEN_W - 40, content_h)
+        self._draw_panel(panel, "PLAYERS", (16, 18, 20), (245, 245, 245))
+
+        gap = 18
+        left = pygame.Rect(panel.x + 16, panel.y + 48, (panel.width - 50) // 2, panel.height - 64)
+        right = pygame.Rect(left.right + gap, left.y, panel.right - left.right - gap - 16, left.height)
+        for rect in (left, right):
+            pygame.draw.rect(self.screen, (18, 20, 26), rect, border_radius=8)
+            pygame.draw.rect(self.screen, (50, 52, 58), rect, 1, border_radius=8)
+
+        draw_text(self.screen, "PLAYER LIST", left.x + 12, left.y + 12, (248, 187, 32), scale=2)
+        header_y = left.y + 46
+        draw_text(self.screen, "#", left.x + 14, header_y, (170, 174, 182), scale=1)
+        draw_text(self.screen, "POS", left.x + 52, header_y, (170, 174, 182), scale=1)
+        draw_text(self.screen, "PLAYER", left.x + 96, header_y, (170, 174, 182), scale=1)
+        draw_text(self.screen, "OVR", left.right - 92, header_y, (170, 174, 182), scale=1)
+        draw_text(self.screen, "STM", left.right - 46, header_y, (170, 174, 182), scale=1)
+        row_y = header_y + 22
+        row_h = 25
+        position_order = {"GK": 0, "LB": 1, "CB": 2, "RB": 3, "DM": 4, "CM": 5, "AM": 6, "LW": 7, "ST": 8, "RW": 9}
+        sorted_players = sorted(players, key=lambda player: (position_order.get(str(player.get("position")), 99), str(player.get("name", ""))))
+        for player in sorted_players:
+            if row_y + row_h > left.bottom - 8:
+                break
+            player_id = str(player.get("id"))
+            row = pygame.Rect(left.x + 8, row_y, left.width - 16, row_h)
+            active = player_id == selected_player_id
+            fill = (50, 58, 84) if active else (24, 26, 32)
+            pygame.draw.rect(self.screen, fill, row, border_radius=5)
+            pygame.draw.rect(self.screen, (248, 187, 32) if active else (58, 60, 68), row, 1, border_radius=5)
+            name_color = (245, 245, 245) if bool(player.get("available", True)) else (220, 184, 184)
+            number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "--"
+            draw_text(self.screen, number, row.x + 8, row.y + 8, (170, 174, 182), scale=1)
+            draw_text(self.screen, str(player.get("position", ""))[:3], row.x + 46, row.y + 8, (170, 174, 182), scale=1)
+            draw_text(self.screen, short_display_name(str(player.get("name", "PLAYER")), max(10, (left.width - 230) // 6)), row.x + 90, row.y + 8, name_color, scale=1)
+            draw_text(self.screen, str(player.get("ovr", "")), row.right - 94, row.y + 8, (245, 245, 245), scale=1)
+            stamina = max(0.0, min(100.0, float(player.get("current_stamina", 100.0) or 0.0)))
+            stamina_rect = pygame.Rect(row.right - 48, row.y + 10, 34, 6)
+            pygame.draw.rect(self.screen, (34, 36, 42), stamina_rect, border_radius=3)
+            stamina_color = (116, 208, 120) if stamina >= 55 else (232, 190, 72) if stamina >= 30 else (220, 96, 96)
+            pygame.draw.rect(self.screen, stamina_color, pygame.Rect(stamina_rect.x, stamina_rect.y, max(2, int(stamina_rect.width * stamina / 100.0)), stamina_rect.height), border_radius=3)
+            pygame.draw.rect(self.screen, (76, 78, 88), stamina_rect, 1, border_radius=3)
+            self._register_ui(f"squad:select_player:{player_id}", row)
+            row_y += row_h + 5
+
+        draw_text(self.screen, "PLAYER PROFILE", right.x + 12, right.y + 12, (248, 187, 32), scale=2)
+        if not selected_player:
+            draw_text(self.screen, "NO PLAYER SELECTED", right.x + 18, right.y + 70, (170, 174, 182), scale=2)
+            return
+
+        top = pygame.Rect(right.x + 12, right.y + 44, right.width - 24, 86)
+        pygame.draw.rect(self.screen, primary, top, border_radius=8)
+        pygame.draw.rect(self.screen, (20, 20, 24), top, 2, border_radius=8)
+        draw_text(self.screen, str(selected_player.get("name", "PLAYER")).upper()[:28], top.x + 16, top.y + 14, secondary, scale=2)
+        meta = f"{selected_player.get('position')}  OVR {selected_player.get('ovr')}  FOOT {str(selected_player.get('preferred_foot', 'right')).upper()}"
+        draw_text(self.screen, meta[:44], top.x + 16, top.y + 42, secondary, scale=1)
+        status_bits = [
+            f"STM {int(float(selected_player.get('current_stamina', 100) or 0))}",
+            f"YC {int(selected_player.get('yellow_card_count', 0) or 0)}",
+            f"INJ {int(selected_player.get('injury_days_remaining', 0) or 0)}D",
+            f"BAN {int(selected_player.get('suspension_matches_remaining', 0) or 0)}",
+        ]
+        draw_text(self.screen, "  ".join(status_bits)[:50], top.x + 16, top.y + 62, secondary, scale=1)
+
+        stat_y = top.bottom + 16
+        cards = [
+            ("APPS", int(selected_player.get("apps", 0) or 0)),
+            ("GOALS", int(selected_player.get("goals", 0) or 0)),
+            ("ASSISTS", int(selected_player.get("assists", 0) or 0)),
+            ("AVG", f"{float(selected_player.get('avg_rating', 0.0) or 0.0):.2f}" if float(selected_player.get("avg_rating", 0.0) or 0.0) > 0 else "--"),
+        ]
+        card_w = (right.width - 24 - 30) // 4
+        for idx, (label, value) in enumerate(cards):
+            card = pygame.Rect(right.x + 12 + idx * (card_w + 10), stat_y, card_w, 54)
+            pygame.draw.rect(self.screen, (22, 24, 30), card, border_radius=6)
+            pygame.draw.rect(self.screen, (54, 58, 70), card, 1, border_radius=6)
+            draw_text(self.screen, label, card.x + 9, card.y + 9, (170, 174, 182), scale=1)
+            draw_text(self.screen, str(value), card.x + 9, card.y + 29, (245, 245, 245), scale=2 if len(str(value)) <= 4 else 1)
+
+        recent_y = stat_y + 76
+        draw_text(self.screen, "RECENT FORM", right.x + 12, recent_y, (248, 187, 32), scale=1)
+        recent = list(selected_player.get("recent_ratings", []))[-5:]
+        if not recent:
+            draw_text(self.screen, "NO MATCHES PLAYED", right.x + 12, recent_y + 24, (170, 174, 182), scale=1)
+        for idx, entry in enumerate(recent):
+            chip = pygame.Rect(right.x + 12 + idx * 94, recent_y + 22, 84, 44)
+            rating = float(entry.get("rating", 0.0) or 0.0)
+            chip_color = (88, 170, 104) if rating >= 7.0 else (232, 190, 72) if rating >= 6.2 else (206, 96, 84)
+            pygame.draw.rect(self.screen, (22, 24, 30), chip, border_radius=6)
+            pygame.draw.rect(self.screen, chip_color, chip, 2, border_radius=6)
+            draw_text(self.screen, f"{rating:.1f}", chip.x + 8, chip.y + 8, chip_color, scale=2)
+            opponent = short_display_name(str(entry.get("opponent_name") or "OPP"), 8)
+            draw_text(self.screen, opponent, chip.x + 8, chip.y + 30, (210, 214, 224), scale=1)
+
+        radar_rect = pygame.Rect(right.x + 16, recent_y + 88, min(260, right.width // 2 - 24), min(260, right.bottom - recent_y - 106))
+        self._draw_attribute_radar(radar_rect, selected_player)
+        attrs = sorted(dict(selected_player.get("attributes", {})).items(), key=lambda item: item[0])
+        attr_x = radar_rect.right + 22
+        attr_y = recent_y + 88
+        attr_col_w = max(150, (right.right - attr_x - 16) // 2)
+        row_step = 18
+        rows_per_col = max(1, (right.bottom - attr_y - 10) // row_step)
+        for idx, (key, value) in enumerate(attrs):
+            col = idx // rows_per_col
+            row = idx % rows_per_col
+            if col > 1:
+                break
+            x = attr_x + col * attr_col_w
+            y = attr_y + row * row_step
+            label = str(key).replace("_", " ").upper()[:18]
+            value_text = str(int(round(float(value))))
+            draw_text(self.screen, label, x, y, (210, 214, 224), scale=1)
+            draw_text(self.screen, value_text, x + attr_col_w - 8 - text_width(value_text, 1), y, (245, 245, 245), scale=1)
+
+    def _draw_overview_standings_tab(
+        self,
+        overview: dict,
+        clubs: list[dict],
+        primary: Tuple[int, int, int],
+        secondary: Tuple[int, int, int],
+    ) -> None:
+        standings = overview.get("standings", [])
+        managed_club_id = overview.get("club_id")
+        content_y = 74
+        content_h = SCREEN_H - content_y - 24
+        panel = pygame.Rect(20, content_y, SCREEN_W - 40, content_h)
+        self._draw_panel(panel, "STANDINGS", (16, 18, 20), (245, 245, 245))
+        table = pygame.Rect(panel.x + 14, panel.y + 48, panel.width - 28, panel.height - 62)
+        pygame.draw.rect(self.screen, (18, 20, 26), table, border_radius=8)
+        pygame.draw.rect(self.screen, (50, 52, 58), table, 1, border_radius=8)
+        columns = {
+            "pos": table.x + 28,
+            "club": table.x + 58,
+            "mp": table.right - 356,
+            "pts": table.right - 304,
+            "w": table.right - 258,
+            "d": table.right - 212,
+            "l": table.right - 166,
+            "gd": table.right - 118,
+            "gs": table.right - 70,
+            "gc": table.right - 24,
+        }
+        header_y = table.y + 14
+        for label, x in (("POS", columns["pos"]), ("CLUB", columns["club"]), ("FORM", columns["mp"] - 178), ("MP", columns["mp"]), ("P", columns["pts"]), ("W", columns["w"]), ("D", columns["d"]), ("L", columns["l"]), ("GD", columns["gd"]), ("GS", columns["gs"]), ("GC", columns["gc"])):
+            draw_text(self.screen, label, x - (text_width(label, 1) // 2 if label != "CLUB" else 0), header_y, (170, 174, 182), scale=1)
+        club_by_id = {club["id"]: club for club in clubs}
+        hover_tooltip: tuple[str, int, int] | None = None
+        mouse = pygame.mouse.get_pos()
+        row_h = max(20, min(30, (table.height - 44) // max(1, len(standings))))
+        y = table.y + 40
+        demotion_start = max(1, len(standings) - 2)
+        for idx, row in enumerate(standings, start=1):
+            if y + row_h > table.bottom - 8:
+                break
+            row_rect = pygame.Rect(table.x + 8, y - 4, table.width - 16, row_h)
+            fill = (24, 26, 32)
+            stripe = None
+            if idx <= 3:
+                stripe = (72, 154, 96)
+            elif idx >= demotion_start:
+                stripe = (168, 64, 64)
+            if row.get("club_id") == managed_club_id:
+                fill = primary
+            pygame.draw.rect(self.screen, fill, row_rect, border_radius=5)
+            if stripe:
+                pygame.draw.rect(self.screen, stripe, pygame.Rect(row_rect.x, row_rect.y, 5, row_rect.height), border_top_left_radius=5, border_bottom_left_radius=5)
+            color = secondary if row.get("club_id") == managed_club_id else (245, 245, 245)
+            draw_text(self.screen, str(idx), columns["pos"] - text_width(str(idx), 1) // 2, y + 4, color, scale=1)
+            club_meta = club_by_id.get(row.get("club_id"))
+            if club_meta:
+                self._draw_club_badge(
+                    {
+                        "template_id": club_meta.get("badge_template_id", "1"),
+                        "primary": club_meta.get("badge_primary", "#2E3A6A"),
+                        "secondary": club_meta.get("badge_secondary", "#F5F5F5"),
+                        "border": club_meta.get("badge_border", "#F5F5F5"),
+                    },
+                    pygame.Rect(columns["club"], y - 1, 18, 22),
+                )
+            club_label = str(row.get("club_name", "CLUB")).upper()[: max(10, (columns["mp"] - columns["club"] - 250) // 6)]
+            draw_text(self.screen, club_label, columns["club"] + 26, y + 4, color, scale=1)
+            form_x = columns["mp"] - 178
+            for form_idx, entry in enumerate(list(row.get("recent_form", []))[-4:]):
+                result = str(entry.get("result", "-"))[:1]
+                result_color = (116, 208, 120) if result == "W" else (232, 190, 72) if result == "D" else (220, 96, 96)
+                draw_text(self.screen, result, form_x + form_idx * 18, y + 4, result_color, scale=1)
+                hit = pygame.Rect(form_x + form_idx * 18 - 3, y - 1, 16, 18)
+                if hit.collidepoint(mouse):
+                    hover_tooltip = (f"{entry.get('home_name')} {entry.get('home_goals')}-{entry.get('away_goals')} {entry.get('away_name')}", mouse[0], mouse[1])
+            q_x = form_x + 82
+            draw_text(self.screen, "?", q_x, y + 4, (248, 187, 32), scale=1)
+            if pygame.Rect(q_x - 4, y - 1, 18, 18).collidepoint(mouse):
+                next_fixture = row.get("next_fixture") or {}
+                if next_fixture:
+                    hover_tooltip = (
+                        f"NEXT {next_fixture.get('venue', '')}: {next_fixture.get('home_name')} VS {next_fixture.get('away_name')}",
+                        mouse[0],
+                        mouse[1],
+                    )
+            for key, col_key in (("played", "mp"), ("wins", "w"), ("draws", "d"), ("losses", "l"), ("goals_for", "gs"), ("goals_against", "gc"), ("goal_difference", "gd"), ("points", "pts")):
+                value = f"{int(row.get(key, 0)):+d}" if key == "goal_difference" else str(int(row.get(key, 0)))
+                draw_text(self.screen, value, columns[col_key] - text_width(value, 1) // 2, y + 4, color, scale=1)
+            y += row_h
+        if hover_tooltip:
+            text, mx, my = hover_tooltip
+            text = text.upper()[:42]
+            tooltip = pygame.Rect(mx + 14, my + 14, text_width(text, 1) + 18, 28)
+            tooltip.right = min(tooltip.right, SCREEN_W - 8)
+            tooltip.bottom = min(tooltip.bottom, SCREEN_H - 8)
+            pygame.draw.rect(self.screen, (10, 12, 16), tooltip, border_radius=5)
+            pygame.draw.rect(self.screen, (248, 187, 32), tooltip, 1, border_radius=5)
+            draw_text(self.screen, text, tooltip.x + 9, tooltip.y + 10, (245, 245, 245), scale=1)
+
     def _draw_overview_tactics_tab(
         self,
         view: dict,
@@ -2783,7 +3044,7 @@ class Renderer:
         focus_options = list(training.get("focus_options", []))
         intensity_options = list(training.get("intensity_options", []))
         player_focus_options = list(training.get("player_focus_options", []))
-        content_y = 106
+        content_y = 74
         content_h = SCREEN_H - content_y - 24
         left = pygame.Rect(20, content_y, (SCREEN_W - 58) // 2, content_h)
         right = pygame.Rect(left.right + 18, content_y, SCREEN_W - left.right - 38, content_h)
@@ -3360,7 +3621,121 @@ class Renderer:
         message = str(animation.get("message", "INSTRUCTIONS CHANGED!"))
         draw_text(self.screen, message, panel.x + 52, panel.y + 28, (245, 245, 245), scale=2)
 
+    def _draw_modal_lineup_board(self, rect: pygame.Rect, club: dict | None, players_by_id: dict[str, dict], setup: dict, mirror: bool = False) -> None:
+        pygame.draw.rect(self.screen, (70, 130, 52), rect, border_radius=8)
+        pygame.draw.rect(self.screen, (164, 210, 118), rect, 2, border_radius=8)
+        for idx in range(1, 4):
+            x = rect.x + idx * rect.width // 4
+            pygame.draw.line(self.screen, (92, 150, 64), (x, rect.y + 4), (x, rect.bottom - 4), 1)
+        pygame.draw.rect(self.screen, (214, 236, 188), rect.inflate(-28, -28), 2, border_radius=4)
+        formation = str(setup.get("formation", "4-3-3"))
+        xi_ids = list(setup.get("xi_ids", []))
+        slots = formation_slots(formation)
+        layout = self._formation_preview_layout(formation, rect.inflate(-48, -42))
+        color = hex_to_rgb((club or {}).get("primary_color", "#3260D8"), (50, 95, 230))
+        text_color = self._shirt_number_color(color)
+        slot_counts: dict[str, int] = {}
+        for idx, slot in enumerate(slots):
+            slot_counts[slot] = slot_counts.get(slot, 0) + 1
+            slot_key = f"{slot}{slot_counts[slot]}" if slots.count(slot) > 1 else slot
+            px, py = layout.get(slot_key, rect.center)
+            if mirror:
+                px = rect.right - (px - rect.x)
+            player = players_by_id.get(str(xi_ids[idx] if idx < len(xi_ids) else ""))
+            pygame.draw.circle(self.screen, (20, 22, 26), (px, py), 13)
+            pygame.draw.circle(self.screen, color, (px, py), 11)
+            number = "".join(ch for ch in str((player or {}).get("id", "")) if ch.isdigit())[-2:] or str(idx + 1).zfill(2)
+            draw_text(self.screen, number, px - text_width(number, 1) // 2, py - 4, text_color, scale=1)
+            name = short_display_name(str((player or {}).get("name", slot)), 9)
+            draw_text(self.screen, name, px - text_width(name, 1) // 2, py + 17, (245, 245, 245), scale=1)
+        draw_text(self.screen, formation, rect.centerx - text_width(formation, 2) // 2, rect.bottom - 30, (245, 245, 245), scale=2)
+
+    def _draw_match_preview_modal(self, modal: dict) -> None:
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 170))
+        self.screen.blit(overlay, (0, 0))
+        overview = modal.get("overview", {})
+        fixture = modal.get("fixture", {})
+        clubs = list(overview.get("clubs", []))
+        club_by_id = {club["id"]: club for club in clubs}
+        players_by_club = overview.get("players_by_club", {})
+        setups = overview.get("club_setups", {})
+        home_id = str(fixture.get("home_club_id", ""))
+        away_id = str(fixture.get("away_club_id", ""))
+        home_club = club_by_id.get(home_id)
+        away_club = club_by_id.get(away_id)
+        panel = pygame.Rect((SCREEN_W - min(1020, SCREEN_W - 80)) // 2, (SCREEN_H - min(680, SCREEN_H - 80)) // 2, min(1020, SCREEN_W - 80), min(680, SCREEN_H - 80))
+        self._draw_panel(panel, None)
+        close_rect = pygame.Rect(panel.right - 42, panel.y + 12, 28, 28)
+        pygame.draw.rect(self.screen, (42, 46, 54), close_rect, border_radius=4)
+        draw_text(self.screen, "X", close_rect.x + 9, close_rect.y + 7, (245, 245, 245), scale=2)
+        self._register_ui("modal:close", close_rect)
+        title = "MATCH PREVIEW"
+        draw_text(self.screen, title, panel.centerx - text_width(title, 3) // 2, panel.y + 22, (245, 245, 245), scale=3)
+        home_name = str(fixture.get("home_name") or (home_club or {}).get("name", "HOME"))
+        away_name = str(fixture.get("away_name") or (away_club or {}).get("name", "AWAY"))
+        versus = f"{home_name} VS {away_name}"
+        draw_text(self.screen, versus[:48], panel.centerx - text_width(versus[:48], 2) // 2, panel.y + 70, (248, 187, 32), scale=2)
+        date_label = str(fixture.get("fixture_date_label") or "")
+        league_label = str(overview.get("league_name", "LEAGUE"))
+        meta = f"{date_label}  {league_label}"
+        draw_text(self.screen, meta[:60], panel.centerx - text_width(meta[:60], 1) // 2, panel.y + 100, (170, 174, 182), scale=1)
+
+        manager_name = str(overview.get("manager_name", "MANAGER"))
+        home_manager = manager_name if home_id == str(overview.get("club_id")) else "AI MANAGER"
+        away_manager = manager_name if away_id == str(overview.get("club_id")) else "AI MANAGER"
+        manager_y = panel.y + 128
+        draw_text(self.screen, home_manager.upper()[:22], panel.x + 92, manager_y, (220, 224, 232), scale=1)
+        away_manager_text = away_manager.upper()[:22]
+        draw_text(self.screen, away_manager_text, panel.right - 92 - text_width(away_manager_text, 1), manager_y, (220, 224, 232), scale=1)
+
+        badge_y = panel.y + 118
+        if home_club:
+            self._draw_club_badge(
+                {"template_id": home_club.get("badge_template_id", "1"), "primary": home_club.get("badge_primary", "#2E3A6A"), "secondary": home_club.get("badge_secondary", "#F5F5F5"), "border": home_club.get("badge_border", "#F5F5F5")},
+                pygame.Rect(panel.x + 40, badge_y, 40, 48),
+            )
+        if away_club:
+            self._draw_club_badge(
+                {"template_id": away_club.get("badge_template_id", "1"), "primary": away_club.get("badge_primary", "#2E3A6A"), "secondary": away_club.get("badge_secondary", "#F5F5F5"), "border": away_club.get("badge_border", "#F5F5F5")},
+                pygame.Rect(panel.right - 80, badge_y, 40, 48),
+            )
+        board_gap = 28
+        board_w = (panel.width - 76 - board_gap) // 2
+        board_h = min(300, panel.height - 318)
+        home_board = pygame.Rect(panel.x + 38, panel.y + 176, board_w, board_h)
+        away_board = pygame.Rect(home_board.right + board_gap, home_board.y, board_w, board_h)
+        home_players = {str(player["id"]): player for player in players_by_club.get(home_id, [])}
+        away_players = {str(player["id"]): player for player in players_by_club.get(away_id, [])}
+        self._draw_modal_lineup_board(home_board, home_club, home_players, setups.get(home_id, {}), mirror=False)
+        self._draw_modal_lineup_board(away_board, away_club, away_players, setups.get(away_id, {}), mirror=True)
+
+        def draw_subs(rect: pygame.Rect, players_by_id: dict[str, dict], setup: dict) -> None:
+            bench_ids = list(setup.get("bench_ids", []))
+            names = [
+                short_display_name(str(players_by_id.get(str(player_id), {}).get("name", str(player_id))), 10).upper()
+                for player_id in bench_ids[:6]
+            ]
+            label = "SUBS: " + ", ".join(names) if names else "SUBS: --"
+            draw_text(self.screen, label[: max(10, rect.width // 6)], rect.x + 4, rect.bottom + 12, (210, 214, 224), scale=1)
+
+        draw_subs(home_board, home_players, setups.get(home_id, {}))
+        draw_subs(away_board, away_players, setups.get(away_id, {}))
+
+        button_y = panel.bottom - 72
+        buttons = list(modal.get("buttons", []))
+        total_w = 180 * len(buttons) + 16 * max(0, len(buttons) - 1)
+        x = panel.centerx - total_w // 2
+        for button in buttons:
+            rect = pygame.Rect(x, button_y, 180, 42)
+            self._draw_ui_button(rect, button["label"], button.get("fill", (36, 52, 96)), button.get("text_color", (245, 245, 245)), button.get("action"), scale=2)
+            x += 196
+
     def draw_modal(self, modal: dict) -> None:
+        self.ui_click_targets = {}
+        if modal.get("type") == "match_preview":
+            self._draw_match_preview_modal(modal)
+            return
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 150))
         self.screen.blit(overlay, (0, 0))

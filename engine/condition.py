@@ -93,4 +93,4 @@ def apply_post_match_condition(state: MatchState) -> None:
     participants = state.home.xi + state.away.xi
     for player in participants:
         final_stamina = current_stamina_from_fatigue(player.fatigue)
-        player.profile.current_stamina = min(100.0, final_stamina + 6.0)
+        player.profile.current_stamina = min(100.0, final_stamina + 8.0)

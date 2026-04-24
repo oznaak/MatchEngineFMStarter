@@ -54,9 +54,9 @@ TEAM_TRAINING_FOCUS_OPTIONS = {
 }
 
 TRAINING_INTENSITY_OPTIONS = {
-    "light": {"label": "Light", "load": 0.65, "growth": 0.70, "stamina_cost": 2.0, "injury": 0.45},
-    "normal": {"label": "Normal", "load": 1.0, "growth": 1.0, "stamina_cost": 4.0, "injury": 1.0},
-    "double": {"label": "Double", "load": 1.45, "growth": 1.32, "stamina_cost": 7.0, "injury": 1.75},
+    "light": {"label": "Light", "load": 0.65, "growth": 0.70, "stamina_cost": 0.18, "injury": 0.45},
+    "normal": {"label": "Normal", "load": 1.0, "growth": 1.0, "stamina_cost": 0.38, "injury": 1.0},
+    "double": {"label": "Double", "load": 1.45, "growth": 1.32, "stamina_cost": 1.25, "injury": 1.75},
 }
 
 PLAYER_TRAINING_FOCUS_OPTIONS = {
@@ -125,4 +125,5 @@ def training_stamina_delta(player: PlayerProfile, team_focus: str, intensity: st
     intensity_info = TRAINING_INTENSITY_OPTIONS[normalize_training_intensity(intensity)]
     natural_fitness = float(player.attributes.get("natural_fitness", 70.0))
     resilience = 0.85 + max(0.0, natural_fitness - 55.0) / 180.0
-    return -float(intensity_info["stamina_cost"]) * float(focus_info["load"]) / resilience
+    readiness_guard = max(0.12, min(1.0, (player.current_stamina - 58.0) / 34.0))
+    return -float(intensity_info["stamina_cost"]) * float(focus_info["load"]) * readiness_guard / resilience

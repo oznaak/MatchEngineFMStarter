@@ -1034,6 +1034,99 @@ def _season_player_totals(conn: sqlite3.Connection, save_id: int) -> Dict[str, D
     return totals
 
 
+def _report_player_rating_from_stats(stats: dict) -> float:
+    minutes = float(stats.get("minutes", 0.0) or 0.0)
+    if minutes <= 0.01:
+        return 0.0
+    rating = 6.0
+    rating += float(stats.get("goals", 0.0) or 0.0) * 0.75
+    rating += float(stats.get("assists", 0.0) or 0.0) * 0.45
+    rating += float(stats.get("shots_on_target", 0.0) or 0.0) * 0.08
+    rating += float(stats.get("tackles", 0.0) or 0.0) * 0.08
+    rating += float(stats.get("interceptions", 0.0) or 0.0) * 0.08
+    rating += float(stats.get("clearances", 0.0) or 0.0) * 0.04
+    rating += float(stats.get("goalkeeper_saves", 0.0) or 0.0) * 0.18
+    rating -= float(stats.get("goalkeeper_goals_conceded", 0.0) or 0.0) * 0.18
+    rating -= float(stats.get("yellow_cards", 0.0) or 0.0) * 0.2
+    rating -= float(stats.get("red_cards", 0.0) or 0.0) * 1.0
+    attempts = float(stats.get("passes_attempted", 0.0) or 0.0)
+    if attempts >= 8.0:
+        completed = float(stats.get("passes_completed", 0.0) or 0.0)
+        rating += ((completed / max(1.0, attempts)) - 0.72) * 0.9
+    return max(1.0, min(10.0, round(rating, 2)))
+
+
+def _season_player_rating_form(conn: sqlite3.Connection, save_id: int) -> Dict[str, Dict[str, object]]:
+    player_club_rows = conn.execute("SELECT id, club_id FROM players").fetchall()
+    club_by_player = {str(row["id"]): str(row["club_id"]) for row in player_club_rows}
+    rows = conn.execute(
+        """
+        SELECT id, fixture_date, home_club_id, away_club_id, report_json
+        FROM fixtures
+        WHERE save_id = ? AND played = 1 AND report_json IS NOT NULL AND report_json != ''
+        ORDER BY fixture_date, id
+        """,
+        (int(save_id),),
+    ).fetchall()
+    form_by_player: Dict[str, List[dict]] = {}
+    for row in rows:
+        try:
+            report = json.loads(str(row["report_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        player_stats = report.get("player_stats", {})
+        if not isinstance(player_stats, dict):
+            continue
+        home = report.get("home", {}) if isinstance(report.get("home"), dict) else {}
+        away = report.get("away", {}) if isinstance(report.get("away"), dict) else {}
+        home_id = str(home.get("id") or row["home_club_id"])
+        away_id = str(away.get("id") or row["away_club_id"])
+        home_name = str(home.get("name") or row["home_club_id"])
+        away_name = str(away.get("name") or row["away_club_id"])
+        fixture_label = f"{home_name} vs {away_name}"
+        for player_id, stats in player_stats.items():
+            if not isinstance(stats, dict) or float(stats.get("minutes", 0.0) or 0.0) <= 0.01:
+                continue
+            side = str(stats.get("side") or "")
+            if not side:
+                players = report.get("players", {})
+                if isinstance(players, dict):
+                    if any(str(player.get("id")) == str(player_id) for player in players.get("home", []) if isinstance(player, dict)):
+                        side = "home"
+                    elif any(str(player.get("id")) == str(player_id) for player in players.get("away", []) if isinstance(player, dict)):
+                        side = "away"
+            if not side:
+                club_id = club_by_player.get(str(player_id))
+                if club_id == home_id:
+                    side = "home"
+                elif club_id == away_id:
+                    side = "away"
+            opponent_id = away_id if side == "home" else home_id if side == "away" else ""
+            opponent_name = away_name if side == "home" else home_name if side == "away" else ""
+            entry = {
+                "fixture_id": int(row["id"]),
+                "fixture_label": fixture_label,
+                "fixture_date": str(row["fixture_date"] or ""),
+                "fixture_date_label": format_game_date(str(row["fixture_date"] or "")),
+                "opponent_id": opponent_id,
+                "opponent_name": opponent_name,
+                "rating": _report_player_rating_from_stats(stats),
+                "minutes": float(stats.get("minutes", 0.0) or 0.0),
+            }
+            form_by_player.setdefault(str(player_id), []).append(entry)
+    result: Dict[str, Dict[str, object]] = {}
+    for player_id, entries in form_by_player.items():
+        ratings = [float(entry["rating"]) for entry in entries if float(entry.get("rating", 0.0) or 0.0) > 0.0]
+        recent = entries[-5:]
+        recent_ratings = [float(entry["rating"]) for entry in recent if float(entry.get("rating", 0.0) or 0.0) > 0.0]
+        result[player_id] = {
+            "avg_rating": round(sum(ratings) / len(ratings), 2) if ratings else 0.0,
+            "recent_form_rating": round(sum(recent_ratings) / len(recent_ratings), 2) if recent_ratings else 0.0,
+            "recent_ratings": recent,
+        }
+    return result
+
+
 def load_app_options(conn: sqlite3.Connection) -> Dict[str, str]:
     rows = conn.execute("SELECT key, value FROM app_options").fetchall()
     options = dict(DEFAULT_APP_OPTIONS)
@@ -1492,13 +1585,31 @@ def normalize_new_save_player_condition(conn: sqlite3.Connection, save_id: int) 
         "SELECT current_day FROM saves WHERE id = ?",
         (int(save_id),),
     ).fetchone()
-    if save_row is None or int(save_row["current_day"] or 0) != 0:
+    if save_row is None:
         return
+    current_day = int(save_row["current_day"] or 0)
     played_row = conn.execute(
         "SELECT COUNT(*) AS count FROM fixtures WHERE save_id = ? AND played = 1",
         (int(save_id),),
     ).fetchone()
     if played_row is not None and int(played_row["count"] or 0) > 0:
+        return
+    if current_day != 0:
+        avg_row = conn.execute(
+            "SELECT AVG(current_stamina) AS avg_stamina FROM save_player_condition WHERE save_id = ?",
+            (int(save_id),),
+        ).fetchone()
+        avg_stamina = float(avg_row["avg_stamina"] or 100.0) if avg_row else 100.0
+        if avg_stamina >= 60.0:
+            return
+        conn.execute(
+            """
+            UPDATE save_player_condition
+            SET current_stamina = MAX(current_stamina, 86.0)
+            WHERE save_id = ?
+            """,
+            (int(save_id),),
+        )
         return
     conn.execute(
         """
@@ -1643,12 +1754,17 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     club_setups = load_save_club_setups(conn, save_id)
     players_by_club = {club["id"]: list_club_players(conn, club["id"], save_id=save_id) for club in clubs}
     season_totals = _season_player_totals(conn, save_id)
+    rating_forms = _season_player_rating_form(conn, save_id)
     for club_players in players_by_club.values():
         for player in club_players:
             totals = season_totals.get(player["id"], {})
             player["apps"] = int(totals.get("apps", 0))
             player["goals"] = int(totals.get("goals", 0))
             player["assists"] = int(totals.get("assists", 0))
+            form = rating_forms.get(player["id"], {})
+            player["avg_rating"] = float(form.get("avg_rating", 0.0) or 0.0)
+            player["recent_form_rating"] = float(form.get("recent_form_rating", 0.0) or 0.0)
+            player["recent_ratings"] = list(form.get("recent_ratings", []))
     next_fixture = get_next_fixture_for_save(conn, save_id, club_id)
     current_date = str(save_row["current_date"] or season_start_date(int(save_row["season_year"] or current_season_year())).isoformat())
     today_fixture = get_playable_fixture_for_save(conn, save_id, club_id, current_date)
@@ -1874,15 +1990,19 @@ def load_save_standings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
             "goals_against": 0,
             "goal_difference": 0,
             "points": 0,
+            "recent_form": [],
+            "next_fixture": None,
         }
         for club in clubs
     }
+    club_names = {club["id"]: club["name"] for club in clubs}
 
     rows = conn.execute(
         """
-        SELECT home_club_id, away_club_id, home_goals, away_goals
+        SELECT id, fixture_date, home_club_id, away_club_id, home_goals, away_goals
         FROM fixtures
         WHERE save_id = ? AND played = 1
+        ORDER BY fixture_date, id
         """,
         (save_id,),
     ).fetchall()
@@ -1903,19 +2023,64 @@ def load_save_standings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
             home["wins"] += 1
             away["losses"] += 1
             home["points"] += 3
+            home_result, away_result = "W", "L"
         elif away_goals > home_goals:
             away["wins"] += 1
             home["losses"] += 1
             away["points"] += 3
+            home_result, away_result = "L", "W"
         else:
             home["draws"] += 1
             away["draws"] += 1
             home["points"] += 1
             away["points"] += 1
+            home_result, away_result = "D", "D"
+        base = {
+            "fixture_id": int(row["id"]),
+            "fixture_date": str(row["fixture_date"] or ""),
+            "fixture_date_label": format_game_date(str(row["fixture_date"] or "")),
+            "home_club_id": home_id,
+            "away_club_id": away_id,
+            "home_name": club_names.get(home_id, home_id),
+            "away_name": club_names.get(away_id, away_id),
+            "home_goals": home_goals,
+            "away_goals": away_goals,
+        }
+        home["recent_form"].append({**base, "result": home_result, "opponent_id": away_id, "opponent_name": club_names.get(away_id, away_id)})
+        away["recent_form"].append({**base, "result": away_result, "opponent_id": home_id, "opponent_name": club_names.get(home_id, home_id)})
+
+    next_rows = conn.execute(
+        """
+        SELECT id, fixture_date, home_club_id, away_club_id
+        FROM fixtures
+        WHERE save_id = ? AND played = 0
+        ORDER BY fixture_date, id
+        """,
+        (save_id,),
+    ).fetchall()
+    for row in next_rows:
+        home_id = str(row["home_club_id"])
+        away_id = str(row["away_club_id"])
+        for club_id, opponent_id, venue in ((home_id, away_id, "HOME"), (away_id, home_id, "AWAY")):
+            if club_id not in table or table[club_id]["next_fixture"] is not None:
+                continue
+            table[club_id]["next_fixture"] = {
+                "fixture_id": int(row["id"]),
+                "fixture_date": str(row["fixture_date"] or ""),
+                "fixture_date_label": format_game_date(str(row["fixture_date"] or "")),
+                "home_club_id": home_id,
+                "away_club_id": away_id,
+                "home_name": club_names.get(home_id, home_id),
+                "away_name": club_names.get(away_id, away_id),
+                "opponent_id": opponent_id,
+                "opponent_name": club_names.get(opponent_id, opponent_id),
+                "venue": venue,
+            }
 
     standings = list(table.values())
     for row in standings:
         row["goal_difference"] = row["goals_for"] - row["goals_against"]
+        row["recent_form"] = list(row.get("recent_form", []))[-4:]
     standings.sort(
         key=lambda row: (
             -row["points"],

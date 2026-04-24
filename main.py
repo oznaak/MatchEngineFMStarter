@@ -1212,6 +1212,16 @@ class ManagerGameApp:
         if action == "modal:confirm_forfeit":
             self._open_confirmation_modal("forfeit")
             return
+        if action == "match_preview:plan":
+            self.modal = None
+            self.overview_tab = "squad_formation"
+            self.overview_club_id = self._managed_club_id()
+            self._load_squad_draft()
+            return
+        if action == "match_preview:play":
+            self.modal = None
+            self._start_next_match()
+            return
         if action == "modal:confirm_menu":
             self._open_confirmation_modal("menu")
             return
@@ -1395,6 +1405,17 @@ class ManagerGameApp:
             return
         if action.startswith("overview_tab:"):
             tab = action.split(":", 1)[1]
+            if tab in {"matches", "matches_fixtures", "matches_standings"}:
+                if tab in {"matches", "matches_fixtures"}:
+                    self.overview_tab = "matches_fixtures"
+                    self._set_fixtures_page_to_current_round()
+                else:
+                    self.overview_tab = "matches_standings"
+                return
+            if tab in {"squad", "squad_formation"}:
+                tab = "squad_formation"
+            elif tab == "squad_players":
+                self._ensure_squad_selected_player()
             if tab in {"matches", "matches_fixtures"}:
                 self.overview_tab = "matches_fixtures"
                 self._set_fixtures_page_to_current_round()
@@ -1426,6 +1447,11 @@ class ManagerGameApp:
         if action.startswith("squad:select_player:"):
             self.squad_selected_player_id = action.split(":", 2)[2]
             return
+        if action.startswith("squad:open_player:"):
+            self.squad_selected_player_id = action.split(":", 2)[2]
+            self.overview_tab = "squad_players"
+            self.overview_club_id = self._managed_club_id() if getattr(self, "overview", None) else None
+            return
         if action.startswith("squad:player_instruction:"):
             _, _, _, player_id, key, delta_text = action.split(":", 5)
             self._change_player_instruction(player_id, key, int(delta_text))
@@ -1455,7 +1481,19 @@ class ManagerGameApp:
             self.overview_club_id = action.split(":", 1)[1]
             return
         if action == "overview:play_next_match":
-            self._start_next_match()
+            fixture = self.overview.get("today_fixture") if self.overview else None
+            if not fixture:
+                return
+            self.modal = {
+                "type": "match_preview",
+                "title": "MATCH PREVIEW",
+                "fixture": fixture,
+                "overview": self.overview or {},
+                "buttons": [
+                    {"label": "PLAN STRAT", "action": "match_preview:plan", "fill": (248, 187, 32), "text_color": (24, 24, 28), "icon": "plan"},
+                    {"label": "PLAY MATCH", "action": "match_preview:play", "fill": (46, 160, 67), "text_color": (245, 245, 245), "icon": "ball"},
+                ],
+            }
             return
         if action == "overview:advance_day":
             self._advance_one_day()

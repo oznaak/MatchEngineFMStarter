@@ -1951,7 +1951,7 @@ class MatchEngine:
             if move_mag > 0.05:
                 p.facing_x = p.vx / move_mag
                 p.facing_y = p.vy / move_mag
-            p.fatigue = clamp(p.fatigue + self._fatigue_load_for_player(p), 0.0, 25.0)
+            p.fatigue = clamp(p.fatigue + self._fatigue_load_for_player(p), 0.0, 23.0)
 
     def _fatigue_load_for_player(self, player: PlayerState) -> float:
         role_factor = {
@@ -1986,7 +1986,7 @@ class MatchEngine:
         tempo_bias = max(0.0, (self._tactic_value(player.side, "tempo") - 50.0) / 50.0)
         tempo_mode = self._instruction_value(player.side, "tempo")
 
-        load = 0.0054 * role_factor * state_factor * stamina_factor
+        load = 0.0048 * role_factor * state_factor * stamina_factor
         if player.slot in ("LB", "RB", "LW", "RW"):
             load *= 1.0 + width_bias * 0.28
         elif player.slot in ("CB", "DM", "GK"):
