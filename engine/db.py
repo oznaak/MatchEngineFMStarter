@@ -245,6 +245,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             player_id TEXT NOT NULL,
             yellow_card_count INTEGER NOT NULL DEFAULT 0,
             suspension_matches_remaining INTEGER NOT NULL DEFAULT 0,
+            suspension_reason TEXT NOT NULL DEFAULT '',
             injury_days_remaining INTEGER NOT NULL DEFAULT 0,
             injury_count INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (save_id, player_id),
@@ -363,6 +364,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "fixtures", "report_json", "TEXT")
     _ensure_column(conn, "save_club_setups", "instructions_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(conn, "save_club_setups", "player_instructions_json", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(conn, "save_player_status", "suspension_reason", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "players", "preferred_foot", "TEXT NOT NULL DEFAULT 'right'")
     _backfill_player_feet(conn)
     _backfill_player_attributes(conn)
@@ -615,6 +617,7 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
                    p.preferred_foot,
                    sps.yellow_card_count,
                    sps.suspension_matches_remaining,
+                   sps.suspension_reason,
                    sps.injury_days_remaining,
                    sps.injury_count
             FROM players p
@@ -948,6 +951,7 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
                    p.preferred_foot,
                    sps.yellow_card_count,
                    sps.suspension_matches_remaining,
+                   sps.suspension_reason,
                    sps.injury_days_remaining,
                    sps.injury_count
             FROM players p
@@ -982,6 +986,7 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
             "current_stamina": float(row["current_stamina"]) if row["current_stamina"] is not None else 100.0,
             "yellow_card_count": int(row["yellow_card_count"] or 0) if "yellow_card_count" in row.keys() else 0,
             "suspension_matches_remaining": int(row["suspension_matches_remaining"] or 0) if "suspension_matches_remaining" in row.keys() else 0,
+            "suspension_reason": str(row["suspension_reason"] or "") if "suspension_reason" in row.keys() else "",
             "injury_days_remaining": int(row["injury_days_remaining"] or 0) if "injury_days_remaining" in row.keys() else 0,
             "injury_count": int(row["injury_count"] or 0) if "injury_count" in row.keys() else 0,
             "available": (
@@ -1184,9 +1189,9 @@ def seed_save_player_status_defaults(conn: sqlite3.Connection, save_id: int) -> 
         """
         INSERT INTO save_player_status (
             save_id, player_id, yellow_card_count,
-            suspension_matches_remaining, injury_days_remaining, injury_count
+            suspension_matches_remaining, suspension_reason, injury_days_remaining, injury_count
         )
-        SELECT ?, p.id, 0, 0, 0, 0
+        SELECT ?, p.id, 0, 0, '', 0, 0
         FROM players p
         """,
         (int(save_id),),
@@ -1407,7 +1412,8 @@ def _decrement_served_suspensions(conn: sqlite3.Connection, save_id: int, club_i
     conn.execute(
         """
         UPDATE save_player_status
-        SET suspension_matches_remaining = MAX(0, suspension_matches_remaining - 1)
+        SET suspension_matches_remaining = MAX(0, suspension_matches_remaining - 1),
+            suspension_reason = CASE WHEN suspension_matches_remaining <= 1 THEN '' ELSE suspension_reason END
         WHERE save_id = ?
           AND suspension_matches_remaining > 0
           AND player_id IN (
@@ -1443,20 +1449,25 @@ def apply_match_report_player_status(conn: sqlite3.Connection, save_id: int, rep
             remaining_yellows = total % 5
             conn.execute(
                 """
-                INSERT INTO save_player_status (save_id, player_id, yellow_card_count, suspension_matches_remaining)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO save_player_status (save_id, player_id, yellow_card_count, suspension_matches_remaining, suspension_reason)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(save_id, player_id) DO UPDATE SET
                     yellow_card_count=excluded.yellow_card_count,
-                    suspension_matches_remaining=save_player_status.suspension_matches_remaining + excluded.suspension_matches_remaining
+                    suspension_matches_remaining=save_player_status.suspension_matches_remaining + excluded.suspension_matches_remaining,
+                    suspension_reason=CASE
+                        WHEN excluded.suspension_matches_remaining > 0 THEN 'yellow_accumulation'
+                        ELSE save_player_status.suspension_reason
+                    END
                 """,
-                (int(save_id), str(player_id), remaining_yellows, bans),
+                (int(save_id), str(player_id), remaining_yellows, bans, "yellow_accumulation" if bans > 0 else ""),
             )
         red_ban = 2 if straight_red > 0 else 1 if second_yellow_red > 0 or int(float(stats.get("red_cards", 0.0) or 0.0)) > 0 else 0
         if red_ban > 0:
             conn.execute(
                 """
                 UPDATE save_player_status
-                SET suspension_matches_remaining = suspension_matches_remaining + ?
+                SET suspension_matches_remaining = suspension_matches_remaining + ?,
+                    suspension_reason = 'red_card'
                 WHERE save_id = ? AND player_id = ?
                 """,
                 (red_ban, int(save_id), str(player_id)),
