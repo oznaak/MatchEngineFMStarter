@@ -229,6 +229,18 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (player_id) REFERENCES players(id)
         );
 
+        CREATE TABLE IF NOT EXISTS save_player_status (
+            save_id INTEGER NOT NULL,
+            player_id TEXT NOT NULL,
+            yellow_card_count INTEGER NOT NULL DEFAULT 0,
+            suspension_matches_remaining INTEGER NOT NULL DEFAULT 0,
+            injury_days_remaining INTEGER NOT NULL DEFAULT 0,
+            injury_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (save_id, player_id),
+            FOREIGN KEY (save_id) REFERENCES saves(id),
+            FOREIGN KEY (player_id) REFERENCES players(id)
+        );
+
         CREATE TABLE IF NOT EXISTS save_club_setups (
             save_id INTEGER NOT NULL,
             club_id TEXT NOT NULL,
@@ -554,16 +566,23 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
             """
         ).fetchall()
     else:
+        seed_save_player_status_defaults(conn, save_id)
         player_rows = conn.execute(
             """
-            SELECT p.id, p.club_id, p.name, p.position, p.ovr, spc.current_stamina
-                 , p.preferred_foot
+            SELECT p.id, p.club_id, p.name, p.position, p.ovr, spc.current_stamina,
+                   p.preferred_foot,
+                   sps.yellow_card_count,
+                   sps.suspension_matches_remaining,
+                   sps.injury_days_remaining,
+                   sps.injury_count
             FROM players p
             LEFT JOIN save_player_condition spc
               ON spc.player_id = p.id AND spc.save_id = ?
+            LEFT JOIN save_player_status sps
+              ON sps.player_id = p.id AND sps.save_id = ?
             ORDER BY p.club_id, p.id
             """,
-            (int(save_id),),
+            (int(save_id), int(save_id)),
         ).fetchall()
     attribute_rows = conn.execute("SELECT player_id, key, value FROM player_attributes").fetchall()
     setup_rows = conn.execute(
@@ -642,6 +661,10 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
                 ),
                 preferred_foot=normalize_preferred_foot(row["preferred_foot"]),
                 current_stamina=float(row["current_stamina"]) if row["current_stamina"] is not None else 100.0,
+                yellow_card_count=int(row["yellow_card_count"] or 0) if "yellow_card_count" in row.keys() else 0,
+                suspension_matches_remaining=int(row["suspension_matches_remaining"] or 0) if "suspension_matches_remaining" in row.keys() else 0,
+                injury_days_remaining=int(row["injury_days_remaining"] or 0) if "injury_days_remaining" in row.keys() else 0,
+                injury_count=int(row["injury_count"] or 0) if "injury_count" in row.keys() else 0,
             )
         )
 
@@ -851,13 +874,20 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
             (club_id,),
         ).fetchall()
     else:
+        seed_save_player_status_defaults(conn, save_id)
         rows = conn.execute(
             """
-            SELECT p.id, p.name, p.position, p.ovr, spc.current_stamina
-                 , p.preferred_foot
+            SELECT p.id, p.name, p.position, p.ovr, spc.current_stamina,
+                   p.preferred_foot,
+                   sps.yellow_card_count,
+                   sps.suspension_matches_remaining,
+                   sps.injury_days_remaining,
+                   sps.injury_count
             FROM players p
             LEFT JOIN save_player_condition spc
               ON spc.player_id = p.id AND spc.save_id = ?
+            LEFT JOIN save_player_status sps
+              ON sps.player_id = p.id AND sps.save_id = ?
             WHERE p.club_id = ?
             ORDER BY CASE p.position
                 WHEN 'GK' THEN 1
@@ -873,7 +903,7 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
                 ELSE 99
             END, p.id
             """,
-            (int(save_id), club_id),
+            (int(save_id), int(save_id), club_id),
         ).fetchall()
     return [
         {
@@ -883,6 +913,14 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
             "ovr": int(row["ovr"]),
             "preferred_foot": normalize_preferred_foot(row["preferred_foot"]),
             "current_stamina": float(row["current_stamina"]) if row["current_stamina"] is not None else 100.0,
+            "yellow_card_count": int(row["yellow_card_count"] or 0) if "yellow_card_count" in row.keys() else 0,
+            "suspension_matches_remaining": int(row["suspension_matches_remaining"] or 0) if "suspension_matches_remaining" in row.keys() else 0,
+            "injury_days_remaining": int(row["injury_days_remaining"] or 0) if "injury_days_remaining" in row.keys() else 0,
+            "injury_count": int(row["injury_count"] or 0) if "injury_count" in row.keys() else 0,
+            "available": (
+                (int(row["suspension_matches_remaining"] or 0) if "suspension_matches_remaining" in row.keys() else 0) <= 0
+                and (int(row["injury_days_remaining"] or 0) if "injury_days_remaining" in row.keys() else 0) <= 0
+            ),
             "attributes": merge_player_attributes(
                 int(row["ovr"]),
                 str(row["position"]),
@@ -1068,6 +1106,124 @@ def seed_save_player_condition_defaults(conn: sqlite3.Connection, save_id: int) 
     )
 
 
+def seed_save_player_status_defaults(conn: sqlite3.Connection, save_id: int) -> None:
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM save_player_status WHERE save_id = ?",
+        (int(save_id),),
+    ).fetchone()
+    if row is not None and int(row["count"] or 0) > 0:
+        return
+    conn.execute(
+        """
+        INSERT INTO save_player_status (
+            save_id, player_id, yellow_card_count,
+            suspension_matches_remaining, injury_days_remaining, injury_count
+        )
+        SELECT ?, p.id, 0, 0, 0, 0
+        FROM players p
+        """,
+        (int(save_id),),
+    )
+
+
+def advance_save_player_status_days(conn: sqlite3.Connection, save_id: int, days: int) -> None:
+    if days <= 0:
+        return
+    seed_save_player_status_defaults(conn, save_id)
+    conn.execute(
+        """
+        UPDATE save_player_status
+        SET injury_days_remaining = MAX(0, injury_days_remaining - ?)
+        WHERE save_id = ?
+        """,
+        (int(days), int(save_id)),
+    )
+
+
+def _fixture_club_ids(conn: sqlite3.Connection, fixture_id: int) -> tuple[int, str, str] | None:
+    row = conn.execute(
+        "SELECT save_id, home_club_id, away_club_id FROM fixtures WHERE id = ?",
+        (int(fixture_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    return int(row["save_id"]), str(row["home_club_id"]), str(row["away_club_id"])
+
+
+def _decrement_served_suspensions(conn: sqlite3.Connection, save_id: int, club_ids: tuple[str, str]) -> None:
+    seed_save_player_status_defaults(conn, save_id)
+    conn.execute(
+        """
+        UPDATE save_player_status
+        SET suspension_matches_remaining = MAX(0, suspension_matches_remaining - 1)
+        WHERE save_id = ?
+          AND suspension_matches_remaining > 0
+          AND player_id IN (
+              SELECT id FROM players WHERE club_id IN (?, ?)
+          )
+        """,
+        (int(save_id), club_ids[0], club_ids[1]),
+    )
+
+
+def apply_match_report_player_status(conn: sqlite3.Connection, save_id: int, report: dict) -> None:
+    seed_save_player_status_defaults(conn, save_id)
+    player_stats = report.get("player_stats", {})
+    if not isinstance(player_stats, dict):
+        player_stats = {}
+    injuries = report.get("injuries", {})
+    if not isinstance(injuries, dict):
+        injuries = {}
+    for player_id, stats in player_stats.items():
+        if not isinstance(stats, dict):
+            continue
+        yellow_cards = int(float(stats.get("yellow_cards", 0.0) or 0.0))
+        straight_red = int(float(stats.get("straight_red_cards", 0.0) or 0.0))
+        second_yellow_red = int(float(stats.get("second_yellow_red_cards", 0.0) or 0.0))
+        if yellow_cards > 0:
+            row = conn.execute(
+                "SELECT yellow_card_count FROM save_player_status WHERE save_id = ? AND player_id = ?",
+                (int(save_id), str(player_id)),
+            ).fetchone()
+            current = int(row["yellow_card_count"] or 0) if row is not None else 0
+            total = current + yellow_cards
+            bans = total // 5
+            remaining_yellows = total % 5
+            conn.execute(
+                """
+                INSERT INTO save_player_status (save_id, player_id, yellow_card_count, suspension_matches_remaining)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(save_id, player_id) DO UPDATE SET
+                    yellow_card_count=excluded.yellow_card_count,
+                    suspension_matches_remaining=save_player_status.suspension_matches_remaining + excluded.suspension_matches_remaining
+                """,
+                (int(save_id), str(player_id), remaining_yellows, bans),
+            )
+        red_ban = 2 if straight_red > 0 else 1 if second_yellow_red > 0 or int(float(stats.get("red_cards", 0.0) or 0.0)) > 0 else 0
+        if red_ban > 0:
+            conn.execute(
+                """
+                UPDATE save_player_status
+                SET suspension_matches_remaining = suspension_matches_remaining + ?
+                WHERE save_id = ? AND player_id = ?
+                """,
+                (red_ban, int(save_id), str(player_id)),
+            )
+    for player_id, injury in injuries.items():
+        if not isinstance(injury, dict):
+            continue
+        days = max(1, int(injury.get("days", 1) or 1))
+        conn.execute(
+            """
+            UPDATE save_player_status
+            SET injury_days_remaining = MAX(injury_days_remaining, ?),
+                injury_count = injury_count + 1
+            WHERE save_id = ? AND player_id = ?
+            """,
+            (days, int(save_id), str(player_id)),
+        )
+
+
 def normalize_new_save_player_condition(conn: sqlite3.Connection, save_id: int) -> None:
     save_row = conn.execute(
         "SELECT current_day FROM saves WHERE id = ?",
@@ -1146,6 +1302,7 @@ def create_save_game(conn: sqlite3.Connection, manager_name: str, league_id: str
     save_id = int(cursor.lastrowid)
     _seed_fixtures_for_save(conn, save_id, league_id, season_year)
     seed_save_player_condition_defaults(conn, save_id)
+    seed_save_player_status_defaults(conn, save_id)
     seed_save_club_setups(conn, save_id)
     set_metadata(conn, "active_save_id", str(save_id))
     conn.commit()
@@ -1177,6 +1334,7 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
     manager_id = int(row["manager_id"])
     conn.execute("DELETE FROM fixtures WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_player_condition WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM save_player_status WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_club_setups WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM saves WHERE id = ?", (int(save_id),))
     remaining = conn.execute(
@@ -1192,6 +1350,7 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
 
 def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
     seed_save_player_condition_defaults(conn, save_id)
+    seed_save_player_status_defaults(conn, save_id)
     seed_save_club_setups(conn, save_id)
     normalize_new_save_player_condition(conn, save_id)
     conn.commit()
@@ -1365,6 +1524,10 @@ def save_fixture_result(
     away_goals: int,
     report: dict | None = None,
 ) -> None:
+    fixture_meta = _fixture_club_ids(conn, fixture_id)
+    if fixture_meta is not None:
+        save_id, home_club_id, away_club_id = fixture_meta
+        _decrement_served_suspensions(conn, save_id, (home_club_id, away_club_id))
     conn.execute(
         """
         UPDATE fixtures
@@ -1381,6 +1544,8 @@ def save_fixture_result(
             int(fixture_id),
         ),
     )
+    if report is not None and fixture_meta is not None:
+        apply_match_report_player_status(conn, fixture_meta[0], report)
 
 
 def get_fixture_report(conn: sqlite3.Connection, fixture_id: int) -> dict | None:

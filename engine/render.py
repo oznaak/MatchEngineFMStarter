@@ -284,9 +284,9 @@ class Renderer:
         return choices
 
     def handle_click(self, pos: Tuple[int, int]) -> str | None:
-        if self.start_rect.collidepoint(pos):
+        if self.start_rect and self.start_rect.collidepoint(pos):
             return "start"
-        if self.speed_rect.collidepoint(pos):
+        if self.speed_rect and self.speed_rect.collidepoint(pos):
             self.speed_menu_open = not self.speed_menu_open
             return None
         if self.speed_menu_open:
@@ -585,6 +585,7 @@ class Renderer:
             )
             yellow_cards = live_player.yellow_cards if live_player else int(state.player_match_stats.get(player_id, {}).get("yellow_cards", 0.0))
             red_card = live_player.red_card if live_player else bool(state.player_match_stats.get(player_id, {}).get("red_cards", 0.0))
+            injured = live_player.injured if live_player else bool(state.player_match_stats.get(player_id, {}).get("injuries", 0.0))
             row_fill = None
             if subs_mode and is_managed_team and player_id != drag_player_id:
                 row_fill = (28, 30, 36)
@@ -599,6 +600,7 @@ class Renderer:
                 stamina_ratio,
                 yellow_cards,
                 red_card,
+                injured,
                 state.player_goals.get(player_id, 0),
                 state.player_assists.get(player_id, 0),
                 row_fill=row_fill,
@@ -633,8 +635,9 @@ class Renderer:
                 bench_player.id,
                 self._player_rating(state, bench_player.id),
                 max(0.08, min(1.0, bench_player.current_stamina / 100.0)),
-                0,
-                False,
+                int(state.player_match_stats.get(bench_player.id, {}).get("yellow_cards", 0.0)),
+                bool(state.player_match_stats.get(bench_player.id, {}).get("red_cards", 0.0)),
+                bool(state.player_match_stats.get(bench_player.id, {}).get("injuries", 0.0)) or bench_player.injury_days_remaining > 0,
                 state.player_goals.get(bench_player.id, 0),
                 state.player_assists.get(bench_player.id, 0),
                 row_fill=row_fill,
@@ -661,6 +664,7 @@ class Renderer:
         stamina_ratio: float,
         yellow_cards: int,
         red_card: bool,
+        injured: bool,
         goals: int,
         assists: int,
         row_fill: Tuple[int, int, int] | None = None,
@@ -698,7 +702,9 @@ class Renderer:
         pygame.draw.rect(self.screen, (68, 68, 74), bar_rect, 1)
 
         badge_x = rect.right - 22
-        if red_card:
+        if injured:
+            self._draw_injury_icon(pygame.Rect(badge_x - 1, y, 14, 16))
+        elif red_card:
             pygame.draw.rect(self.screen, (206, 54, 54), (badge_x, y + 1, 12, 14))
             draw_text(self.screen, "R", badge_x + 2, y + 4, (255, 255, 255), scale=1)
         elif yellow_cards > 0:
@@ -706,6 +712,13 @@ class Renderer:
             draw_text(self.screen, "Y", badge_x + 2, y + 4, (28, 28, 28), scale=1)
         if subbed_out:
             self._draw_subbed_out_indicator(rect.right - 146 - icon_slots * 18, y + 8)
+
+    def _draw_injury_icon(self, rect: pygame.Rect) -> None:
+        pygame.draw.rect(self.screen, (238, 238, 242), rect, border_radius=3)
+        pygame.draw.rect(self.screen, (206, 54, 54), rect, 1, border_radius=3)
+        cx, cy = rect.center
+        pygame.draw.rect(self.screen, (206, 54, 54), pygame.Rect(cx - 2, rect.y + 3, 4, rect.height - 6))
+        pygame.draw.rect(self.screen, (206, 54, 54), pygame.Rect(rect.x + 3, cy - 2, rect.width - 6, 4))
 
     def _draw_sub_controls(self, rect: pygame.Rect, team, subs_mode: bool, subs_pending: bool = False) -> None:
         button_rect = pygame.Rect(rect.x + 10, rect.bottom - 36, rect.width - 20, 26)
@@ -750,6 +763,7 @@ class Renderer:
                 stamina_ratio_for_player(player.profile.attributes.get("stamina", 70.0), player.fatigue),
                 player.yellow_cards,
                 player.red_card,
+                player.injured,
                 state.player_goals.get(player.profile.id, 0),
                 state.player_assists.get(player.profile.id, 0),
                 row_fill=(20, 20, 24),
@@ -768,6 +782,7 @@ class Renderer:
                 max(0.08, min(1.0, bench_player.current_stamina / 100.0)),
                 int(state.player_match_stats.get(bench_player.id, {}).get("yellow_cards", 0.0)),
                 bool(state.player_match_stats.get(bench_player.id, {}).get("red_cards", 0.0)),
+                bool(state.player_match_stats.get(bench_player.id, {}).get("injuries", 0.0)) or bench_player.injury_days_remaining > 0,
                 state.player_goals.get(bench_player.id, 0),
                 state.player_assists.get(bench_player.id, 0),
                 row_fill=(20, 20, 24),
@@ -897,11 +912,11 @@ class Renderer:
         for player in state.home.xi:
             x = player.prev_x + (player.x - player.prev_x) * alpha
             y = player.prev_y + (player.y - player.prev_y) * alpha
-            self._draw_player(x, y, player.profile.id, player.profile.name, (50, 95, 230), player.has_ball, player.facing_x, player.facing_y, player.render_state)
+            self._draw_player(x, y, player.profile.id, player.profile.name, (50, 95, 230), player.has_ball, player.facing_x, player.facing_y, player.render_state, player.injured)
         for player in state.away.xi:
             x = player.prev_x + (player.x - player.prev_x) * alpha
             y = player.prev_y + (player.y - player.prev_y) * alpha
-            self._draw_player(x, y, player.profile.id, player.profile.name, (225, 88, 88), player.has_ball, player.facing_x, player.facing_y, player.render_state)
+            self._draw_player(x, y, player.profile.id, player.profile.name, (225, 88, 88), player.has_ball, player.facing_x, player.facing_y, player.render_state, player.injured)
 
         bx = state.ball.prev_x + (state.ball.x - state.ball.prev_x) * alpha
         by = state.ball.prev_y + (state.ball.y - state.ball.prev_y) * alpha
@@ -918,6 +933,7 @@ class Renderer:
         facing_x: float,
         facing_y: float,
         render_state: str,
+        injured: bool = False,
     ) -> None:
         sx, sy = world_to_screen(x, y)
         outline = {
@@ -939,6 +955,8 @@ class Renderer:
             self._draw_facing_arrow(sx, sy, facing_x, facing_y)
         if has_ball:
             pygame.draw.circle(self.screen, (255, 232, 122), (sx, sy), PLAYER_HAS_BALL_RADIUS, 2)
+        if injured:
+            self._draw_injury_icon(pygame.Rect(sx + 8, sy - 18, 14, 16))
         shirt_number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "0"
         draw_text(self.screen, shirt_number, sx - text_width(shirt_number, 1) // 2, sy - 5, (255, 255, 255), scale=1)
         label = (name.split()[-1] if name.split() else name)[:12]
@@ -2279,7 +2297,26 @@ class Renderer:
             if player:
                 name = short_display_name(player["name"], 12)
                 name_x = node[0] - text_width(name, 1) // 2
-                draw_text(self.screen, name, name_x, node[1] + 2, (245, 245, 245), scale=1)
+                player_available = bool(player.get("available", True))
+                name_color = (245, 245, 245) if player_available else (190, 154, 154)
+                draw_text(self.screen, name, name_x, node[1] + 2, name_color, scale=1)
+                stamina_ratio = max(0.0, min(1.0, float(player.get("current_stamina", 100.0) or 0.0) / 100.0))
+                bar_rect = pygame.Rect(node[0] - 26, node[1] + 16, 52, 5)
+                pygame.draw.rect(self.screen, (28, 30, 36), bar_rect, border_radius=3)
+                bar_color = (116, 208, 120) if stamina_ratio > 0.55 else (232, 190, 72) if stamina_ratio > 0.3 else (220, 96, 96)
+                pygame.draw.rect(self.screen, bar_color, pygame.Rect(bar_rect.x, bar_rect.y, max(2, int(bar_rect.width * stamina_ratio)), bar_rect.height), border_radius=3)
+                pygame.draw.rect(self.screen, (72, 76, 86), bar_rect, 1, border_radius=3)
+                badge_x = node[0] + max(28, text_width(name, 1) // 2 + 4)
+                if int(player.get("injury_days_remaining", 0) or 0) > 0:
+                    self._draw_injury_icon(pygame.Rect(badge_x, node[1] - 2, 14, 16))
+                elif int(player.get("suspension_matches_remaining", 0) or 0) > 0:
+                    pygame.draw.rect(self.screen, (206, 54, 54), pygame.Rect(badge_x, node[1] - 1, 12, 14))
+                    draw_text(self.screen, "B", badge_x + 2, node[1] + 2, (255, 255, 255), scale=1)
+                yellows = int(player.get("yellow_card_count", 0) or 0)
+                if yellows > 0:
+                    card_rect = pygame.Rect(node[0] - max(40, text_width(name, 1) // 2 + 18), node[1] - 1, 12, 14)
+                    pygame.draw.rect(self.screen, (236, 202, 56), card_rect)
+                    draw_text(self.screen, str(min(9, yellows)), card_rect.x + 3, card_rect.y + 3, (28, 28, 28), scale=1)
                 hit_rect = pygame.Rect(0, 0, max(role_rect.width, text_width(name, 1) + 12), 34)
                 hit_rect.center = (node[0], node[1] + 5)
                 self.squad_targets[f"xi:{player_id}"] = {"player_id": player_id, "group": "xi", "rect": hit_rect}
@@ -2347,7 +2384,26 @@ class Renderer:
             pygame.draw.rect(self.screen, fill, row_rect, border_radius=6)
             pygame.draw.rect(self.screen, (84, 88, 98) if is_selected else (58, 60, 68), row_rect, 1, border_radius=6)
             draw_text(self.screen, player["position"], row_rect.x + 8, row_rect.y + 8, (170, 174, 182), scale=1)
-            draw_text(self.screen, short_display_name(player["name"], 14), row_rect.x + 40, row_rect.y + 8, (245, 245, 245), scale=1)
+            player_available = bool(player.get("available", True))
+            name_color = (245, 245, 245) if player_available else (190, 154, 154)
+            draw_text(self.screen, short_display_name(player["name"], 12), row_rect.x + 40, row_rect.y + 8, name_color, scale=1)
+            stamina_ratio = max(0.0, min(1.0, float(player.get("current_stamina", 100.0) or 0.0) / 100.0))
+            stamina_rect = pygame.Rect(row_rect.right - 88, row_rect.y + 8, 30, 6)
+            pygame.draw.rect(self.screen, (34, 36, 42), stamina_rect, border_radius=3)
+            stamina_color = (116, 208, 120) if stamina_ratio > 0.55 else (232, 190, 72) if stamina_ratio > 0.3 else (220, 96, 96)
+            pygame.draw.rect(self.screen, stamina_color, pygame.Rect(stamina_rect.x, stamina_rect.y, max(2, int(stamina_rect.width * stamina_ratio)), stamina_rect.height), border_radius=3)
+            pygame.draw.rect(self.screen, (76, 78, 88), stamina_rect, 1, border_radius=3)
+            status_x = row_rect.right - 54
+            if int(player.get("injury_days_remaining", 0) or 0) > 0:
+                self._draw_injury_icon(pygame.Rect(status_x, row_rect.y + 4, 14, 16))
+                days_text = str(int(player.get("injury_days_remaining", 0) or 0))
+                draw_text(self.screen, days_text, status_x + 18, row_rect.y + 8, (206, 96, 84), scale=1)
+            elif int(player.get("suspension_matches_remaining", 0) or 0) > 0:
+                pygame.draw.rect(self.screen, (206, 54, 54), pygame.Rect(status_x, row_rect.y + 5, 12, 14))
+                draw_text(self.screen, "B", status_x + 2, row_rect.y + 8, (255, 255, 255), scale=1)
+            elif int(player.get("yellow_card_count", 0) or 0) > 0:
+                pygame.draw.rect(self.screen, (236, 202, 56), pygame.Rect(status_x, row_rect.y + 5, 12, 14))
+                draw_text(self.screen, str(min(9, int(player.get("yellow_card_count", 0) or 0))), status_x + 3, row_rect.y + 8, (28, 28, 28), scale=1)
             ovr = str(player["ovr"])
             draw_text(self.screen, ovr, row_rect.right - 8 - text_width(ovr, 1), row_rect.y + 8, (245, 245, 245), scale=1)
             self.squad_targets[f"bench:{player_id}"] = {"player_id": player_id, "group": "bench", "rect": row_rect}
@@ -2473,6 +2529,16 @@ class Renderer:
         def avg(*keys: str) -> float:
             values = [float(attrs.get(key, fallback)) for key in keys]
             return sum(values) / max(1, len(values))
+
+        if str(player.get("position", "")).upper() == "GK":
+            return {
+                "STOPPING": avg("reflexes", "one_on_ones", "agility"),
+                "HANDLING": avg("handling", "concentration", "composure"),
+                "AERIAL": avg("aerial_reach", "command_of_area", "jumping_reach"),
+                "SWEEPER": avg("rushing_out", "positioning", "acceleration"),
+                "DISTRIB": avg("kicking", "throwing", "long_passing", "decisions"),
+                "MENTAL": avg("communication", "anticipation", "decisions", "positioning"),
+            }
 
         return {
             "MENTAL": avg("anticipation", "composure", "concentration", "decisions", "teamwork", "work_rate"),
@@ -2607,6 +2673,15 @@ class Renderer:
         draw_text(self.screen, name, info_rect.x, info_rect.y, (248, 187, 32), scale=2)
         draw_text(self.screen, number.rjust(2, "0"), info_rect.right - text_width(number.rjust(2, "0"), 2), info_rect.y, (248, 187, 32), scale=2)
         draw_text(self.screen, player["position"], info_rect.x, info_rect.y + 28, (170, 174, 182), scale=1)
+        status_x = info_rect.x + text_width(player["position"], 1) + 10
+        if int(player.get("injury_days_remaining", 0) or 0) > 0:
+            self._draw_injury_icon(pygame.Rect(status_x, info_rect.y + 25, 14, 16))
+            status_x += 20
+            days_text = f"{int(player.get('injury_days_remaining', 0))}D"
+            draw_text(self.screen, days_text, status_x, info_rect.y + 28, (206, 96, 84), scale=1)
+        elif int(player.get("suspension_matches_remaining", 0) or 0) > 0:
+            ban_text = f"BAN {int(player.get('suspension_matches_remaining', 0))}"
+            draw_text(self.screen, ban_text, status_x, info_rect.y + 28, (236, 202, 56), scale=1)
         foot_left_rect = pygame.Rect(info_rect.x + 34, info_rect.y + 26, 14, 18)
         foot_right_rect = pygame.Rect(info_rect.x + 54, info_rect.y + 26, 14, 18)
         self._draw_foot_icon(foot_left_rect, preferred_foot == "left", flip=False)
@@ -2742,6 +2817,7 @@ class Renderer:
                     "ovr": player.profile.ovr,
                     "attributes": dict(player.profile.attributes),
                     "preferred_foot": player.profile.preferred_foot,
+                    "injury_days_remaining": player.injury_days,
                     "apps": 1,
                     "goals": int(stats.get("goals", 0.0)),
                     "assists": int(stats.get("assists", 0.0)),
@@ -2759,6 +2835,7 @@ class Renderer:
                     "ovr": profile.ovr,
                     "attributes": dict(profile.attributes),
                     "preferred_foot": profile.preferred_foot,
+                    "injury_days_remaining": profile.injury_days_remaining,
                     "apps": 0,
                     "goals": int(stats.get("goals", 0.0)),
                     "assists": int(stats.get("assists", 0.0)),

@@ -12,6 +12,7 @@ from engine.db import (
     create_save_game,
     delete_save_game,
     db_session,
+    advance_save_player_status_days,
     get_current_day,
     get_fixture_report,
     get_next_fixture_for_save,
@@ -382,7 +383,35 @@ class ManagerGameApp:
             }
             for player_id, values in dict(setup.get("player_instructions", {})).items()
         }
+        self._sanitize_squad_draft_availability()
         self._ensure_squad_selected_player()
+
+    def _squad_player_availability(self) -> dict[str, bool]:
+        if not self.overview:
+            return {}
+        managed_club_id = self._managed_club_id()
+        return {
+            str(player["id"]): bool(player.get("available", True))
+            for player in self.overview.get("players_by_club", {}).get(managed_club_id, [])
+        }
+
+    def _sanitize_squad_draft_availability(self) -> None:
+        if self.active_save_id is None or not self.overview:
+            return
+        availability = self._squad_player_availability()
+        if not availability or all(availability.get(player_id, True) for player_id in self.squad_draft_xi_ids):
+            return
+        club_id = self._managed_club_id()
+        if not club_id:
+            return
+        with db_session(self.db_path) as conn:
+            clubs = load_clubs_from_db(conn, save_id=self.active_save_id)
+        club = clubs.get(club_id)
+        if not club:
+            return
+        xi, bench = pick_best_xi(club, formation_name=self.squad_draft_formation)
+        self.squad_draft_xi_ids = [player.id for player in xi]
+        self.squad_draft_bench_ids = [player.id for player in bench]
 
     def _ensure_squad_selected_player(self) -> None:
         active_ids = [player_id for player_id in self.squad_draft_xi_ids + self.squad_draft_bench_ids if player_id]
@@ -697,6 +726,11 @@ class ManagerGameApp:
     def _apply_squad_swap(self, source_id: str, target_id: str) -> None:
         if source_id == target_id:
             return
+        availability = self._squad_player_availability()
+        if source_id in self.squad_draft_bench_ids and target_id in self.squad_draft_xi_ids and not availability.get(source_id, True):
+            return
+        if target_id in self.squad_draft_bench_ids and source_id in self.squad_draft_xi_ids and not availability.get(target_id, True):
+            return
         if source_id in self.squad_draft_xi_ids and target_id in self.squad_draft_bench_ids:
             xi_index = self.squad_draft_xi_ids.index(source_id)
             bench_index = self.squad_draft_bench_ids.index(target_id)
@@ -910,6 +944,7 @@ class ManagerGameApp:
                 return
             next_day = int(save_row["current_day"]) + 1
             advance_condition_days(clubs, 1)
+            advance_save_player_status_days(conn, self.active_save_id, 1)
             save_condition_state_to_conn(conn, clubs, next_day, save_id=self.active_save_id)
             set_save_current_day(conn, self.active_save_id, next_day)
             conn.commit()
@@ -973,6 +1008,13 @@ class ManagerGameApp:
             "player_stats": json.loads(json.dumps(state.player_match_stats)),
             "player_goals": {key: int(value) for key, value in state.player_goals.items()},
             "player_assists": {key: int(value) for key, value in state.player_assists.items()},
+            "injuries": {
+                str(player_id): {
+                    "days": int(float(stats.get("injury_days", 0.0) or 0.0)),
+                }
+                for player_id, stats in state.player_match_stats.items()
+                if float(stats.get("injuries", 0.0) or 0.0) > 0.0
+            },
             "players": {
                 "home": report_players(state.home, "home"),
                 "away": report_players(state.away, "away"),

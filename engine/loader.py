@@ -85,6 +85,12 @@ PLAYER_ATTRIBUTE_KEYS: Tuple[str, ...] = (
     "handling",
     "one_on_ones",
     "reflexes",
+    "aerial_reach",
+    "command_of_area",
+    "rushing_out",
+    "kicking",
+    "throwing",
+    "communication",
 )
 
 
@@ -154,6 +160,12 @@ def attribute_map_from_ovr(ovr: int, pos: str, *, player_id: str = "", name: str
                 "handling": 10.0,
                 "reflexes": 11.0,
                 "one_on_ones": 9.0,
+                "aerial_reach": 9.0,
+                "command_of_area": 7.0,
+                "rushing_out": 6.0,
+                "kicking": 5.0,
+                "throwing": 5.0,
+                "communication": 6.0,
                 "positioning": 7.0,
                 "concentration": 6.0,
                 "anticipation": 4.0,
@@ -314,6 +326,12 @@ def attribute_map_from_ovr(ovr: int, pos: str, *, player_id: str = "", name: str
                 "handling": -18.0,
                 "reflexes": -16.0,
                 "one_on_ones": -16.0,
+                "aerial_reach": -16.0,
+                "command_of_area": -16.0,
+                "rushing_out": -14.0,
+                "kicking": -8.0,
+                "throwing": -8.0,
+                "communication": -8.0,
             },
         )
     for key in attrs:
@@ -388,6 +406,10 @@ def load_league(path: Path) -> Dict[str, Club]:
                     ),
                     preferred_foot=normalize_preferred_foot(p.get("preferred_foot", infer_preferred_foot(p.get("name"), p.get("position")))),
                     current_stamina=max(0.0, min(100.0, float(p.get("current_stamina", 100.0)))),
+                    yellow_card_count=max(0, int(p.get("yellow_card_count", 0))),
+                    suspension_matches_remaining=max(0, int(p.get("suspension_matches_remaining", 0))),
+                    injury_days_remaining=max(0, int(p.get("injury_days_remaining", 0))),
+                    injury_count=max(0, int(p.get("injury_count", 0))),
                 )
             )
         clubs[club_data["id"].upper()] = Club(
@@ -404,7 +426,7 @@ def load_league(path: Path) -> Dict[str, Club]:
 def _lineup_from_saved_ids(club: Club, formation_name: str) -> Tuple[List[PlayerProfile], List[PlayerProfile]] | None:
     if len(club.lineup_xi) != 11:
         return None
-    players_by_id = {player.id: player for player in club.players}
+    players_by_id = {player.id: player for player in club.players if player.is_available}
     if any(player_id not in players_by_id for player_id in club.lineup_xi):
         return None
 
@@ -427,14 +449,16 @@ def pick_best_xi(club: Club, formation_name: str | None = None) -> Tuple[List[Pl
 
     used_ids = set()
     xi: List[PlayerProfile] = []
+    available_players = [player for player in club.players if player.is_available]
+    player_pool = available_players if len(available_players) >= len(formation_slots(formation_name)) else list(club.players)
 
     for slot in formation_slots(formation_name):
         candidates = [
-            p for p in club.players
+            p for p in player_pool
             if p.id not in used_ids and p.position in FALLBACKS[slot]
         ]
         if not candidates:
-            candidates = [p for p in club.players if p.id not in used_ids]
+            candidates = [p for p in player_pool if p.id not in used_ids]
         fallback_order = FALLBACKS[slot]
         candidates.sort(
             key=lambda p: (
@@ -446,6 +470,6 @@ def pick_best_xi(club: Club, formation_name: str | None = None) -> Tuple[List[Pl
         xi.append(chosen)
         used_ids.add(chosen.id)
 
-    bench = [p for p in club.players if p.id not in used_ids]
+    bench = [p for p in player_pool if p.id not in used_ids and p.is_available]
     bench.sort(key=lambda p: p.ovr, reverse=True)
     return xi, bench

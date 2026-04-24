@@ -315,7 +315,7 @@ class MatchEngine:
         self._team_match_stats(self.state.possession)["possession_seconds"] += SLICE_SECONDS
         minutes_delta = max(0.0, display_seconds_delta) / 60.0
         for player in self.home.xi + self.away.xi:
-            if player.red_card:
+            if player.red_card or player.injured:
                 continue
             self._player_match_stats(player)["minutes"] += minutes_delta
 
@@ -465,12 +465,31 @@ class MatchEngine:
     def _keeper_save_score(self, keeper: PlayerState) -> float:
         attrs = keeper.profile.attributes
         return (
-            attrs.get("reflexes", attrs["positioning"]) * 0.34
-            + attrs.get("one_on_ones", attrs["positioning"]) * 0.20
-            + attrs.get("handling", attrs["positioning"]) * 0.18
-            + attrs["positioning"] * 0.12
-            + attrs.get("agility", attrs.get("acceleration", attrs["pace"])) * 0.10
-            + attrs.get("jumping_reach", attrs.get("strength", attrs["positioning"])) * 0.06
+            attrs.get("reflexes", attrs["positioning"]) * 0.30
+            + attrs.get("one_on_ones", attrs["positioning"]) * 0.18
+            + attrs.get("handling", attrs["positioning"]) * 0.16
+            + attrs.get("aerial_reach", attrs.get("jumping_reach", attrs["positioning"])) * 0.08
+            + attrs.get("command_of_area", attrs["positioning"]) * 0.06
+            + attrs.get("communication", attrs["positioning"]) * 0.04
+            + attrs["positioning"] * 0.10
+            + attrs.get("agility", attrs.get("acceleration", attrs["pace"])) * 0.08
+        )
+
+    def _keeper_distribution_score(self, keeper: PlayerState, pass_type: str) -> float:
+        attrs = keeper.profile.attributes
+        if pass_type in {"switch", "progressive_ground", "through_ball"}:
+            return (
+                attrs.get("kicking", attrs.get("long_passing", attrs["passing"])) * 0.44
+                + attrs.get("long_passing", attrs["passing"]) * 0.24
+                + attrs["decisions"] * 0.18
+                + attrs["composure"] * 0.14
+            )
+        return (
+            attrs.get("throwing", attrs["passing"]) * 0.30
+            + attrs.get("kicking", attrs["passing"]) * 0.22
+            + attrs["short_passing"] * 0.20
+            + attrs["decisions"] * 0.16
+            + attrs["composure"] * 0.12
         )
 
     def _aerial_target_score(self, player: PlayerState) -> float:
@@ -626,6 +645,8 @@ class MatchEngine:
             return False
 
         outgoing = team.xi[outgoing_index]
+        if outgoing.red_card:
+            return False
         incoming_profile = team.bench[incoming_index]
         outgoing.profile.current_stamina = current_stamina_from_fatigue(outgoing.fatigue)
         incoming = self._make_player_state_from_profile(
@@ -697,11 +718,11 @@ class MatchEngine:
 
     def teammates(self, side: str) -> List[PlayerState]:
         team = self.home.xi if side == "home" else self.away.xi
-        return [p for p in team if not p.red_card]
+        return [p for p in team if not p.red_card and not p.injured]
 
     def opponents(self, side: str) -> List[PlayerState]:
         team = self.away.xi if side == "home" else self.home.xi
-        return [p for p in team if not p.red_card]
+        return [p for p in team if not p.red_card and not p.injured]
 
     def update(self, dt: float) -> None:
         if self.state.is_finished or self.state.awaiting_start:
@@ -759,6 +780,7 @@ class MatchEngine:
         self._derive_match_context()
         self._update_off_ball_targets()
         self._move_players()
+        self._maybe_apply_injury_events()
         self._update_ball_motion()
         self._update_render_states()
 
@@ -1437,7 +1459,35 @@ class MatchEngine:
         pressing = (self._tactic_value(side, "pressing") - 50.0) / 50.0
         tempo = (self._tactic_value(side, "tempo") - 50.0) / 50.0
         directness = (self._tactic_value(side, "directness") - 50.0) / 50.0
-        return clamp(1.0 + pressing * 0.16 + max(0.0, tempo) * 0.06 + max(0.0, directness) * 0.04, 0.84, 1.18)
+        return clamp(1.0 + pressing * 0.14 + max(0.0, tempo) * 0.05 + max(0.0, directness) * 0.03, 0.86, 1.15)
+
+    def _scoreline_discipline_multiplier(self, side: str) -> float:
+        own_goals = self.state.home_score if side == "home" else self.state.away_score
+        opponent_goals = self.state.away_score if side == "home" else self.state.home_score
+        goal_margin = own_goals - opponent_goals
+        late_match = clamp((self.state.minute - 35.0) / 55.0, 0.0, 1.0)
+        if goal_margin >= 2:
+            return 1.0 - min(0.18, 0.045 * goal_margin) * late_match
+        if goal_margin <= -2:
+            return 1.0 + min(0.20, 0.040 * abs(goal_margin)) * late_match
+        return 1.0
+
+    def _yellow_card_saturation(self) -> float:
+        elapsed_ratio = clamp(self.state.elapsed_seconds / (MATCH_MINUTES * 60.0), 0.0, 1.0)
+        expected_yellows = 3.0 * elapsed_ratio
+        actual_yellows = float(self.state.yellow_cards_home + self.state.yellow_cards_away)
+        return clamp((actual_yellows - expected_yellows) / 3.0, 0.0, 1.0)
+
+    def _scoreline_card_modifier(self, side: str) -> float:
+        own_goals = self.state.home_score if side == "home" else self.state.away_score
+        opponent_goals = self.state.away_score if side == "home" else self.state.home_score
+        goal_margin = own_goals - opponent_goals
+        late_match = clamp((self.state.minute - 35.0) / 55.0, 0.0, 1.0)
+        if goal_margin <= -2:
+            return min(0.12, 0.030 * abs(goal_margin)) * late_match
+        if goal_margin >= 2:
+            return -min(0.06, 0.015 * goal_margin) * late_match
+        return 0.0
 
     def _card_event(self, offender: PlayerState, color: str) -> None:
         if color == "yellow":
@@ -1450,11 +1500,12 @@ class MatchEngine:
             self._player_match_stats(offender)["yellow_cards"] += 1.0
             self.add_event(f"Yellow card for {offender.short_name}")
             if offender.yellow_cards >= 2:
-                self._card_event(offender, "red")
+                self._card_event(offender, "second_yellow_red")
             return
         if offender.red_card:
             return
         offender.red_card = True
+        offender.red_card_reason = "straight_red" if color == "straight_red" else "second_yellow"
         offender.has_ball = False
         offender.target_x = -10.0
         offender.target_y = -10.0
@@ -1468,8 +1519,20 @@ class MatchEngine:
         else:
             self.state.red_cards_away += 1
         self._team_match_stats(offender.side)["red_cards"] += 1.0
-        self._player_match_stats(offender)["red_cards"] += 1.0
-        self.add_event(f"Red card for {offender.short_name}")
+        player_stats = self._player_match_stats(offender)
+        player_stats["red_cards"] += 1.0
+        if offender.red_card_reason == "straight_red":
+            player_stats["straight_red_cards"] += 1.0
+        else:
+            player_stats["second_yellow_red_cards"] += 1.0
+        reason = "straight red" if offender.red_card_reason == "straight_red" else "second yellow"
+        self.add_event(f"Red card for {offender.short_name} ({reason})")
+
+    def _straight_red_enabled(self, offender: PlayerState) -> bool:
+        pressure_bias = self._player_pressure_bias(offender)
+        player_pressure = self._player_instruction_value(offender, "pressure")
+        tactical_pressing = self._tactic_value(offender.side, "pressing")
+        return player_pressure >= 90 or pressure_bias >= 0.40 or tactical_pressing >= 90.0
 
     def _foul_card_color(self, offender: PlayerState, foul_spot: Tuple[float, float], attacking_side: str, severity: float) -> Optional[str]:
         strictness = (self.state.referee_strictness - 50.0) / 50.0
@@ -1477,18 +1540,46 @@ class MatchEngine:
         central_gap = abs(foul_spot[1] - PITCH_WIDTH / 2)
         dogso = attack_forward > 88.0 and central_gap < 10.0
         pressure_bias = self._player_pressure_bias(offender)
-        yellow = (
-            severity * 0.78
-            + max(0.0, strictness) * 0.08
-            + (0.08 if attack_forward > 78.0 else 0.0)
-            + (0.06 if offender.fouls_committed >= 3 else 0.0)
-            + (0.04 if offender.yellow_cards >= 1 else 0.0)
-            + (self._discipline_intensity(offender.side) - 1.0) * 0.12
-            + pressure_bias * 0.10
+        team_fouls = self.state.fouls_count_home if offender.side == "home" else self.state.fouls_count_away
+        direct_red_probability = (
+            0.22
+            + (severity - 0.84) * 1.6
+            + max(0.0, strictness) * 0.10
+            + pressure_bias * 0.08
         )
-        if dogso and severity > 0.84:
-            return "red"
-        if yellow > 0.66:
+        if (
+            dogso
+            and severity > 0.86
+            and self._straight_red_enabled(offender)
+            and self.rng.random() < clamp(direct_red_probability, 0.10, 0.62)
+        ):
+            return "straight_red"
+
+        yellow_score = (
+            severity * 0.66
+            + strictness * 0.05
+            + (0.12 if attack_forward > 78.0 else 0.0)
+            + (0.04 if attack_forward > 90.0 and central_gap < 18.0 else 0.0)
+            + (0.05 if offender.fouls_committed >= 3 else 0.0)
+            + (0.05 if team_fouls >= 4 else 0.0)
+            + (0.04 if team_fouls >= 7 else 0.0)
+            + (self._discipline_intensity(offender.side) - 1.0) * 0.10
+            + pressure_bias * 0.07
+            + self._scoreline_card_modifier(offender.side)
+        )
+        if offender.yellow_cards >= 1:
+            if severity >= 0.90 and attack_forward > 78.0:
+                return "yellow"
+            yellow_score -= 0.12
+
+        if yellow_score < 0.45:
+            return None
+
+        yellow_probability = clamp((yellow_score - 0.45) * 1.75, 0.05, 0.50)
+        yellow_probability *= 1.0 - self._yellow_card_saturation() * 0.45
+        if offender.yellow_cards >= 1:
+            yellow_probability *= 0.55
+        if self.rng.random() < yellow_probability:
             return "yellow"
         return None
 
@@ -1816,7 +1907,7 @@ class MatchEngine:
 
     def _move_players(self) -> None:
         for p in self.home.xi + self.away.xi:
-            if p.red_card:
+            if p.red_card or p.injured:
                 p.x = -10.0
                 p.y = -10.0
                 p.prev_x = -10.0
@@ -1913,6 +2004,71 @@ class MatchEngine:
             load *= 1.12
 
         return clamp(load, 0.0007, 0.013)
+
+    def _injury_risk_for_player(self, player: PlayerState) -> float:
+        if player.red_card or player.injured:
+            return 0.0
+        live_stamina = current_stamina_from_fatigue(player.fatigue)
+        attrs = player.profile.attributes
+        fatigue_factor = clamp((72.0 - live_stamina) / 52.0, 0.0, 1.0)
+        chronic_factor = clamp(player.profile.injury_count / 7.0, 0.0, 0.70)
+        low_fitness_factor = clamp((68.0 - attrs.get("natural_fitness", attrs["stamina"])) / 45.0, 0.0, 0.70)
+        workload_factor = clamp((100.0 - player.profile.current_stamina) / 55.0, 0.0, 0.95)
+        intensity_factor = 0.0
+        if player.render_state in {"run", "recover", "pressing", "transition", "carry"}:
+            intensity_factor += 0.45
+        if self._instruction_value(player.side, "tempo") == "higher":
+            intensity_factor += 0.16
+        if self._tactic_value(player.side, "pressing") >= 70.0 and player.slot != "GK":
+            intensity_factor += 0.16
+        base = 0.000004
+        return base * (1.0 + fatigue_factor * 3.8 + chronic_factor * 1.8 + low_fitness_factor + workload_factor * 1.4 + intensity_factor)
+
+    def _injury_duration_days(self, player: PlayerState) -> int:
+        live_stamina = current_stamina_from_fatigue(player.fatigue)
+        fatigue_bonus = max(0, int((58.0 - live_stamina) / 9.0))
+        chronic_bonus = max(0, player.profile.injury_count)
+        base = int(round(self.rng.triangular(4.0, 28.0, 9.0)))
+        return max(2, min(90, base + fatigue_bonus + chronic_bonus * 2))
+
+    def _injury_event(self, player: PlayerState) -> None:
+        if player.injured or player.red_card:
+            return
+        days = self._injury_duration_days(player)
+        player.injured = True
+        player.injury_days = days
+        player.profile.injury_days_remaining = max(player.profile.injury_days_remaining, days)
+        player.profile.injury_count += 1
+        player.has_ball = False
+        if self.state.ball.carrier_id == player.profile.id:
+            self.state.ball.carrier_id = None
+            self.state.ball.mode = "loose"
+            self.state.ball.loose_owner_bias = "away" if player.side == "home" else "home"
+        stats = self._player_match_stats(player)
+        stats["injuries"] += 1.0
+        stats["injury_days"] = max(float(stats.get("injury_days", 0.0)), float(days))
+        self._set_render_state(player, "shape", "injured")
+        self.add_event(f"{player.short_name} is injured")
+
+    def _maybe_apply_injury_events(self) -> None:
+        if self.state.awaiting_start or self.state.is_finished:
+            return
+        for player in self.home.xi + self.away.xi:
+            if self.rng.random() < self._injury_risk_for_player(player):
+                self._injury_event(player)
+                team = self._team_state(player.side)
+                if player.side not in self.human_controlled_sides and self.can_make_substitution_window(player.side):
+                    candidates = [
+                        bench_player
+                        for bench_player in team.bench
+                        if bench_player.id not in team.subbed_out_ids
+                        and position_fit_level(bench_player.position, player.slot) > 0
+                    ]
+                    if candidates:
+                        candidates.sort(key=lambda profile: self._bench_sub_score(profile, player.slot), reverse=True)
+                        if self.make_substitution(player.side, player.profile.id, candidates[0].id):
+                            team.substitution_windows_used += 1
+                break
 
     def _player_move_speed(self, player: PlayerState) -> float:
         if player.render_state == "celebrate":
@@ -2121,6 +2277,72 @@ class MatchEngine:
         if pass_type == "switch":
             return base + (3.5 if abs(receiver.y - carrier.y) > 16 else -2.0)
         return base + 1.4 - max(0.0, dist - 18.0) * 0.10
+
+    def _pass_execution_skill(self, passer: PlayerState, pass_type: str) -> float:
+        if passer.slot == "GK":
+            return self._keeper_distribution_score(passer, pass_type)
+        attrs = passer.profile.attributes
+        base_passing = attrs["passing"]
+        technique = attrs.get("technique", base_passing)
+        vision = attrs["vision"]
+        if pass_type == "short_ground":
+            return (
+                attrs.get("short_passing", base_passing) * 0.65
+                + base_passing * 0.20
+                + technique * 0.10
+                + attrs["decisions"] * 0.05
+            )
+        if pass_type == "cross":
+            return (
+                attrs.get("crossing", base_passing) * 0.64
+                + attrs.get("long_passing", base_passing) * 0.12
+                + technique * 0.12
+                + vision * 0.08
+                + attrs["decisions"] * 0.04
+            )
+        if pass_type in ("switch", "through_ball"):
+            return (
+                attrs.get("long_passing", base_passing) * 0.68
+                + base_passing * 0.12
+                + vision * 0.08
+                + technique * 0.07
+                + attrs["decisions"] * 0.05
+            )
+        return (
+            base_passing * 0.36
+            + attrs.get("short_passing", base_passing) * 0.24
+            + attrs.get("long_passing", base_passing) * 0.14
+            + vision * 0.12
+            + technique * 0.08
+            + attrs["decisions"] * 0.06
+        )
+
+    def _pass_instruction_modifier(self, side: str, pass_type: str, pass_distance: float) -> float:
+        passing = self._instruction_value(side, "passing")
+        tempo = self._instruction_value(side, "tempo")
+        gameplan = self._instruction_value(side, "gameplan")
+        is_short = pass_type == "short_ground" and pass_distance <= 20.0
+        is_direct = pass_type in ("progressive_ground", "through_ball", "switch", "cross") or pass_distance >= 26.0
+        modifier = 0.0
+
+        if passing == "shorter":
+            modifier += 0.035 if is_short else -0.040
+        elif passing == "long_balls":
+            modifier += 0.014 if is_direct else -0.018
+
+        if tempo == "lower":
+            modifier += 0.024 if is_short else -0.018
+        elif tempo == "higher":
+            modifier -= 0.018 if is_short else 0.030
+
+        if gameplan == "possession":
+            modifier += 0.026 if is_short else -0.016
+        elif gameplan == "quick_play":
+            modifier -= 0.020 if is_short else 0.026
+
+        if is_direct:
+            modifier -= max(0.0, pass_distance - 28.0) / 460.0
+        return clamp(modifier, -0.10, 0.09)
 
     def _is_cross_situation(self, carrier: PlayerState, receiver: PlayerState) -> bool:
         if carrier.slot not in ("LW", "RW", "LB", "RB"):
@@ -2591,7 +2813,7 @@ class MatchEngine:
         }
         self._place_team_for_kickoff(kickoff_side)
         striker = self._pick_restart_player(kickoff_side, ("ST", "AM", "CM", "LW", "RW"))
-        support = self._pick_restart_player(kickoff_side, ("AM", "CM", "DM", "LW", "RW"), exclude_id=striker.profile.id)
+        support = self._pick_restart_player(kickoff_side, ("DM", "CM", "AM", "LW", "RW"), exclude_id=striker.profile.id)
         striker.x = PITCH_LENGTH / 2
         striker.y = PITCH_WIDTH / 2
         support.x = PITCH_LENGTH / 2 - self._side_forward_sign(kickoff_side) * 8.5
@@ -2744,7 +2966,7 @@ class MatchEngine:
     def _execute_kickoff(self) -> None:
         kickoff_side = self.state.restart_side or "home"
         striker = self._pick_restart_player(kickoff_side, ("ST", "AM", "CM", "LW", "RW"))
-        support = self._pick_restart_player(kickoff_side, ("AM", "CM", "DM", "LW", "RW"), exclude_id=striker.profile.id)
+        support = self._pick_restart_player(kickoff_side, ("DM", "CM", "AM", "LW", "RW"), exclude_id=striker.profile.id)
         self.state.restart_mode = None
         self.state.restart_timer = 0.0
         self.state.restart_side = None
@@ -3145,20 +3367,18 @@ class MatchEngine:
         goal_dist = self._goal_distance(shooter)
         pressure = self._pressure_on_player(shooter)
         strength = self._team_strength(shooter.side)
-        shooter_attrs = shooter.profile.attributes
         keeper_attrs = keeper.profile.attributes
-        long_shot_factor = max(0.0, min(1.0, (goal_dist - 18.0) / 12.0))
         goal = (
-            0.045
-            + ((shooter_attrs["finishing"] * (1.0 - long_shot_factor) + shooter_attrs.get("long_shots", shooter_attrs["finishing"]) * long_shot_factor) - 50.0) / 255.0
-            + (shooter_attrs["composure"] - 50.0) / 300.0
-            + (shooter_attrs.get("technique", shooter_attrs["finishing"]) - 50.0) / 340.0
+            0.018
+            + self._shot_quality(shooter) * 0.34
             + strength * 0.02
-            - pressure * 0.14
-            - max(0.0, goal_dist - 18.0) / 82.0
+            - self._keeper_save_score(keeper) / 850.0
+            - pressure * 0.035
         )
         if self._success_roll(goal):
             return "goal"
+        if self.rng.random() > self._shot_on_target_chance(shooter):
+            return "off_target"
         save = 0.46 + self._keeper_save_score(keeper) / 205.0
         save_roll = self.rng.random()
         if save_roll < clamp(save, 0.2, 0.95):
@@ -3174,6 +3394,66 @@ class MatchEngine:
             return "save"
         return "off_target"
 
+    def _shot_on_target_chance(self, shooter: PlayerState) -> float:
+        attrs = shooter.profile.attributes
+        goal_dist = self._goal_distance(shooter)
+        pressure = self._pressure_on_player(shooter)
+        angle_quality = clamp(1.0 - abs(shooter.y - PITCH_WIDTH / 2) / (PITCH_WIDTH / 2), 0.0, 1.0)
+        long_shot_factor = clamp((goal_dist - 18.0) / 16.0, 0.0, 1.0)
+        shooting_technique = (
+            attrs["finishing"] * (1.0 - long_shot_factor)
+            + attrs.get("long_shots", attrs["finishing"]) * long_shot_factor
+        ) * 0.48 + attrs.get("technique", attrs["finishing"]) * 0.24 + attrs["composure"] * 0.18 + attrs["decisions"] * 0.10
+        chance = (
+            0.30
+            + self._shot_quality(shooter) * 0.38
+            + (shooting_technique - 60.0) / 360.0
+            + angle_quality * 0.08
+            - pressure * 0.13
+            - max(0.0, goal_dist - 22.0) / 105.0
+            - shooter.fatigue / 520.0
+        )
+        return clamp(chance, 0.18, 0.84)
+
+    def _shot_quality(self, shooter: PlayerState) -> float:
+        attrs = shooter.profile.attributes
+        goal_dist = self._goal_distance(shooter)
+        pressure = self._pressure_on_player(shooter)
+        angle_quality = clamp(1.0 - abs(shooter.y - PITCH_WIDTH / 2) / (PITCH_WIDTH / 2), 0.0, 1.0)
+        forwardness = self._forwardness(shooter.side, shooter.x)
+        long_shot_factor = clamp((goal_dist - 18.0) / 14.0, 0.0, 1.0)
+        shot_skill = (
+            attrs["finishing"] * (1.0 - long_shot_factor)
+            + attrs.get("long_shots", attrs["finishing"]) * long_shot_factor
+        )
+        technical_quality = (
+            shot_skill * 0.48
+            + attrs["composure"] * 0.22
+            + attrs.get("technique", attrs["finishing"]) * 0.14
+            + attrs["decisions"] * 0.10
+            + attrs["first_touch"] * 0.06
+        )
+        distance_quality = clamp((34.0 - goal_dist) / 24.0, 0.0, 1.0)
+        central_quality = angle_quality
+        final_third_quality = clamp((forwardness - 58.0) / 34.0, 0.0, 1.0)
+        mindset_bias = self._player_mindset_bias(shooter)
+        rushed_penalty = max(0.0, self._tactic_value(shooter.side, "tempo") - 62.0) / 1000.0
+        quality = (
+            (technical_quality - 50.0) / 92.0
+            + distance_quality * 0.34
+            + central_quality * 0.20
+            + final_third_quality * 0.10
+            + mindset_bias * 0.035
+            - pressure * 0.18
+            - shooter.fatigue / 420.0
+            - rushed_penalty
+        )
+        if self._instruction_value(shooter.side, "gameplan") == "possession" and goal_dist > 22.0:
+            quality -= 0.035
+        if self._instruction_value(shooter.side, "gameplan") == "quick_play" and goal_dist <= 24.0:
+            quality += 0.018
+        return clamp(quality, 0.0, 1.0)
+
     def _team_strength(self, side: str) -> float:
         avg = self.home.avg_ovr if side == "home" else self.away.avg_ovr
         tempo_boost = {
@@ -3188,8 +3468,20 @@ class MatchEngine:
         nearest_opp = min(opps, key=lambda o: distance((player.x, player.y), (o.x, o.y)))
         nearest = distance((player.x, player.y), (nearest_opp.x, nearest_opp.y))
         defending_side = "away" if player.side == "home" else "home"
+        pressing_bias = (self._tactic_value(defending_side, "pressing") - 50.0) / 50.0
+        presser_attrs = nearest_opp.profile.attributes
+        presser_engine = (
+            presser_attrs.get("work_rate", presser_attrs.get("stamina", 60.0)) * 0.34
+            + presser_attrs.get("acceleration", presser_attrs["pace"]) * 0.24
+            + presser_attrs["pace"] * 0.18
+            + presser_attrs.get("anticipation", presser_attrs["positioning"]) * 0.14
+            + presser_attrs["positioning"] * 0.10
+        )
         intensity = 1.0 + self._playstyle_defence_modifier(defending_side) * 0.85 + self._player_pressure_bias(nearest_opp) * 0.38
         intensity += max(0.0, -self._player_mindset_bias(nearest_opp)) * 0.16
+        intensity += max(0.0, pressing_bias) * 0.26 + min(0.0, pressing_bias) * 0.14
+        intensity += (presser_engine - 60.0) / 420.0
+        intensity -= nearest_opp.fatigue / 360.0
         return clamp((1.0 - nearest / 16.0) * intensity, 0.0, 1.0)
 
     def _receiver_space(self, receiver: PlayerState) -> float:
@@ -3197,8 +3489,11 @@ class MatchEngine:
         nearest_opp = min(opps, key=lambda o: distance((receiver.x, receiver.y), (o.x, o.y)))
         nearest = distance((receiver.x, receiver.y), (nearest_opp.x, nearest_opp.y))
         defending_side = "away" if receiver.side == "home" else "home"
+        pressing_bias = (self._tactic_value(defending_side, "pressing") - 50.0) / 50.0
         squeeze = 1.0 - self._playstyle_defence_modifier(defending_side) * 0.55 - self._player_pressure_bias(nearest_opp) * 0.20
         squeeze -= max(0.0, -self._player_mindset_bias(nearest_opp)) * 0.10
+        squeeze -= max(0.0, pressing_bias) * 0.12
+        squeeze -= min(0.0, pressing_bias) * 0.08
         return clamp((nearest / 18.0) * squeeze, 0.0, 1.4)
 
     def _goal_distance(self, player: PlayerState) -> float:
@@ -3470,19 +3765,27 @@ class MatchEngine:
         strength = self._team_strength(carrier.side)
         lane_penalty = self._evaluate_pass_lane(carrier, receiver, pass_type)
         target_x, target_y = self._predict_receiver_target(carrier, receiver, pass_type)
+        execution_skill = self._pass_execution_skill(carrier, pass_type)
+        receiving_skill = recv_attrs["first_touch"] * 0.72 + recv_attrs.get("technique", recv_attrs["first_touch"]) * 0.18 + recv_attrs["composure"] * 0.10
 
         chance = (
             0.515
-            + (attrs["passing"] - 50.0) / 150.0
+            + (execution_skill - 50.0) / 152.0
             + (attrs["vision"] - 50.0) / 190.0
-            + (recv_attrs["first_touch"] - 50.0) / 250.0
+            + (attrs["decisions"] - 50.0) / 260.0
+            + (receiving_skill - 50.0) / 270.0
             + recv_space * 0.09
             + strength * 0.04
+            + self._pass_instruction_modifier(carrier.side, pass_type, dist)
             - pressure * 0.16
             - lane_penalty * 0.058
             - dist / 198.0
             - carrier.fatigue / 190.0
         )
+        if pass_type == "cross":
+            chance -= 0.035
+        elif pass_type in ("switch", "through_ball"):
+            chance -= 0.025
         if not self._success_roll(chance):
             direction_x = target_x - carrier.x
             direction_y = target_y - carrier.y
@@ -3605,6 +3908,7 @@ class MatchEngine:
             + max(0.0, -mindset_bias) * 0.03
         )
         foul_chance *= discipline_intensity
+        foul_chance *= self._scoreline_discipline_multiplier(defender.side)
         if near_touchline:
             foul_chance -= 0.08
         if defender.yellow_cards >= 1:
@@ -3621,6 +3925,10 @@ class MatchEngine:
             0.08,
             0.92,
         )
+        severity *= self._scoreline_discipline_multiplier(defender.side)
+        if defender.yellow_cards >= 1:
+            severity -= 0.05
+        severity = clamp(severity, 0.08, 0.92)
         touchline_spill_chance = clamp(
             0.34
             + self._event_frequency_boost("throw_in") * 0.18
@@ -3736,7 +4044,20 @@ class MatchEngine:
         self.add_event(f"{carrier.short_name} shoots")
 
     def _goalkeeper(self, side: str) -> PlayerState:
-        return next(p for p in self.teammates(side) if p.slot == "GK")
+        active_goalkeepers = [p for p in self.teammates(side) if p.slot == "GK" and not p.red_card]
+        if active_goalkeepers:
+            return active_goalkeepers[0]
+        emergency_pool = [p for p in self.teammates(side) if not p.red_card]
+        if emergency_pool:
+            return max(
+                emergency_pool,
+                key=lambda p: (
+                    p.profile.attributes.get("positioning", 50.0)
+                    + p.profile.attributes.get("handling", p.profile.attributes.get("first_touch", 50.0)) * 0.45
+                    + p.profile.attributes.get("jumping_reach", 50.0) * 0.25
+                ),
+            )
+        return max(self._team_state(side).xi, key=lambda p: p.profile.attributes.get("positioning", 50.0))
 
     def _update_render_states(self) -> None:
         if self.state.awaiting_start or self.state.celebration_timer > 0 or self.state.restart_timer > 0:

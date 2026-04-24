@@ -85,6 +85,8 @@ def advance_condition_days(clubs: Dict[str, Club], days: int) -> None:
                     100.0,
                     player.current_stamina + _daily_recovery(player, player.current_stamina),
                 )
+                if player.injury_days_remaining > 0:
+                    player.injury_days_remaining = max(0, player.injury_days_remaining - 1)
 
 
 def apply_post_match_condition(state: MatchState) -> None:

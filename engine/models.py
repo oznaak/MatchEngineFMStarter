@@ -183,6 +183,9 @@ def default_player_match_stats() -> Dict[str, float]:
         "duels_won": 0.0,
         "yellow_cards": 0.0,
         "red_cards": 0.0,
+        "straight_red_cards": 0.0,
+        "second_yellow_red_cards": 0.0,
+        "injuries": 0.0,
         "goalkeeper_saves": 0.0,
         "goalkeeper_high_claims": 0.0,
         "goalkeeper_goals_conceded": 0.0,
@@ -201,6 +204,14 @@ class PlayerProfile:
     attributes: Dict[str, float]
     preferred_foot: str = "right"
     current_stamina: float = 100.0
+    yellow_card_count: int = 0
+    suspension_matches_remaining: int = 0
+    injury_days_remaining: int = 0
+    injury_count: int = 0
+
+    @property
+    def is_available(self) -> bool:
+        return self.suspension_matches_remaining <= 0 and self.injury_days_remaining <= 0
 
 
 @dataclass
@@ -261,6 +272,9 @@ class PlayerState:
     commit_target_y: Optional[float] = None
     yellow_cards: int = 0
     red_card: bool = False
+    red_card_reason: Optional[str] = None
+    injured: bool = False
+    injury_days: int = 0
     fouls_committed: int = 0
     fouls_suffered: int = 0
 
