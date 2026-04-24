@@ -48,6 +48,17 @@ DEFAULT_LEAGUE = {
     "name": "England Division I",
 }
 
+DEFAULT_CLUB_MANAGERS = {
+    "A": "Mikel Arteta",
+    "B": "Michael Carrick",
+    "C": "Calum McFarlane",
+    "D": "Pep Guardiola",
+    "E": "Arne Slot",
+    "F": "Roberto De Zerbi",
+    "G": "Nuno Espirito Santo",
+    "H": "Eddie Howe",
+}
+
 SEASON_START_MONTH = 7
 SEASON_START_DAY = 7
 FIRST_MATCH_MONTH = 8
@@ -170,7 +181,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS clubs (
             id TEXT PRIMARY KEY,
-            name TEXT NOT NULL
+            name TEXT NOT NULL,
+            manager_name TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS club_tactics (
@@ -362,12 +374,14 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "saves", "current_date", "TEXT")
     _ensure_column(conn, "fixtures", "fixture_date", "TEXT")
     _ensure_column(conn, "fixtures", "report_json", "TEXT")
+    _ensure_column(conn, "clubs", "manager_name", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "save_club_setups", "instructions_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(conn, "save_club_setups", "player_instructions_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(conn, "save_player_status", "suspension_reason", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "players", "preferred_foot", "TEXT NOT NULL DEFAULT 'right'")
     _backfill_player_feet(conn)
     _backfill_player_attributes(conn)
+    _backfill_club_managers(conn)
     _backfill_calendar_fields(conn)
     conn.commit()
 
@@ -493,6 +507,19 @@ def _backfill_player_attributes(conn: sqlite3.Connection) -> None:
         )
 
 
+def _backfill_club_managers(conn: sqlite3.Connection) -> None:
+    rows = conn.execute("SELECT id, manager_name FROM clubs").fetchall()
+    for row in rows:
+        club_id = str(row["id"])
+        manager_name = str(row["manager_name"] or "").strip()
+        default = DEFAULT_CLUB_MANAGERS.get(club_id, "")
+        if not manager_name and default:
+            conn.execute(
+                "UPDATE clubs SET manager_name = ? WHERE id = ?",
+                (default, club_id),
+            )
+
+
 def _ensure_default_badges(conn: sqlite3.Connection) -> None:
     conn.executemany(
         """
@@ -590,7 +617,7 @@ def _ensure_default_options(conn: sqlite3.Connection) -> None:
 
 
 def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> Dict[str, Club]:
-    club_rows = conn.execute("SELECT id, name FROM clubs ORDER BY id").fetchall()
+    club_rows = conn.execute("SELECT id, name, manager_name FROM clubs ORDER BY id").fetchall()
     tactic_rows = conn.execute("SELECT club_id, key, value FROM club_tactics").fetchall()
     color_rows = conn.execute("SELECT club_id, key, value FROM club_colors").fetchall()
     badge_rows = conn.execute(
@@ -731,6 +758,7 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
         clubs[club_id] = Club(
             id=club_id,
             name=str(row["name"]),
+            manager_name=str(row["manager_name"] or ""),
             players=list(players_by_club.get(club_id, [])),
             tactics=dict(tactics_by_club.get(club_id, DEFAULT_TACTICS)),
             colors=dict(colors_by_club.get(club_id, DEFAULT_COLORS)),
@@ -855,7 +883,8 @@ def list_leagues(conn: sqlite3.Connection) -> List[dict]:
 def list_league_clubs(conn: sqlite3.Connection, league_id: str) -> List[dict]:
     rows = conn.execute(
         """
-        SELECT c.id, c.name, cc.value AS primary_color, cs.value AS secondary_color,
+        SELECT c.id, c.name, c.manager_name,
+               cc.value AS primary_color, cs.value AS secondary_color,
                cb.template_id, cb.primary_color AS badge_primary, cb.secondary_color AS badge_secondary,
                cb.border_color AS badge_border,
                COUNT(p.id) AS players_count, ROUND(AVG(p.ovr), 1) AS avg_ovr
@@ -866,7 +895,7 @@ def list_league_clubs(conn: sqlite3.Connection, league_id: str) -> List[dict]:
         LEFT JOIN club_badges cb ON cb.club_id = c.id
         LEFT JOIN players p ON p.club_id = c.id
         WHERE lc.league_id = ?
-        GROUP BY c.id, c.name, lc.display_order, cc.value, cs.value,
+        GROUP BY c.id, c.name, c.manager_name, lc.display_order, cc.value, cs.value,
                  cb.template_id, cb.primary_color, cb.secondary_color, cb.border_color
         ORDER BY lc.display_order, c.name
         """,
@@ -878,6 +907,7 @@ def list_league_clubs(conn: sqlite3.Connection, league_id: str) -> List[dict]:
             {
                 "id": str(row["id"]),
                 "name": str(row["name"]),
+                "manager_name": str(row["manager_name"] or ""),
                 "primary_color": str(row["primary_color"] or DEFAULT_COLORS["primary"]),
                 "secondary_color": str(row["secondary_color"] or DEFAULT_COLORS["secondary"]),
                 "badge_template_id": str(row["template_id"] or DEFAULT_BADGE["template_id"]),

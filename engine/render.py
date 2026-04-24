@@ -2311,7 +2311,7 @@ class Renderer:
             draw_text(self.screen, date_label, rect.right - text_width(date_label, 1) - 10, rect.y + 10, (170, 174, 182), scale=1)
             draw_small_badge(opponent, pygame.Rect(rect.x + 12, rect.y + 32, 28, 34))
             opponent_name = str((opponent or {}).get("name") or (fixture.get("away_name") if is_home else fixture.get("home_name")) or "OPPONENT")
-            draw_text(self.screen, short_display_name(opponent_name, max(8, (rect.width - 58) // 6)), rect.x + 50, rect.y + 42, (245, 245, 245), scale=1)
+            draw_text(self.screen, opponent_name.upper()[: max(8, (rect.width - 58) // 6)], rect.x + 50, rect.y + 42, (245, 245, 245), scale=1)
             league_chars = max(10, (rect.width - 20) // 6)
             draw_text(self.screen, str(league_label).upper()[:league_chars], rect.x + 10, rect.y + 80, (248, 187, 32), scale=1)
 
@@ -2323,13 +2323,17 @@ class Renderer:
         draw_text(self.screen, "#", squad_rect.x + 14, squad_rect.y + 38, (170, 174, 182), scale=1)
         draw_text(self.screen, "POS", squad_rect.x + 44, squad_rect.y + 38, (170, 174, 182), scale=1)
         draw_text(self.screen, "PLAYER", squad_rect.x + 82, squad_rect.y + 38, (170, 174, 182), scale=1)
-        draw_text(self.screen, "OVR", squad_rect.right - 174, squad_rect.y + 38, (170, 174, 182), scale=1)
-        draw_text(self.screen, "STM", squad_rect.right - 134, squad_rect.y + 38, (170, 174, 182), scale=1)
-        draw_text(self.screen, "STATUS", squad_rect.right - 62, squad_rect.y + 38, (170, 174, 182), scale=1)
         row_h = max(17, min(22, (squad_rect.height - 70) // max(1, len(managed_players))))
         rows_per_col = max(1, (squad_rect.height - 68) // row_h)
         columns = 1
         col_w = squad_rect.width - 24
+        col_origin = squad_rect.x + 12
+        ovr_center_x = col_origin + col_w - 170
+        stm_center_x = col_origin + col_w - 110
+        status_x = col_origin + col_w - 64
+        draw_text(self.screen, "OVR", ovr_center_x - text_width("OVR", 1) // 2, squad_rect.y + 38, (170, 174, 182), scale=1)
+        draw_text(self.screen, "STM", stm_center_x - text_width("STM", 1) // 2, squad_rect.y + 38, (170, 174, 182), scale=1)
+        draw_text(self.screen, "STATUS", status_x, squad_rect.y + 38, (170, 174, 182), scale=1)
         position_order = {"GK": 0, "LB": 1, "CB": 2, "RB": 3, "DM": 4, "CM": 5, "AM": 6, "LW": 7, "ST": 8, "RW": 9}
         squad_rows = sorted(managed_players, key=lambda player: (position_order.get(str(player.get("position")), 99), str(player.get("name", ""))))
         for idx, player in enumerate(squad_rows):
@@ -2373,14 +2377,13 @@ class Renderer:
             player_name = str(player.get("name", "PLAYER")).upper()[:name_chars]
             draw_text(self.screen, player_name, x + 70, y, name_color, scale=1)
             ovr_text = str(player.get("ovr", ""))
-            draw_text(self.screen, ovr_text, x + col_w - 176, y, (245, 245, 245), scale=1)
-            stamina_rect = pygame.Rect(x + col_w - 136, y + 4, 42, 6)
+            draw_text(self.screen, ovr_text, ovr_center_x - text_width(ovr_text, 1) // 2, y, (245, 245, 245), scale=1)
+            stamina_rect = pygame.Rect(stm_center_x - 21, y + 4, 42, 6)
             pygame.draw.rect(self.screen, (34, 36, 42), stamina_rect, border_radius=3)
             stamina_ratio = max(0.0, min(1.0, stamina / 100.0))
             stamina_color = (116, 208, 120) if stamina_ratio > 0.55 else (232, 190, 72) if stamina_ratio > 0.3 else (220, 96, 96)
             pygame.draw.rect(self.screen, stamina_color, pygame.Rect(stamina_rect.x, stamina_rect.y, max(2, int(stamina_rect.width * stamina_ratio)), stamina_rect.height), border_radius=3)
             pygame.draw.rect(self.screen, (76, 78, 88), stamina_rect, 1, border_radius=3)
-            status_x = x + col_w - 62
             if icon == "injury":
                 self._draw_injury_icon(pygame.Rect(status_x - 18, y - 3, 14, 16))
             elif icon == "red":
@@ -2468,19 +2471,21 @@ class Renderer:
 
         pitch_w = max(360, min(int(panel.width * 0.6), panel.width - 320))
         pitch_rect = pygame.Rect(panel.x + 18, panel.y + 84, pitch_w, min(448, panel.height - 228))
-        pygame.draw.rect(self.screen, (26, 30, 38), pitch_rect, border_radius=10)
-        pygame.draw.rect(self.screen, (64, 70, 82), pitch_rect, 2, border_radius=10)
-        inner_pitch = pitch_rect.inflate(-24, -24)
-        pygame.draw.rect(self.screen, (42, 46, 54), inner_pitch, border_radius=8)
-        pygame.draw.rect(self.screen, (92, 96, 108), inner_pitch, 2, border_radius=8)
-        pygame.draw.line(self.screen, (92, 96, 108), (inner_pitch.x + inner_pitch.width // 2, inner_pitch.y), (inner_pitch.x + inner_pitch.width // 2, inner_pitch.bottom), 1)
-        pygame.draw.circle(self.screen, (92, 96, 108), inner_pitch.center, 34, 1)
-        for ratio in (0.25, 0.5, 0.75):
-            lane_y = inner_pitch.y + int(inner_pitch.height * ratio)
-            pygame.draw.line(self.screen, (54, 70, 72), (inner_pitch.x, lane_y), (inner_pitch.right, lane_y), 1)
+        pygame.draw.rect(self.screen, (70, 130, 52), pitch_rect, border_radius=10)
+        pygame.draw.rect(self.screen, (164, 210, 118), pitch_rect, 2, border_radius=10)
+        for idx in range(1, 4):
+            x = pitch_rect.x + idx * pitch_rect.width // 4
+            pygame.draw.line(self.screen, (92, 150, 64), (x, pitch_rect.y + 5), (x, pitch_rect.bottom - 5), 1)
+        inner_pitch = pitch_rect.inflate(-30, -30)
+        pygame.draw.rect(self.screen, (214, 236, 188), inner_pitch, 2, border_radius=5)
+        pygame.draw.line(self.screen, (164, 210, 118), (inner_pitch.x + inner_pitch.width // 2, inner_pitch.y), (inner_pitch.x + inner_pitch.width // 2, inner_pitch.bottom), 1)
+        pygame.draw.circle(self.screen, (164, 210, 118), inner_pitch.center, 34, 1)
 
         slots = formation_slots(formation)
-        layout_map = self._formation_preview_layout(formation, inner_pitch)
+        layout_rect = pygame.Rect(inner_pitch.x + 12, inner_pitch.y + 4, inner_pitch.width - 24, inner_pitch.height - 42)
+        layout_map = self._formation_preview_layout(formation, layout_rect)
+        shirt_color = primary
+        shirt_text = self._shirt_number_color(shirt_color)
         slot_counts: dict[str, int] = {}
         for idx, slot in enumerate(slots):
             slot_counts[slot] = slot_counts.get(slot, 0) + 1
@@ -2490,44 +2495,44 @@ class Renderer:
             node = layout_map.get(slot_key, inner_pitch.center)
             fit = position_fit_label(player["position"], slot) if player else "wrong"
             outline = (90, 188, 108) if fit == "natural" else (228, 190, 84) if fit == "cover" else (210, 86, 86)
-            role_w = max(44, text_width(slot, 1) + 18)
-            role_rect = pygame.Rect(0, 0, role_w, 16)
-            role_rect.midbottom = (node[0], node[1] - 4)
             is_selected = player_id == selected_player_id
-            fill = (44, 50, 60) if hover_target_id != player_id else (76, 128, 84)
+            if hover_target_id == player_id:
+                pygame.draw.circle(self.screen, (228, 190, 84), node, 18, 3)
             if is_selected:
-                fill = (58, 70, 110)
-            pygame.draw.rect(self.screen, fill, role_rect, border_radius=8)
-            pygame.draw.rect(self.screen, outline, role_rect, 1, border_radius=8)
-            draw_text(self.screen, slot, role_rect.x + (role_rect.width - text_width(slot, 1)) // 2, role_rect.y + 4, (230, 234, 240), scale=1)
+                pygame.draw.circle(self.screen, (245, 245, 245), node, 18, 2)
+            pygame.draw.circle(self.screen, (20, 22, 26), node, 14)
+            pygame.draw.circle(self.screen, shirt_color, node, 12)
+            pygame.draw.circle(self.screen, outline, node, 13, 2)
             if player:
+                number = "".join(ch for ch in str(player.get("id", "")) if ch.isdigit())[-2:] or str(idx + 1).zfill(2)
+                draw_text(self.screen, number, node[0] - text_width(number, 1) // 2, node[1] - 4, shirt_text, scale=1)
                 name = short_display_name(player["name"], 12)
                 name_x = node[0] - text_width(name, 1) // 2
                 player_available = bool(player.get("available", True))
                 name_color = (245, 245, 245) if player_available else (190, 154, 154)
-                draw_text(self.screen, name, name_x, node[1] + 2, name_color, scale=1)
+                draw_text(self.screen, name, name_x, node[1] + 17, name_color, scale=1)
                 stamina_ratio = max(0.0, min(1.0, float(player.get("current_stamina", 100.0) or 0.0) / 100.0))
-                bar_rect = pygame.Rect(node[0] - 26, node[1] + 16, 52, 5)
+                bar_rect = pygame.Rect(node[0] - 24, node[1] + 29, 48, 5)
                 pygame.draw.rect(self.screen, (28, 30, 36), bar_rect, border_radius=3)
                 bar_color = (116, 208, 120) if stamina_ratio > 0.55 else (232, 190, 72) if stamina_ratio > 0.3 else (220, 96, 96)
                 pygame.draw.rect(self.screen, bar_color, pygame.Rect(bar_rect.x, bar_rect.y, max(2, int(bar_rect.width * stamina_ratio)), bar_rect.height), border_radius=3)
                 pygame.draw.rect(self.screen, (72, 76, 86), bar_rect, 1, border_radius=3)
-                badge_x = node[0] + max(28, text_width(name, 1) // 2 + 4)
+                badge_x = node[0] + max(20, text_width(name, 1) // 2 + 4)
                 if int(player.get("injury_days_remaining", 0) or 0) > 0:
-                    self._draw_injury_icon(pygame.Rect(badge_x, node[1] - 2, 14, 16))
+                    self._draw_injury_icon(pygame.Rect(badge_x, node[1] + 15, 14, 16))
                 elif int(player.get("suspension_matches_remaining", 0) or 0) > 0:
-                    pygame.draw.rect(self.screen, (206, 54, 54), pygame.Rect(badge_x, node[1] - 1, 12, 14))
-                    draw_text(self.screen, "B", badge_x + 2, node[1] + 2, (255, 255, 255), scale=1)
+                    pygame.draw.rect(self.screen, (206, 54, 54), pygame.Rect(badge_x, node[1] + 16, 12, 14))
+                    draw_text(self.screen, "B", badge_x + 2, node[1] + 19, (255, 255, 255), scale=1)
                 yellows = int(player.get("yellow_card_count", 0) or 0)
                 if yellows > 0:
-                    card_rect = pygame.Rect(node[0] - max(40, text_width(name, 1) // 2 + 18), node[1] - 1, 12, 14)
+                    card_rect = pygame.Rect(node[0] - max(32, text_width(name, 1) // 2 + 18), node[1] + 16, 12, 14)
                     pygame.draw.rect(self.screen, (236, 202, 56), card_rect)
                     draw_text(self.screen, str(min(9, yellows)), card_rect.x + 3, card_rect.y + 3, (28, 28, 28), scale=1)
-                hit_rect = pygame.Rect(0, 0, max(role_rect.width, text_width(name, 1) + 12), 34)
-                hit_rect.center = (node[0], node[1] + 5)
+                hit_rect = pygame.Rect(0, 0, max(48, text_width(name, 1) + 12), 50)
+                hit_rect.center = (node[0], node[1] + 12)
                 self.squad_targets[f"xi:{player_id}"] = {"player_id": player_id, "group": "xi", "rect": hit_rect}
             else:
-                draw_text(self.screen, "--", node[0] - text_width("--", 1) // 2, node[1] + 2, (160, 164, 172), scale=1)
+                draw_text(self.screen, slot, node[0] - text_width(slot, 1) // 2, node[1] + 17, (220, 224, 232), scale=1)
 
         cards_x = pitch_rect.right + 18
         cards_w = panel.right - cards_x - 18
@@ -3631,7 +3636,8 @@ class Renderer:
         formation = str(setup.get("formation", "4-3-3"))
         xi_ids = list(setup.get("xi_ids", []))
         slots = formation_slots(formation)
-        layout = self._formation_preview_layout(formation, rect.inflate(-48, -42))
+        layout_rect = pygame.Rect(rect.x + 24, rect.y + 18, rect.width - 48, rect.height - 90)
+        layout = self._formation_preview_layout(formation, layout_rect)
         color = hex_to_rgb((club or {}).get("primary_color", "#3260D8"), (50, 95, 230))
         text_color = self._shirt_number_color(color)
         slot_counts: dict[str, int] = {}
@@ -3648,7 +3654,7 @@ class Renderer:
             draw_text(self.screen, number, px - text_width(number, 1) // 2, py - 4, text_color, scale=1)
             name = short_display_name(str((player or {}).get("name", slot)), 9)
             draw_text(self.screen, name, px - text_width(name, 1) // 2, py + 17, (245, 245, 245), scale=1)
-        draw_text(self.screen, formation, rect.centerx - text_width(formation, 2) // 2, rect.bottom - 30, (245, 245, 245), scale=2)
+        draw_text(self.screen, formation, rect.centerx - text_width(formation, 2) // 2, rect.bottom - 38, (245, 245, 245), scale=2)
 
     def _draw_match_preview_modal(self, modal: dict) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
@@ -3682,23 +3688,25 @@ class Renderer:
         draw_text(self.screen, meta[:60], panel.centerx - text_width(meta[:60], 1) // 2, panel.y + 100, (170, 174, 182), scale=1)
 
         manager_name = str(overview.get("manager_name", "MANAGER"))
-        home_manager = manager_name if home_id == str(overview.get("club_id")) else "AI MANAGER"
-        away_manager = manager_name if away_id == str(overview.get("club_id")) else "AI MANAGER"
-        manager_y = panel.y + 128
-        draw_text(self.screen, home_manager.upper()[:22], panel.x + 92, manager_y, (220, 224, 232), scale=1)
+        home_manager = manager_name if home_id == str(overview.get("club_id")) else str((home_club or {}).get("manager_name") or "AI MANAGER")
+        away_manager = manager_name if away_id == str(overview.get("club_id")) else str((away_club or {}).get("manager_name") or "AI MANAGER")
+        manager_y = panel.y + 172
+        home_badge_rect = pygame.Rect(panel.x + 40, panel.y + 118, 40, 48)
+        away_badge_rect = pygame.Rect(panel.right - 80, panel.y + 118, 40, 48)
+        home_manager_text = home_manager.upper()[:22]
+        draw_text(self.screen, home_manager_text, home_badge_rect.centerx - text_width(home_manager_text, 1) // 2, manager_y, (220, 224, 232), scale=1)
         away_manager_text = away_manager.upper()[:22]
-        draw_text(self.screen, away_manager_text, panel.right - 92 - text_width(away_manager_text, 1), manager_y, (220, 224, 232), scale=1)
+        draw_text(self.screen, away_manager_text, away_badge_rect.centerx - text_width(away_manager_text, 1) // 2, manager_y, (220, 224, 232), scale=1)
 
-        badge_y = panel.y + 118
         if home_club:
             self._draw_club_badge(
                 {"template_id": home_club.get("badge_template_id", "1"), "primary": home_club.get("badge_primary", "#2E3A6A"), "secondary": home_club.get("badge_secondary", "#F5F5F5"), "border": home_club.get("badge_border", "#F5F5F5")},
-                pygame.Rect(panel.x + 40, badge_y, 40, 48),
+                home_badge_rect,
             )
         if away_club:
             self._draw_club_badge(
                 {"template_id": away_club.get("badge_template_id", "1"), "primary": away_club.get("badge_primary", "#2E3A6A"), "secondary": away_club.get("badge_secondary", "#F5F5F5"), "border": away_club.get("badge_border", "#F5F5F5")},
-                pygame.Rect(panel.right - 80, badge_y, 40, 48),
+                away_badge_rect,
             )
         board_gap = 28
         board_w = (panel.width - 76 - board_gap) // 2

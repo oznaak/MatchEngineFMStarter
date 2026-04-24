@@ -4,6 +4,7 @@
     {
       "id": "A",
       "name": "Arsenal",
+      "manager_name": "Mikel Arteta",
       "colors": {
         "primary": "#C62828",
         "secondary": "#F5F5F5"
@@ -43,6 +44,7 @@
     {
       "id": "B",
       "name": "Manchester United",
+      "manager_name": "Michael Carrick",
       "colors": {
         "primary": "#A61C1C",
         "secondary": "#F5F5F5"
@@ -82,6 +84,7 @@
     {
       "id": "C",
       "name": "Chelsea",
+      "manager_name": "Calum McFarlane",
       "colors": {
         "primary": "#2457C5",
         "secondary": "#F5F5F5"
@@ -112,6 +115,7 @@
     {
       "id": "D",
       "name": "Manchester City",
+      "manager_name": "Pep Guardiola",
       "colors": {
         "primary": "#2E6FD8",
         "secondary": "#F5F5F5"
@@ -142,6 +146,7 @@
     {
       "id": "E",
       "name": "Liverpool",
+      "manager_name": "Arne Slot",
       "colors": {
         "primary": "#C8102E",
         "secondary": "#F3EAC2"
@@ -181,6 +186,7 @@
     {
       "id": "F",
       "name": "Tottenham Hotspur",
+      "manager_name": "Roberto De Zerbi",
       "colors": {
         "primary": "#13294B",
         "secondary": "#FFFFFF"
@@ -220,6 +226,7 @@
     {
       "id": "G",
       "name": "West Ham United",
+      "manager_name": "Nuno Espirito Santo",
       "colors": {
         "primary": "#60123B",
         "secondary": "#1BB1E7"
@@ -259,6 +266,7 @@
     {
       "id": "H",
       "name": "Newcastle United",
+      "manager_name": "Eddie Howe",
       "colors": {
         "primary": "#241F20",
         "secondary": "#FFFFFF"

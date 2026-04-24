@@ -416,6 +416,7 @@ def load_league(path: Path) -> Dict[str, Club]:
             id=club_data["id"].upper(),
             name=club_data["name"],
             players=players,
+            manager_name=str(club_data.get("manager_name", "")),
             tactics=merge_team_tactics(club_data.get("tactics")),
             colors=merge_team_colors(club_data.get("colors")),
             formation=str(club_data.get("formation", "4-3-3")),

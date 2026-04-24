@@ -219,6 +219,7 @@ class Club:
     id: str
     name: str
     players: List[PlayerProfile]
+    manager_name: str = ""
     tactics: Dict[str, float] = field(default_factory=dict)
     colors: Dict[str, str] = field(default_factory=dict)
     badge: Dict[str, str] = field(default_factory=dict)
