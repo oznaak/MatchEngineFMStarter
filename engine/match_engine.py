@@ -277,6 +277,8 @@ class MatchEngine:
             slot_counts[slot] = slot_counts.get(slot, 0) + 1
             named_slot = f"{slot}{slot_counts[slot]}" if formation_counts[slot] > 1 else slot
             coords = layout[named_slot]
+            if self.state.phase in ("second_half", "halftime"):
+                coords = (PITCH_LENGTH - coords[0], coords[1])
             player.slot = slot
             player.home_x = coords[0]
             player.home_y = coords[1]
@@ -1489,6 +1491,16 @@ class MatchEngine:
             return -min(0.06, 0.015 * goal_margin) * late_match
         return 0.0
 
+    def _time_wasting_card_modifier(self, side: str) -> float:
+        if self._instruction_value(side, "time_management") != "often":
+            return 0.0
+        own_goals = self.state.home_score if side == "home" else self.state.away_score
+        opponent_goals = self.state.away_score if side == "home" else self.state.home_score
+        if own_goals <= opponent_goals:
+            return 0.0
+        late_match = clamp((self.state.minute - 55.0) / 35.0, 0.0, 1.0)
+        return 0.06 + late_match * 0.05
+
     def _card_event(self, offender: PlayerState, color: str) -> None:
         if color == "yellow":
             offender.yellow_cards += 1
@@ -1566,6 +1578,7 @@ class MatchEngine:
             + (self._discipline_intensity(offender.side) - 1.0) * 0.10
             + pressure_bias * 0.07
             + self._scoreline_card_modifier(offender.side)
+            + self._time_wasting_card_modifier(offender.side)
         )
         if offender.yellow_cards >= 1:
             if severity >= 0.90 and attack_forward > 78.0:

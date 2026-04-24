@@ -231,6 +231,29 @@ class Renderer:
     def hex_to_rgb_static(value: str, fallback: Tuple[int, int, int]) -> Tuple[int, int, int]:
         return hex_to_rgb(value, fallback)
 
+    @staticmethod
+    def _color_distance(left: Tuple[int, int, int], right: Tuple[int, int, int]) -> float:
+        return math.sqrt(sum((float(a) - float(b)) ** 2 for a, b in zip(left, right)))
+
+    def _match_player_colors(self, state: MatchState) -> tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+        home_primary = hex_to_rgb(state.home.club.colors.get("primary", "#3260D8"), (50, 95, 230))
+        away_primary = hex_to_rgb(state.away.club.colors.get("primary", "#D85858"), (225, 88, 88))
+        away_secondary = hex_to_rgb(state.away.club.colors.get("secondary", "#F5F5F5"), (245, 245, 245))
+        away_color = away_secondary if self._color_distance(home_primary, away_primary) < 85.0 else away_primary
+        return home_primary, away_color
+
+    def _shirt_number_color(self, fill: Tuple[int, int, int]) -> Tuple[int, int, int]:
+        luminance = fill[0] * 0.299 + fill[1] * 0.587 + fill[2] * 0.114
+        return (24, 24, 28) if luminance >= 170.0 else (255, 255, 255)
+
+    def _planner_unavailable_player_ids(self, players: list[dict], xi_ids: list[str], bench_ids: list[str]) -> list[str]:
+        used_ids = {str(player_id) for player_id in xi_ids}
+        return [
+            str(player.get("id"))
+            for player in players
+            if str(player.get("id")) not in used_ids and not bool(player.get("available", True))
+        ]
+
     def __init__(self, width: int = 1560, height: int = 900, fullscreen: bool = False) -> None:
         pygame.init()
         pygame.display.set_caption("MY MANAGER CAREER")
@@ -909,14 +932,15 @@ class Renderer:
         pygame.draw.lines(self.screen, (235, 235, 235), False, arc_points((PITCH_X + PITCH_W - corner_inset, PITCH_Y + PITCH_H - corner_inset), corner_r, 180, 270), 3)
 
     def _draw_players_and_ball(self, state: MatchState, alpha: float) -> None:
+        home_color, away_color = self._match_player_colors(state)
         for player in state.home.xi:
             x = player.prev_x + (player.x - player.prev_x) * alpha
             y = player.prev_y + (player.y - player.prev_y) * alpha
-            self._draw_player(x, y, player.profile.id, player.profile.name, (50, 95, 230), player.has_ball, player.facing_x, player.facing_y, player.render_state, player.injured)
+            self._draw_player(x, y, player.profile.id, player.profile.name, home_color, player.has_ball, player.facing_x, player.facing_y, player.render_state, player.injured)
         for player in state.away.xi:
             x = player.prev_x + (player.x - player.prev_x) * alpha
             y = player.prev_y + (player.y - player.prev_y) * alpha
-            self._draw_player(x, y, player.profile.id, player.profile.name, (225, 88, 88), player.has_ball, player.facing_x, player.facing_y, player.render_state, player.injured)
+            self._draw_player(x, y, player.profile.id, player.profile.name, away_color, player.has_ball, player.facing_x, player.facing_y, player.render_state, player.injured)
 
         bx = state.ball.prev_x + (state.ball.x - state.ball.prev_x) * alpha
         by = state.ball.prev_y + (state.ball.y - state.ball.prev_y) * alpha
@@ -958,7 +982,7 @@ class Renderer:
         if injured:
             self._draw_injury_icon(pygame.Rect(sx + 8, sy - 18, 14, 16))
         shirt_number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "0"
-        draw_text(self.screen, shirt_number, sx - text_width(shirt_number, 1) // 2, sy - 5, (255, 255, 255), scale=1)
+        draw_text(self.screen, shirt_number, sx - text_width(shirt_number, 1) // 2, sy - 5, self._shirt_number_color(color), scale=1)
         label = (name.split()[-1] if name.split() else name)[:12]
         draw_text(self.screen, label, sx - text_width(label, 1) // 2, sy + 22, (18, 18, 18), scale=1)
 
@@ -1257,6 +1281,74 @@ class Renderer:
                 items.append(f"{player.get('short_name', player.get('name', 'PLAYER'))}{suffix}")
         return ", ".join(items) if items else "-"
 
+    def _report_man_of_match_id(self, report: dict, players: list[dict] | None = None) -> str | None:
+        player_rows = players
+        if player_rows is None:
+            player_rows = list(report.get("players", {}).get("home", [])) + list(report.get("players", {}).get("away", []))
+        best_id = None
+        best_score = -1.0
+        best_minutes = -1.0
+        for player in player_rows:
+            player_id = str(player.get("id", ""))
+            if not player_id:
+                continue
+            stats = report.get("player_stats", {}).get(player_id, {})
+            rating = self._report_player_rating(report, player_id)
+            minutes = float(stats.get("minutes", player.get("minutes", 0.0)) or 0.0)
+            if rating > best_score or (abs(rating - best_score) < 0.001 and minutes > best_minutes):
+                best_id = player_id
+                best_score = rating
+                best_minutes = minutes
+        return best_id
+
+    def _report_player_indicator_kinds(self, report: dict, player_id: str, motm_id: str | None) -> list[str]:
+        stats = report.get("player_stats", {}).get(player_id, {})
+        kinds: list[str] = []
+        if motm_id == player_id:
+            kinds.append("motm")
+        if int(report.get("player_goals", {}).get(player_id, stats.get("goals", 0.0)) or 0) > 0:
+            kinds.append("goal")
+        if int(report.get("player_assists", {}).get(player_id, stats.get("assists", 0.0)) or 0) > 0:
+            kinds.append("assist")
+        if float(stats.get("yellow_cards", 0.0) or 0.0) > 0.0:
+            kinds.append("yellow")
+        if float(stats.get("red_cards", 0.0) or 0.0) > 0.0:
+            kinds.append("red")
+        if float(stats.get("injuries", 0.0) or 0.0) > 0.0:
+            kinds.append("injury")
+        return kinds
+
+    def _draw_card_icon(self, x: int, y: int, color: Tuple[int, int, int], label: str = "") -> None:
+        card = pygame.Rect(x - 5, y - 7, 10, 14)
+        pygame.draw.rect(self.screen, color, card, border_radius=1)
+        pygame.draw.rect(self.screen, (18, 18, 22), card, 1, border_radius=1)
+        if label:
+            text_color = (24, 24, 28) if color[0] > 220 and color[1] > 160 else (245, 245, 245)
+            draw_text(self.screen, label, card.x + 2, card.y + 4, text_color, scale=1)
+
+    def _draw_star_icon(self, x: int, y: int) -> None:
+        points = []
+        for idx in range(10):
+            angle = -math.pi / 2 + idx * math.pi / 5
+            radius = 7 if idx % 2 == 0 else 3
+            points.append((int(x + math.cos(angle) * radius), int(y + math.sin(angle) * radius)))
+        pygame.draw.polygon(self.screen, (248, 187, 32), points)
+        pygame.draw.polygon(self.screen, (24, 24, 28), points, 1)
+
+    def _draw_report_indicator(self, kind: str, x: int, y: int) -> None:
+        if kind == "motm":
+            self._draw_star_icon(x, y)
+        elif kind == "goal":
+            self._draw_goal_icon(x, y)
+        elif kind == "assist":
+            self._draw_assist_icon(x, y)
+        elif kind == "yellow":
+            self._draw_card_icon(x, y, (236, 202, 56))
+        elif kind == "red":
+            self._draw_card_icon(x, y, (206, 54, 54))
+        elif kind == "injury":
+            self._draw_injury_icon(pygame.Rect(x - 7, y - 8, 14, 16))
+
     def _draw_post_match_report(self, report: dict, selected_player_id: str | None, panel: pygame.Rect) -> None:
         pygame.draw.rect(self.screen, (16, 18, 22), panel, border_radius=10)
         pygame.draw.rect(self.screen, (42, 44, 50), panel, 2, border_radius=10)
@@ -1372,6 +1464,7 @@ class Renderer:
 
         home_players = self._report_players_with_minutes(report, "home")
         away_players = self._report_players_with_minutes(report, "away")
+        motm_id = self._report_man_of_match_id(report, home_players + away_players)
         if not selected_player_id:
             if home_players:
                 selected_player_id = home_players[0]["id"]
@@ -1424,6 +1517,14 @@ class Renderer:
                 draw_text(self.screen, label, row_rect.x + 6, text_y, (245, 245, 245), scale=1)
 
                 rating = f"{self._report_player_rating(report, player['id']):.1f}"
+                indicator_kinds = self._report_player_indicator_kinds(report, str(player["id"]), motm_id)
+                if indicator_kinds:
+                    max_icons = 4 if compact else 6
+                    icon_step = 13 if compact else 15
+                    icons = indicator_kinds[:max_icons]
+                    icons_x = row_rect.right - 14 - text_width(rating, 1) - len(icons) * icon_step
+                    for icon_idx, kind in enumerate(icons):
+                        self._draw_report_indicator(kind, icons_x + icon_idx * icon_step, row_rect.centery)
                 draw_text(self.screen, rating, row_rect.right - 8 - text_width(rating, 1), text_y, (245, 245, 245), scale=1)
                 self._register_ui(f"match:player:{player['id']}", row_rect)
 
@@ -2371,12 +2472,17 @@ class Renderer:
         row_y = bench_rect.y + 32
         row_h = 24
         row_gap = 6
-        visible_bench_ids = [player_id for player_id in bench_ids[:12] if players_by_id.get(player_id)]
-        for idx, player_id in enumerate(visible_bench_ids):
+        visible_bench_ids = [
+            player_id
+            for player_id in bench_ids
+            if players_by_id.get(player_id) and bool(players_by_id[player_id].get("available", True))
+        ][:12]
+        row_index = 0
+        for player_id in visible_bench_ids:
             player = players_by_id.get(player_id)
             if not player:
                 continue
-            row_rect = pygame.Rect(bench_rect.x + 8, row_y + idx * (row_h + row_gap), bench_rect.width - 16, row_h)
+            row_rect = pygame.Rect(bench_rect.x + 8, row_y + row_index * (row_h + row_gap), bench_rect.width - 16, row_h)
             is_selected = player_id == selected_player_id
             fill = (24, 26, 32) if hover_target_id != player_id else (76, 128, 84)
             if is_selected:
@@ -2407,8 +2513,32 @@ class Renderer:
             ovr = str(player["ovr"])
             draw_text(self.screen, ovr, row_rect.right - 8 - text_width(ovr, 1), row_rect.y + 8, (245, 245, 245), scale=1)
             self.squad_targets[f"bench:{player_id}"] = {"player_id": player_id, "group": "bench", "rect": row_rect}
+            row_index += 1
             if row_rect.bottom + row_h > bench_rect.bottom:
                 break
+        unavailable_ids = self._planner_unavailable_player_ids(players, xi_ids, bench_ids)
+        unavailable_y = row_y + row_index * (row_h + row_gap) + (8 if row_index else 0)
+        if unavailable_ids and unavailable_y + row_h + 18 <= bench_rect.bottom:
+            draw_text(self.screen, "UNAVAILABLE", bench_rect.x + 8, unavailable_y, (206, 96, 84), scale=1)
+            unavailable_y += 18
+            for player_id in unavailable_ids:
+                player = players_by_id.get(player_id)
+                if not player or unavailable_y + row_h > bench_rect.bottom:
+                    break
+                row_rect = pygame.Rect(bench_rect.x + 8, unavailable_y, bench_rect.width - 16, row_h)
+                pygame.draw.rect(self.screen, (34, 22, 24), row_rect, border_radius=6)
+                pygame.draw.rect(self.screen, (92, 48, 54), row_rect, 1, border_radius=6)
+                draw_text(self.screen, player["position"], row_rect.x + 8, row_rect.y + 8, (190, 154, 154), scale=1)
+                draw_text(self.screen, short_display_name(player["name"], 12), row_rect.x + 40, row_rect.y + 8, (220, 184, 184), scale=1)
+                status_x = row_rect.right - 54
+                if int(player.get("injury_days_remaining", 0) or 0) > 0:
+                    self._draw_injury_icon(pygame.Rect(status_x, row_rect.y + 4, 14, 16))
+                    days_text = str(int(player.get("injury_days_remaining", 0) or 0))
+                    draw_text(self.screen, days_text, status_x + 18, row_rect.y + 8, (206, 96, 84), scale=1)
+                else:
+                    pygame.draw.rect(self.screen, (206, 54, 54), pygame.Rect(status_x, row_rect.y + 5, 12, 14))
+                    draw_text(self.screen, "B", status_x + 2, row_rect.y + 8, (255, 255, 255), scale=1)
+                unavailable_y += row_h + row_gap
 
         detail_rect = pygame.Rect(cards_x, legend_y + 24, cards_w, panel.bottom - legend_y - 52)
         pygame.draw.rect(self.screen, (18, 20, 26), detail_rect, border_radius=8)
