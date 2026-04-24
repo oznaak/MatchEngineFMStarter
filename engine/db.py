@@ -296,6 +296,19 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (player_id) REFERENCES players(id)
         );
 
+        CREATE TABLE IF NOT EXISTS save_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            save_id INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            date_text TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info',
+            dedupe_key TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (save_id) REFERENCES saves(id)
+        );
+
         CREATE TABLE IF NOT EXISTS save_club_setups (
             save_id INTEGER NOT NULL,
             club_id TEXT NOT NULL,
@@ -372,6 +385,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_column(conn, "saves", "season_year", "INTEGER")
     _ensure_column(conn, "saves", "current_date", "TEXT")
+    _ensure_column(conn, "saves", "season_completed", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "fixtures", "fixture_date", "TEXT")
     _ensure_column(conn, "fixtures", "report_json", "TEXT")
     _ensure_column(conn, "clubs", "manager_name", "TEXT NOT NULL DEFAULT ''")
@@ -422,7 +436,7 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
 def _backfill_calendar_fields(conn: sqlite3.Connection) -> None:
     save_rows = conn.execute(
         """
-        SELECT id, current_day, season_year, current_date, created_at
+        SELECT id, current_day, season_year, saves.current_date AS current_date, created_at
         FROM saves
         """
     ).fetchall()
@@ -1457,11 +1471,11 @@ def _save_training_attribute(conn: sqlite3.Connection, save_id: int, player_id: 
     )
 
 
-def apply_training_day(conn: sqlite3.Connection, save_id: int, club_id: str, current_day: int) -> dict:
+def apply_training_day(conn: sqlite3.Connection, save_id: int, club_id: str, current_day: int, clubs: Dict[str, Club] | None = None) -> dict:
     seed_save_player_condition_defaults(conn, save_id)
     seed_save_player_status_defaults(conn, save_id)
     seed_save_training_defaults(conn, save_id, club_id)
-    clubs = load_clubs_from_db(conn, save_id=save_id)
+    clubs = clubs if clubs is not None else load_clubs_from_db(conn, save_id=save_id)
     club = clubs.get(str(club_id))
     if club is None:
         return {"players_trained": 0, "attributes_changed": 0, "stamina_cost": 0.0}
@@ -1497,6 +1511,7 @@ def apply_training_day(conn: sqlite3.Connection, save_id: int, club_id: str, cur
         if delta < 0:
             next_stamina = max(35.0, player.current_stamina + delta)
             stamina_cost += max(0.0, player.current_stamina - next_stamina)
+            player.current_stamina = next_stamina
             save_save_player_condition(conn, save_id, player.id, next_stamina, current_day)
         players_trained += 1
     return {
@@ -1652,6 +1667,287 @@ def normalize_new_save_player_condition(conn: sqlite3.Connection, save_id: int) 
     )
 
 
+def add_save_message(
+    conn: sqlite3.Connection,
+    save_id: int,
+    category: str,
+    title: str,
+    body: str,
+    date_text: str,
+    severity: str = "info",
+    dedupe_key: str | None = None,
+) -> int | None:
+    dedupe = str(dedupe_key or "")
+    if dedupe:
+        existing = conn.execute(
+            "SELECT id FROM save_messages WHERE save_id = ? AND dedupe_key = ?",
+            (int(save_id), dedupe),
+        ).fetchone()
+        if existing is not None:
+            return None
+    cursor = conn.execute(
+        """
+        INSERT INTO save_messages (save_id, category, title, body, date_text, severity, dedupe_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(save_id),
+            str(category or "info"),
+            str(title or "MESSAGE"),
+            str(body or ""),
+            str(date_text or ""),
+            str(severity or "info"),
+            dedupe,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def list_save_messages(conn: sqlite3.Connection, save_id: int, limit: int = 8) -> List[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, category, title, body, date_text, severity, created_at
+        FROM save_messages
+        WHERE save_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (int(save_id), int(limit)),
+    ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "category": str(row["category"]),
+            "title": str(row["title"]),
+            "body": str(row["body"]),
+            "date_text": str(row["date_text"]),
+            "date_label": format_game_date(str(row["date_text"])) if row["date_text"] else "",
+            "severity": str(row["severity"]),
+            "created_at": str(row["created_at"]),
+        }
+        for row in rows
+    ]
+
+
+def _daily_recovery_for_profile(profile: PlayerProfile) -> float:
+    natural_stamina = profile.attributes.get("stamina", 70.0)
+    deficit = max(0.0, 100.0 - profile.current_stamina)
+    base_recovery = 0.45 + natural_stamina / 160.0
+    deficit_factor = max(0.22, min(1.0, deficit / 35.0))
+    return base_recovery * deficit_factor
+
+
+def _advance_club_condition_one_day(clubs: Dict[str, Club]) -> None:
+    for club in clubs.values():
+        for player in club.players:
+            player.current_stamina = min(100.0, player.current_stamina + _daily_recovery_for_profile(player))
+            if player.injury_days_remaining > 0:
+                player.injury_days_remaining = max(0, player.injury_days_remaining - 1)
+
+
+def _save_condition_for_clubs(conn: sqlite3.Connection, save_id: int, clubs: Dict[str, Club], current_day: int) -> None:
+    for club in clubs.values():
+        for player in club.players:
+            save_save_player_condition(conn, save_id, player.id, round(player.current_stamina, 2), current_day)
+
+
+def _create_daily_save_messages(
+    conn: sqlite3.Connection,
+    save_id: int,
+    club_id: str,
+    current_date: str,
+    training_result: dict,
+) -> None:
+    next_day = date.fromisoformat(current_date) + timedelta(days=1)
+    fixture = conn.execute(
+        """
+        SELECT f.fixture_date, f.home_club_id, f.away_club_id, hc.name AS home_name, ac.name AS away_name
+        FROM fixtures f
+        JOIN clubs hc ON hc.id = f.home_club_id
+        JOIN clubs ac ON ac.id = f.away_club_id
+        WHERE f.save_id = ?
+          AND f.played = 0
+          AND (f.home_club_id = ? OR f.away_club_id = ?)
+          AND f.fixture_date = ?
+        ORDER BY f.id
+        LIMIT 1
+        """,
+        (int(save_id), str(club_id), str(club_id), next_day.isoformat()),
+    ).fetchone()
+    if fixture is not None:
+        add_save_message(
+            conn,
+            save_id,
+            "matchday",
+            "MATCH TOMORROW",
+            f"{fixture['home_name']} vs {fixture['away_name']} is scheduled for {format_game_date(str(fixture['fixture_date']))}.",
+            current_date,
+            "warning",
+            f"match_tomorrow:{fixture['fixture_date']}:{fixture['home_club_id']}:{fixture['away_club_id']}",
+        )
+
+    if int(training_result.get("attributes_changed", 0) or 0) > 0:
+        add_save_message(
+            conn,
+            save_id,
+            "training",
+            "TRAINING PROGRESS",
+            f"{int(training_result.get('players_trained', 0))} players completed training and the squad showed attribute growth.",
+            current_date,
+            "success",
+            f"training:{current_date}",
+        )
+
+    tired_rows = conn.execute(
+        """
+        SELECT p.name, spc.current_stamina
+        FROM players p
+        JOIN save_player_condition spc ON spc.player_id = p.id AND spc.save_id = ?
+        WHERE p.club_id = ? AND spc.current_stamina < 55.0
+        ORDER BY spc.current_stamina ASC, p.name
+        LIMIT 4
+        """,
+        (int(save_id), str(club_id)),
+    ).fetchall()
+    if tired_rows:
+        names = ", ".join(str(row["name"]) for row in tired_rows[:3])
+        add_save_message(
+            conn,
+            save_id,
+            "medical",
+            "PLAYERS NEED REST",
+            f"{names} are showing fatigue risk. Consider lighter training or rotation.",
+            current_date,
+            "warning",
+            f"tired:{current_date}",
+        )
+
+
+def complete_season_if_due(conn: sqlite3.Connection, save_id: int) -> bool:
+    save_row = conn.execute(
+        "SELECT season_year, saves.current_date AS current_date, season_completed FROM saves WHERE id = ?",
+        (int(save_id),),
+    ).fetchone()
+    if save_row is None or int(save_row["season_completed"] or 0) == 1:
+        return False
+    counts = conn.execute(
+        """
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN played = 0 THEN 1 ELSE 0 END) AS unplayed,
+               MAX(fixture_date) AS final_date
+        FROM fixtures
+        WHERE save_id = ?
+        """,
+        (int(save_id),),
+    ).fetchone()
+    if counts is None or int(counts["total"] or 0) == 0 or int(counts["unplayed"] or 0) > 0:
+        return False
+    current_date = date.fromisoformat(str(save_row["current_date"]))
+    final_date = date.fromisoformat(str(counts["final_date"]))
+    if current_date <= final_date:
+        return False
+    standings = load_save_standings(conn, save_id)
+    if not standings:
+        return False
+    champion = standings[0]
+    title = f"{str(champion['club_name']).upper()} CHAMPIONS"
+    body = (
+        f"{champion['club_name']} win England Division I with {champion['points']} points, "
+        f"{champion['wins']} wins and a {champion['goal_difference']:+d} goal difference."
+    )
+    add_save_message(
+        conn,
+        save_id,
+        "season",
+        title,
+        body,
+        str(save_row["current_date"]),
+        "success",
+        f"season_complete:{save_row['season_year']}",
+    )
+    conn.execute("UPDATE saves SET season_completed = 1 WHERE id = ?", (int(save_id),))
+    return True
+
+
+def start_next_season_if_ready(conn: sqlite3.Connection, save_id: int) -> bool:
+    row = conn.execute(
+        "SELECT league_id, season_year, season_completed FROM saves WHERE id = ?",
+        (int(save_id),),
+    ).fetchone()
+    if row is None or int(row["season_completed"] or 0) != 1:
+        return False
+    next_year = int(row["season_year"] or current_season_year()) + 1
+    start_date = season_start_date(next_year)
+    conn.execute("DELETE FROM fixtures WHERE save_id = ?", (int(save_id),))
+    conn.execute(
+        """
+        UPDATE saves
+        SET season_year = ?, current_day = 0, current_date = ?, season_completed = 0
+        WHERE id = ?
+        """,
+        (next_year, start_date.isoformat(), int(save_id)),
+    )
+    conn.execute(
+        """
+        UPDATE save_player_status
+        SET yellow_card_count = 0,
+            suspension_reason = CASE WHEN suspension_matches_remaining > 0 THEN suspension_reason ELSE '' END
+        WHERE save_id = ?
+        """,
+        (int(save_id),),
+    )
+    _seed_fixtures_for_save(conn, save_id, str(row["league_id"]), next_year)
+    add_save_message(
+        conn,
+        save_id,
+        "season",
+        f"{next_year} SEASON READY",
+        "The new season fixture list has been generated. The squad reports back on 07 Jul.",
+        start_date.isoformat(),
+        "info",
+        f"season_start:{next_year}",
+    )
+    return True
+
+
+def advance_save_one_day(conn: sqlite3.Connection, save_id: int, managed_club_id: str | None) -> dict:
+    if start_next_season_if_ready(conn, save_id):
+        conn.commit()
+        row = conn.execute("SELECT current_day, saves.current_date AS current_date, season_year FROM saves WHERE id = ?", (int(save_id),)).fetchone()
+        return {
+            "current_day": int(row["current_day"]),
+            "current_date": str(row["current_date"]),
+            "season_year": int(row["season_year"]),
+            "season_started": True,
+        }
+    save_row = conn.execute("SELECT current_day FROM saves WHERE id = ?", (int(save_id),)).fetchone()
+    if save_row is None:
+        return {"current_day": 0, "current_date": "", "season_year": 0}
+    next_day = int(save_row["current_day"]) + 1
+    clubs = load_clubs_from_db(conn, save_id=save_id)
+    training_result = {"players_trained": 0, "attributes_changed": 0, "stamina_cost": 0.0}
+    if managed_club_id:
+        training_result = apply_training_day(conn, save_id, str(managed_club_id), next_day, clubs=clubs)
+    _advance_club_condition_one_day(clubs)
+    advance_save_player_status_days(conn, save_id, 1)
+    _save_condition_for_clubs(conn, save_id, clubs, next_day)
+    set_save_current_day(conn, save_id, next_day)
+    updated = conn.execute(
+        "SELECT current_day, saves.current_date AS current_date, season_year FROM saves WHERE id = ?",
+        (int(save_id),),
+    ).fetchone()
+    _create_daily_save_messages(conn, save_id, str(managed_club_id or ""), str(updated["current_date"]), training_result)
+    completed = complete_season_if_due(conn, save_id)
+    conn.commit()
+    return {
+        "current_day": int(updated["current_day"]),
+        "current_date": str(updated["current_date"]),
+        "season_year": int(updated["season_year"]),
+        "season_completed": completed,
+        "training": training_result,
+    }
+
+
 def maybe_migrate_legacy_condition_json(conn: sqlite3.Connection, json_path: Path, clubs: Dict[str, Club]) -> bool:
     if not json_path.exists():
         return False
@@ -1709,6 +2005,16 @@ def create_save_game(conn: sqlite3.Connection, manager_name: str, league_id: str
     seed_save_player_status_defaults(conn, save_id)
     seed_save_club_setups(conn, save_id)
     seed_save_training_defaults(conn, save_id, club_id)
+    add_save_message(
+        conn,
+        save_id,
+        "board",
+        "BOARD WELCOME",
+        "The board expects steady progress and a competitive season.",
+        start_date.isoformat(),
+        "info",
+        f"board_welcome:{season_year}",
+    )
     set_metadata(conn, "active_save_id", str(save_id))
     conn.commit()
     return save_id
@@ -1744,6 +2050,7 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
     conn.execute("DELETE FROM save_training_settings WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_player_training WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_club_setups WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM save_messages WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM saves WHERE id = ?", (int(save_id),))
     remaining = conn.execute(
         "SELECT COUNT(*) AS count FROM saves WHERE manager_id = ?",
@@ -1824,6 +2131,7 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
         "next_fixture": next_fixture,
         "today_fixture": today_fixture,
         "training": load_save_training(conn, save_id, club_id),
+        "messages": list_save_messages(conn, save_id, limit=8),
     }
 
 

@@ -9,11 +9,11 @@ import pygame
 from engine.condition import advance_condition_days, apply_post_match_condition, load_condition_state, save_condition_state, save_condition_state_to_conn
 from engine.db import (
     bootstrap_database,
+    advance_save_one_day,
+    add_save_message,
     create_save_game,
     delete_save_game,
     db_session,
-    advance_save_player_status_days,
-    apply_training_day,
     get_current_day,
     get_fixture_report,
     get_next_fixture_for_save,
@@ -31,7 +31,6 @@ from engine.db import (
     save_player_training_focus,
     save_save_club_setup,
     save_training_settings,
-    set_save_current_day,
     set_active_save_id,
 )
 from engine.loader import available_formations, pick_best_xi
@@ -994,21 +993,8 @@ class ManagerGameApp:
             return
         with db_session(self.db_path) as conn:
             bootstrap_database(conn)
-            clubs = load_clubs_from_db(conn, save_id=self.active_save_id)
-            load_condition_state(self.db_path, clubs, save_id=self.active_save_id)
-            save_row = conn.execute("SELECT current_day FROM saves WHERE id = ?", (self.active_save_id,)).fetchone()
-            if save_row is None:
-                return
-            next_day = int(save_row["current_day"]) + 1
             managed_club_id = self._managed_club_id()
-            if managed_club_id:
-                apply_training_day(conn, self.active_save_id, managed_club_id, next_day)
-                clubs = load_clubs_from_db(conn, save_id=self.active_save_id)
-            advance_condition_days(clubs, 1)
-            advance_save_player_status_days(conn, self.active_save_id, 1)
-            save_condition_state_to_conn(conn, clubs, next_day, save_id=self.active_save_id)
-            set_save_current_day(conn, self.active_save_id, next_day)
-            conn.commit()
+            advance_save_one_day(conn, self.active_save_id, managed_club_id)
         self._reload_state()
 
     def _finish_matchday(self) -> None:
@@ -1101,6 +1087,27 @@ class ManagerGameApp:
                 away_goals,
                 report=fixture_report,
             )
+            if fixture_report is not None and self.overview:
+                managed_id = str(self.overview.get("club_id"))
+                current_date = str(self.overview.get("current_date") or "")
+                for player in fixture_report.get("players", {}).get("home", []) + fixture_report.get("players", {}).get("away", []):
+                    player_id = str(player.get("id", ""))
+                    stats = fixture_report.get("player_stats", {}).get(player_id, {})
+                    if int(stats.get("red_cards", 0) or 0) <= 0:
+                        continue
+                    player_club = fixture_report["home"]["id"] if player.get("side") == "home" else fixture_report["away"]["id"]
+                    if str(player_club) != managed_id:
+                        continue
+                    add_save_message(
+                        conn,
+                        self.active_save_id,
+                        "discipline",
+                        "RED CARD BAN",
+                        f"{player.get('name', 'A player')} was sent off and will be unavailable through suspension.",
+                        current_date,
+                        "danger",
+                        f"red_card:{fixture['id']}:{player_id}",
+                    )
             match_day = fixture["match_day"]
             same_day = list_matchday_fixtures(conn, self.active_save_id, match_day)
             for other in same_day:
