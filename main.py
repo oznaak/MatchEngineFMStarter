@@ -17,6 +17,7 @@ from engine.db import (
     get_current_day,
     get_fixture_report,
     get_next_fixture_for_save,
+    get_transfer_window_status,
     list_league_clubs,
     list_leagues,
     list_matchday_fixtures,
@@ -26,6 +27,14 @@ from engine.db import (
     load_app_options,
     load_clubs_from_db,
     load_save_overview,
+    load_transfer_data,
+    list_player_for_transfer,
+    make_transfer_offer,
+    withdraw_transfer_listing,
+    get_accepted_offers,
+    complete_transfer,
+    apply_matchday_revenue,
+    get_finance_transactions,
     save_fixture_result,
     save_app_option,
     save_player_training_focus,
@@ -237,6 +246,8 @@ class ManagerGameApp:
         self.squad_draft_instructions = dict(DEFAULT_TEAM_INSTRUCTIONS)
         self.squad_draft_player_instructions: dict[str, dict[str, int]] = {}
         self.fixtures_page: int = 1
+        self.transfer_data: dict = {}
+        self.transfer_negotiate_offer_id: str | None = None
         self._reload_state(apply_display=True)
 
     def _fixture_gameweeks(self) -> list[int]:
@@ -303,6 +314,7 @@ class ManagerGameApp:
         if self.overview:
             self._load_squad_draft()
             self._clamp_fixtures_page()
+        self._reload_transfer_data()
         if apply_display:
             self._apply_renderer_options()
 
@@ -319,6 +331,19 @@ class ManagerGameApp:
         with db_session(self.db_path) as conn:
             self.club_choices = list_league_clubs(conn, self.selected_league_id)
 
+    def _reload_transfer_data(self) -> None:
+        if not self.active_save_id or not self.overview:
+            self.transfer_data = {}
+            return
+        current_date = str(self.overview.get("current_date", ""))
+        window_open, window_type = get_transfer_window_status(current_date) if current_date else (False, "")
+        club_id = str(self.overview.get("club_id", ""))
+        with db_session(self.db_path) as conn:
+            data = load_transfer_data(conn, self.active_save_id, club_id)
+        data["window_open"] = window_open
+        data["window_type"] = window_type
+        self.transfer_data = data
+
     def _load_save(self, save_id: int) -> None:
         with db_session(self.db_path) as conn:
             set_active_save_id(conn, save_id)
@@ -329,6 +354,7 @@ class ManagerGameApp:
             self.overview_club_id = self.overview["club_id"]
             self.overview_tab = "overview"
             self.screen = "overview"
+        self._reload_transfer_data()
 
     def _create_new_save(self) -> None:
         if not self.manager_name.strip():
@@ -340,6 +366,7 @@ class ManagerGameApp:
             save_id = create_save_game(conn, self.manager_name, self.selected_league_id, self.selected_club_id)
             self.overview = load_save_overview(conn, save_id)
         self.active_save_id = self.overview["save_id"] if self.overview else None
+        self._reload_transfer_data()
         self.overview_club_id = self.selected_club_id
         self.saves = []
         self.overview_tab = "overview"
@@ -1087,6 +1114,13 @@ class ManagerGameApp:
                 away_goals,
                 report=fixture_report,
             )
+            if self.overview and self.active_save_id is not None:
+                managed_id = str(self.overview.get("club_id", ""))
+                is_home = str(fixture.get("home_club_id", "")) == managed_id
+                current_date = str(self.overview.get("current_date") or "")
+                standings = self.overview.get("standings", [])
+                club_pos = next((int(s.get("position", 4)) for s in standings if str(s.get("club_id", "")) == managed_id), 4)
+                apply_matchday_revenue(conn, self.active_save_id, is_home, current_date, club_pos)
             if fixture_report is not None and self.overview:
                 managed_id = str(self.overview.get("club_id"))
                 current_date = str(self.overview.get("current_date") or "")
@@ -1419,6 +1453,13 @@ class ManagerGameApp:
                 else:
                     self.overview_tab = "matches_standings"
                 return
+            if tab in {"transfers", "transfers_market", "transfers_listings"}:
+                self.overview_tab = "transfers_market" if tab in {"transfers", "transfers_market"} else "transfers_listings"
+                self._reload_transfer_data()
+                return
+            if tab in {"club", "club_finances"}:
+                self.overview_tab = "club_finances"
+                return
             if tab in {"squad", "squad_formation"}:
                 tab = "squad_formation"
             elif tab == "squad_players":
@@ -1529,6 +1570,150 @@ class ManagerGameApp:
         if action == "back:fixtures":
             self.screen = "overview"
             return
+        if action.startswith("news:open:"):
+            try:
+                msg_id = int(action.split(":", 2)[2])
+            except (ValueError, IndexError):
+                return
+            msg = next((m for m in (self.overview or {}).get("messages", []) if m.get("id") == msg_id), None)
+            if msg:
+                self.modal = {
+                    "type": "news_detail",
+                    "title": str(msg.get("title", "MESSAGE")).upper(),
+                    "body": str(msg.get("body", "")),
+                    "category": str(msg.get("category", "")),
+                    "severity": str(msg.get("severity", "info")),
+                    "date": str(msg.get("date_text", "")),
+                    "buttons": [{"label": "CLOSE", "action": "modal:close"}],
+                }
+            return
+        if action.startswith("squad:list_player:"):
+            player_id = action.split(":", 2)[2]
+            if not self.active_save_id or not self.overview:
+                return
+            current_date = str(self.overview.get("current_date", ""))
+            window_open, window_type = get_transfer_window_status(current_date) if current_date else (False, "")
+            if not window_open:
+                self.modal = {
+                    "type": "confirm",
+                    "title": "WINDOW CLOSED",
+                    "message": "The transfer window is not open.\nYou can only list players during\na transfer window.",
+                    "buttons": [{"label": "OK", "action": "modal:close"}],
+                }
+                return
+            season_year = int(self.overview.get("season_year", 0))
+            club_id = str(self.overview.get("club_id", ""))
+            with db_session(self.db_path) as conn:
+                list_player_for_transfer(conn, self.active_save_id, player_id, club_id, current_date, season_year, window_type)
+                conn.commit()
+            self._reload_transfer_data()
+            return
+        if action.startswith("transfers:make_offer:"):
+            player_id = action.split(":", 2)[2]
+            if not self.active_save_id or not self.overview:
+                return
+            listing = next((l for l in self.transfer_data.get("market", []) if str(l.get("player_id", "")) == player_id), None)
+            if not listing:
+                return
+            asking = int(listing.get("asking_price", 0))
+            self.modal = {
+                "type": "confirm",
+                "title": "MAKE OFFER",
+                "message": f"ASKING: £{asking // 1_000_000}M\nOFFER AT ASKING PRICE?",
+                "buttons": [
+                    {"label": "CONFIRM", "action": f"transfers:confirm_offer:{player_id}:{asking}", "fill": (46, 160, 67), "text_color": (245, 245, 245)},
+                    {"label": "CANCEL", "action": "modal:close"},
+                ],
+            }
+            return
+        if action.startswith("transfers:confirm_offer:"):
+            parts = action.split(":", 3)
+            if len(parts) < 4:
+                return
+            player_id, amount_str = parts[2], parts[3]
+            try:
+                amount = int(amount_str)
+            except ValueError:
+                return
+            if not self.active_save_id or not self.overview:
+                return
+            current_date = str(self.overview.get("current_date", ""))
+            _, window_type = get_transfer_window_status(current_date) if current_date else (False, "summer")
+            season_year = int(self.overview.get("season_year", 0))
+            listing = next((l for l in self.transfer_data.get("market", []) if str(l.get("player_id", "")) == player_id), None)
+            w_type = str((listing or {}).get("window_type", window_type))
+            s_year = int((listing or {}).get("season_year", season_year))
+            with db_session(self.db_path) as conn:
+                make_transfer_offer(conn, self.active_save_id, player_id, amount, w_type, s_year, current_date)
+                conn.commit()
+            self._reload_transfer_data()
+            self.modal = None
+            return
+        if action.startswith("transfers:withdraw:"):
+            listing_id_str = action.split(":", 2)[2]
+            try:
+                listing_id = int(listing_id_str)
+            except ValueError:
+                return
+            if not self.active_save_id:
+                return
+            if not self.active_save_id:
+                return
+            with db_session(self.db_path) as conn:
+                withdraw_transfer_listing(conn, self.active_save_id, listing_id)
+                conn.commit()
+            self._reload_transfer_data()
+            return
+        if action.startswith("transfers:negotiate:"):
+            offer_id = action.split(":", 2)[2]
+            self.transfer_negotiate_offer_id = offer_id
+            if not self.active_save_id or not self.overview:
+                return
+            with db_session(self.db_path) as conn:
+                offers = get_accepted_offers(conn, self.active_save_id)
+            offer = next((o for o in offers if str(o.get("id", "")) == offer_id), None)
+            ovr = int((offer or {}).get("ovr", 75))
+            market_rate = ovr * 600
+            player_name = str((offer or {}).get("player_name", "PLAYER")).upper()[:20]
+            self.modal = {
+                "type": "confirm",
+                "title": "PLAYER NEGOTIATION",
+                "message": f"{player_name}\nOFFER: £{market_rate:,}/WK  3 YEARS",
+                "buttons": [
+                    {"label": "OFFER TERMS", "action": f"transfers:complete_negotiation:{offer_id}:{market_rate}:3", "fill": (46, 160, 67), "text_color": (245, 245, 245)},
+                    {"label": "CANCEL", "action": "modal:close"},
+                ],
+            }
+            return
+        if action.startswith("transfers:complete_negotiation:"):
+            parts = action.split(":", 4)
+            if len(parts) < 5:
+                return
+            offer_id_str, wage_str, years_str = parts[2], parts[3], parts[4]
+            try:
+                offer_id_int = int(offer_id_str)
+                wage = int(wage_str)
+                years = int(years_str)
+            except ValueError:
+                return
+            if not self.active_save_id or not self.overview:
+                return
+            with db_session(self.db_path) as conn:
+                offers = get_accepted_offers(conn, self.active_save_id)
+                offer = next((o for o in offers if o.get("id") == offer_id_int), None)
+                if offer:
+                    player_id = str(offer.get("player_id", ""))
+                    to_club_id = str(self.overview.get("club_id", ""))
+                    to_club_name = str(self.overview.get("club_name", ""))
+                    current_date = str(self.overview.get("current_date", ""))
+                    player_ovr = int(offer.get("ovr", 75))
+                    standings = self.overview.get("standings", [])
+                    league_pos = next((int(s.get("position", 4)) for s in standings if str(s.get("club_id", "")) == to_club_id), 4)
+                    complete_transfer(conn, self.active_save_id, offer_id_int, player_id, to_club_id, to_club_name, wage, years, current_date, player_ovr, league_pos)
+                conn.commit()
+            self._reload_state()
+            self.modal = None
+            return
 
     def _handle_keydown(self, event: pygame.event.Event) -> None:
         if self.modal:
@@ -1634,13 +1819,23 @@ class ManagerGameApp:
                 "selected_player_id": self.fixture_report_selected_player_id,
             }
         if self.screen == "overview":
+            overview = self.overview or {}
+            club_id = overview.get("club_id", "")
+            listed_ids: list[str] = [str(l.get("player_id", "")) for l in self.transfer_data.get("user_listings", [])]
+            finance_transactions: list[dict] = []
+            if self.active_save_id and self.overview_tab == "club_finances":
+                with db_session(self.db_path) as conn:
+                    finance_transactions = get_finance_transactions(conn, self.active_save_id)
             return {
                 "screen": "overview",
-                "overview": self.overview or {},
+                "overview": overview,
                 "selected_club_id": self.overview_club_id,
                 "overview_tab": self.overview_tab,
                 "fixtures_page": self.fixtures_page,
                 "selected_gameweek": self.fixtures_page,
+                "transfer_data": self.transfer_data,
+                "transfer_listed_ids": listed_ids,
+                "finance_transactions": finance_transactions,
                 "squad_draft": {
                     "formation": self.squad_draft_formation,
                     "xi_ids": self.squad_draft_xi_ids,
@@ -1707,7 +1902,11 @@ class ManagerGameApp:
                                 self.squad_hover_target_id = hover_player_id if hover_player_id != self.squad_drag_player_id else None
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if self.modal:
-                        self._handle_action(self.renderer.handle_ui_click(event.pos))
+                        action = self.renderer.handle_ui_click(event.pos)
+                        if action:
+                            self._handle_action(action)
+                        elif self.modal.get("type") == "news_detail":
+                            self.modal = None
                         continue
                     if self.screen == "match" and self.match_engine:
                         if self.match_sub_mode:

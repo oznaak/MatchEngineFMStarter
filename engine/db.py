@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import random
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, timedelta
@@ -381,6 +383,79 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             sort_order INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (option_key, value)
         );
+
+        CREATE TABLE IF NOT EXISTS save_player_club (
+            save_id INTEGER NOT NULL,
+            player_id TEXT NOT NULL,
+            club_id TEXT NOT NULL,
+            PRIMARY KEY (save_id, player_id),
+            FOREIGN KEY (save_id) REFERENCES saves(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS transfer_market (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            save_id INTEGER NOT NULL,
+            player_id TEXT NOT NULL,
+            listed_club_id TEXT NOT NULL,
+            asking_price INTEGER NOT NULL DEFAULT 0,
+            listed_date TEXT NOT NULL,
+            window_type TEXT NOT NULL,
+            season_year INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'available',
+            is_user_listed INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(save_id, player_id, season_year, window_type),
+            FOREIGN KEY (save_id) REFERENCES saves(id),
+            FOREIGN KEY (player_id) REFERENCES players(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS transfer_offers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            save_id INTEGER NOT NULL,
+            player_id TEXT NOT NULL,
+            offer_amount INTEGER NOT NULL,
+            offer_number INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_date TEXT NOT NULL,
+            response_date TEXT,
+            window_type TEXT NOT NULL,
+            season_year INTEGER NOT NULL,
+            FOREIGN KEY (save_id) REFERENCES saves(id),
+            FOREIGN KEY (player_id) REFERENCES players(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS player_contracts (
+            save_id INTEGER NOT NULL,
+            player_id TEXT NOT NULL,
+            club_id TEXT NOT NULL,
+            weekly_wage INTEGER NOT NULL DEFAULT 0,
+            contract_years INTEGER NOT NULL DEFAULT 1,
+            start_date TEXT,
+            PRIMARY KEY (save_id, player_id),
+            FOREIGN KEY (save_id) REFERENCES saves(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS save_finances (
+            save_id INTEGER PRIMARY KEY,
+            balance INTEGER NOT NULL DEFAULT 25000000,
+            transfer_budget INTEGER NOT NULL DEFAULT 10000000,
+            wage_budget_weekly INTEGER NOT NULL DEFAULT 500000,
+            season_income_matchday INTEGER NOT NULL DEFAULT 0,
+            season_income_sponsor INTEGER NOT NULL DEFAULT 0,
+            season_income_transfers INTEGER NOT NULL DEFAULT 0,
+            season_expenses_wages INTEGER NOT NULL DEFAULT 0,
+            season_expenses_transfers INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (save_id) REFERENCES saves(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS finance_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            save_id INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            transaction_date TEXT NOT NULL,
+            FOREIGN KEY (save_id) REFERENCES saves(id)
+        );
         """
     )
     _ensure_column(conn, "saves", "season_year", "INTEGER")
@@ -740,10 +815,19 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
             "player_instructions": player_instructions,
         }
 
+    # Transfer overrides: players moved to a new club within this save
+    transfer_club_overrides: Dict[str, str] = {}
+    if save_id is not None:
+        override_rows = conn.execute(
+            "SELECT player_id, club_id FROM save_player_club WHERE save_id = ?",
+            (int(save_id),),
+        ).fetchall()
+        transfer_club_overrides = {str(r["player_id"]): str(r["club_id"]) for r in override_rows}
+
     players_by_club: Dict[str, List[PlayerProfile]] = {}
     for row in player_rows:
         player_id = str(row["id"])
-        club_id = str(row["club_id"])
+        club_id = transfer_club_overrides.get(player_id, str(row["club_id"]))
         players_by_club.setdefault(club_id, []).append(
             PlayerProfile(
                 id=player_id,
@@ -1486,6 +1570,7 @@ def apply_training_day(conn: sqlite3.Connection, save_id: int, club_id: str, cur
     players_trained = 0
     attributes_changed = 0
     stamina_cost = 0.0
+    notable_gains: List[dict] = []
     for player in club.players:
         if not player.is_available:
             continue
@@ -1505,6 +1590,13 @@ def apply_training_day(conn: sqlite3.Connection, save_id: int, club_id: str, cur
                 continue
             updated = min(99.0, current + gain)
             _save_training_attribute(conn, save_id, player.id, attr, updated)
+            if int(updated) > int(current) and int(updated) % 5 == 0:
+                notable_gains.append({
+                    "player_name": player.name,
+                    "attr": attr,
+                    "old_val": int(current),
+                    "new_val": int(updated),
+                })
             player.attributes[attr] = updated
             attributes_changed += 1
         delta = training_stamina_delta(player, team_focus, intensity)
@@ -1518,6 +1610,7 @@ def apply_training_day(conn: sqlite3.Connection, save_id: int, club_id: str, cur
         "players_trained": players_trained,
         "attributes_changed": attributes_changed,
         "stamina_cost": round(stamina_cost, 2),
+        "notable_gains": notable_gains,
     }
 
 
@@ -1786,16 +1879,17 @@ def _create_daily_save_messages(
             f"match_tomorrow:{fixture['fixture_date']}:{fixture['home_club_id']}:{fixture['away_club_id']}",
         )
 
-    if int(training_result.get("attributes_changed", 0) or 0) > 0:
+    for gain in list(training_result.get("notable_gains", [])):
+        attr_label = str(gain["attr"]).replace("_", " ").title()
         add_save_message(
             conn,
             save_id,
             "training",
-            "TRAINING PROGRESS",
-            f"{int(training_result.get('players_trained', 0))} players completed training and the squad showed attribute growth.",
+            "ATTRIBUTE BOOST",
+            f"{gain['player_name']} improved {attr_label} to {gain['new_val']}.",
             current_date,
             "success",
-            f"training:{current_date}",
+            f"training_gain:{current_date}:{gain['player_name']}:{gain['attr']}",
         )
 
     tired_rows = conn.execute(
@@ -1936,13 +2030,27 @@ def advance_save_one_day(conn: sqlite3.Connection, save_id: int, managed_club_id
         "SELECT current_day, saves.current_date AS current_date, season_year FROM saves WHERE id = ?",
         (int(save_id),),
     ).fetchone()
-    _create_daily_save_messages(conn, save_id, str(managed_club_id or ""), str(updated["current_date"]), training_result)
+    current_date_str = str(updated["current_date"])
+    season_year_val = int(updated["season_year"])
+    _create_daily_save_messages(conn, save_id, str(managed_club_id or ""), current_date_str, training_result)
     completed = complete_season_if_due(conn, save_id)
+
+    if managed_club_id:
+        window_open, window_type = get_transfer_window_status(current_date_str)
+        if window_open:
+            _ai_populate_transfer_market(conn, save_id, current_date_str, window_type, season_year_val, str(managed_club_id))
+            resolve_pending_transfer_offers(conn, save_id, current_date_str)
+        # Weekly finances: every 7 days apply sponsor income and wages
+        if next_day % 7 == 0:
+            standings = load_save_standings(conn, save_id)
+            club_pos = next((int(s.get("position", 4)) for s in standings if str(s.get("club_id", "")) == str(managed_club_id)), 4)
+            apply_weekly_finances(conn, save_id, str(managed_club_id), current_date_str, club_pos)
+
     conn.commit()
     return {
         "current_day": int(updated["current_day"]),
-        "current_date": str(updated["current_date"]),
-        "season_year": int(updated["season_year"]),
+        "current_date": current_date_str,
+        "season_year": season_year_val,
         "season_completed": completed,
         "training": training_result,
     }
@@ -2132,6 +2240,7 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
         "today_fixture": today_fixture,
         "training": load_save_training(conn, save_id, club_id),
         "messages": list_save_messages(conn, save_id, limit=8),
+        "finances": get_save_finances(conn, save_id),
     }
 
 
@@ -2487,3 +2596,545 @@ def _generate_double_round_robin(club_ids: List[str]) -> List[tuple[str, str]]:
     for round_pair in pairings + second_leg:
         flat.extend(round_pair)
     return flat
+
+
+# ---------------------------------------------------------------------------
+# Transfer system helpers
+# ---------------------------------------------------------------------------
+
+def get_transfer_window_status(current_date: str) -> tuple[bool, str]:
+    """Returns (is_open, window_type). window_type: 'summer'|'winter'|''."""
+    if not current_date:
+        return False, ""
+    try:
+        d = date.fromisoformat(current_date)
+    except ValueError:
+        return False, ""
+    m, day = d.month, d.day
+    if (m == 7 and day >= 7) or m == 8 or (m == 9 and day == 1):
+        return True, "summer"
+    if m == 1:
+        return True, "winter"
+    return False, ""
+
+
+def _compute_asking_price(ovr: int) -> int:
+    base = max(500_000, int((max(0, ovr - 55) ** 2.3) * 55_000))
+    return round(base / 500_000) * 500_000
+
+
+def _ai_populate_transfer_market(
+    conn: sqlite3.Connection,
+    save_id: int,
+    current_date: str,
+    window_type: str,
+    season_year: int,
+    managed_club_id: str,
+) -> None:
+    existing = conn.execute(
+        "SELECT COUNT(*) AS c FROM transfer_market WHERE save_id = ? AND season_year = ? AND window_type = ? AND is_user_listed = 0",
+        (int(save_id), int(season_year), window_type),
+    ).fetchone()
+    if existing and int(existing["c"]) > 0:
+        return
+
+    club_rows = conn.execute("SELECT id FROM clubs ORDER BY id").fetchall()
+    for club_row in club_rows:
+        club_id = str(club_row["id"])
+        if club_id == managed_club_id:
+            continue
+        players = conn.execute(
+            "SELECT p.id, p.position, p.ovr FROM players p WHERE p.club_id = ? ORDER BY p.ovr DESC",
+            (club_id,),
+        ).fetchall()
+        transferred_away = set(
+            str(r["player_id"]) for r in conn.execute(
+                "SELECT player_id FROM save_player_club WHERE save_id = ? AND club_id != ?",
+                (int(save_id), club_id),
+            ).fetchall()
+        )
+        transferred_in = set(
+            str(r["player_id"]) for r in conn.execute(
+                "SELECT player_id FROM save_player_club WHERE save_id = ? AND club_id = ?",
+                (int(save_id), club_id),
+            ).fetchall()
+        )
+        roster = [p for p in players if str(p["id"]) not in transferred_away]
+        for pid in transferred_in:
+            extra = conn.execute("SELECT id, position, ovr FROM players WHERE id = ?", (pid,)).fetchone()
+            if extra:
+                roster.append(extra)
+        roster = sorted(roster, key=lambda p: int(p["ovr"]), reverse=True)
+
+        pos_counts: Dict[str, int] = {}
+        for p in roster:
+            pos_counts[str(p["position"])] = pos_counts.get(str(p["position"]), 0) + 1
+
+        excess = []
+        pos_seen: Dict[str, int] = {}
+        for idx, p in enumerate(roster):
+            pos = str(p["position"])
+            pos_seen[pos] = pos_seen.get(pos, 0) + 1
+            if idx >= 11 and (pos_seen[pos] > 1 or pos_counts.get(pos, 0) >= 3):
+                excess.append(p)
+
+        listed = 0
+        random.shuffle(excess)
+        for p in excess:
+            if listed >= 3:
+                break
+            if random.random() > 0.30:
+                continue
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO transfer_market
+                        (save_id, player_id, listed_club_id, asking_price, listed_date, window_type, season_year, status, is_user_listed)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'available', 0)
+                    ON CONFLICT(save_id, player_id, season_year, window_type) DO NOTHING
+                    """,
+                    (int(save_id), str(p["id"]), club_id, _compute_asking_price(int(p["ovr"])), current_date, window_type, int(season_year)),
+                )
+                listed += 1
+            except sqlite3.IntegrityError:
+                pass
+
+
+def get_transfer_market_listings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
+    rows = conn.execute(
+        """
+        SELECT tm.id, tm.player_id, tm.listed_club_id, tm.asking_price, tm.listed_date,
+               tm.window_type, tm.season_year, tm.status, tm.is_user_listed,
+               p.name AS player_name, p.position, p.ovr,
+               c.name AS club_name,
+               (SELECT COUNT(*) FROM transfer_offers to2
+                WHERE to2.save_id = tm.save_id AND to2.player_id = tm.player_id
+                  AND to2.window_type = tm.window_type AND to2.season_year = tm.season_year) AS offer_count
+        FROM transfer_market tm
+        JOIN players p ON p.id = tm.player_id
+        JOIN clubs c ON c.id = tm.listed_club_id
+        WHERE tm.save_id = ? AND tm.status = 'available'
+        ORDER BY p.ovr DESC
+        """,
+        (int(save_id),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_user_transfer_listings(conn: sqlite3.Connection, save_id: int, managed_club_id: str) -> List[dict]:
+    rows = conn.execute(
+        """
+        SELECT tm.id, tm.player_id, tm.asking_price, tm.listed_date,
+               tm.window_type, tm.season_year, tm.status,
+               p.name AS player_name, p.position, p.ovr,
+               (SELECT COUNT(*) FROM transfer_offers to2
+                WHERE to2.save_id = tm.save_id AND to2.player_id = tm.player_id
+                  AND to2.window_type = tm.window_type AND to2.season_year = tm.season_year) AS offer_count
+        FROM transfer_market tm
+        JOIN players p ON p.id = tm.player_id
+        WHERE tm.save_id = ? AND tm.listed_club_id = ? AND tm.is_user_listed = 1 AND tm.status = 'available'
+        ORDER BY tm.id DESC
+        """,
+        (int(save_id), managed_club_id),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_player_for_transfer(
+    conn: sqlite3.Connection,
+    save_id: int,
+    player_id: str,
+    club_id: str,
+    current_date: str,
+    season_year: int,
+    window_type: str,
+) -> bool:
+    existing = conn.execute(
+        "SELECT id FROM transfer_market WHERE save_id = ? AND player_id = ? AND season_year = ? AND window_type = ? AND status = 'available'",
+        (int(save_id), player_id, int(season_year), window_type),
+    ).fetchone()
+    if existing:
+        return False
+    player_row = conn.execute("SELECT ovr FROM players WHERE id = ?", (player_id,)).fetchone()
+    if player_row is None:
+        return False
+    asking = _compute_asking_price(int(player_row["ovr"]))
+    conn.execute(
+        """
+        INSERT INTO transfer_market
+            (save_id, player_id, listed_club_id, asking_price, listed_date, window_type, season_year, status, is_user_listed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'available', 1)
+        ON CONFLICT(save_id, player_id, season_year, window_type) DO UPDATE SET status='available'
+        """,
+        (int(save_id), player_id, club_id, asking, current_date, window_type, int(season_year)),
+    )
+    return True
+
+
+def make_transfer_offer(
+    conn: sqlite3.Connection,
+    save_id: int,
+    player_id: str,
+    offer_amount: int,
+    window_type: str,
+    season_year: int,
+    current_date: str,
+) -> dict:
+    existing_offers = conn.execute(
+        "SELECT COUNT(*) AS c FROM transfer_offers WHERE save_id = ? AND player_id = ? AND season_year = ? AND window_type = ?",
+        (int(save_id), player_id, int(season_year), window_type),
+    ).fetchone()
+    count = int(existing_offers["c"]) if existing_offers else 0
+    if count >= 3:
+        return {"ok": False, "error": "max_offers_reached"}
+    listing = conn.execute(
+        "SELECT id, asking_price FROM transfer_market WHERE save_id = ? AND player_id = ? AND season_year = ? AND window_type = ? AND status = 'available'",
+        (int(save_id), player_id, int(season_year), window_type),
+    ).fetchone()
+    if listing is None:
+        return {"ok": False, "error": "not_listed"}
+    response_days = random.randint(1, 3)
+    resp_date = (date.fromisoformat(current_date) + timedelta(days=response_days)).isoformat()
+    cur = conn.execute(
+        """
+        INSERT INTO transfer_offers (save_id, player_id, offer_amount, offer_number, status, created_date, response_date, window_type, season_year)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+        """,
+        (int(save_id), player_id, int(offer_amount), count + 1, current_date, resp_date, window_type, int(season_year)),
+    )
+    return {"ok": True, "offer_id": cur.lastrowid}
+
+
+def withdraw_transfer_listing(conn: sqlite3.Connection, save_id: int, listing_id: int) -> None:
+    conn.execute(
+        "UPDATE transfer_market SET status = 'withdrawn' WHERE id = ? AND save_id = ?",
+        (int(listing_id), int(save_id)),
+    )
+
+
+def resolve_pending_transfer_offers(
+    conn: sqlite3.Connection,
+    save_id: int,
+    current_date: str,
+    user_league_position: int = 4,
+) -> None:
+    offers = conn.execute(
+        """
+        SELECT to2.id, to2.player_id, to2.offer_amount, to2.offer_number,
+               to2.window_type, to2.season_year,
+               p.name AS player_name, p.ovr,
+               tm.asking_price, tm.listed_club_id,
+               c.name AS club_name
+        FROM transfer_offers to2
+        JOIN players p ON p.id = to2.player_id
+        JOIN transfer_market tm ON tm.save_id = to2.save_id
+            AND tm.player_id = to2.player_id
+            AND tm.season_year = to2.season_year
+            AND tm.window_type = to2.window_type
+        JOIN clubs c ON c.id = tm.listed_club_id
+        WHERE to2.save_id = ? AND to2.status = 'pending'
+          AND to2.response_date <= ?
+        """,
+        (int(save_id), current_date),
+    ).fetchall()
+
+    num_clubs = max(1, conn.execute("SELECT COUNT(*) AS c FROM clubs").fetchone()["c"])
+    prestige_bonus = max(0.0, (num_clubs - user_league_position) / max(1, num_clubs - 1))
+
+    for offer in offers:
+        asking = int(offer["asking_price"])
+        amount = int(offer["offer_amount"])
+        ratio = amount / max(1, asking)
+        accept_prob = min(0.92, max(0.04,
+            0.75 * (ratio ** 1.4)
+            + 0.15 * prestige_bonus
+            + 0.10 * random.random()
+        ))
+        accepted = random.random() < accept_prob
+        offer_num = int(offer["offer_number"])
+        player_name = str(offer["player_name"])
+        club_name = str(offer["club_name"])
+
+        if accepted:
+            conn.execute(
+                "UPDATE transfer_offers SET status = 'accepted', response_date = ? WHERE id = ?",
+                (current_date, int(offer["id"])),
+            )
+            add_save_message(
+                conn, save_id, "transfers",
+                "OFFER ACCEPTED",
+                f"{club_name} accepted your offer for {player_name}. Negotiate contract terms.",
+                current_date, "success",
+                f"offer_accepted:{offer['id']}",
+            )
+        else:
+            conn.execute(
+                "UPDATE transfer_offers SET status = 'rejected', response_date = ? WHERE id = ?",
+                (current_date, int(offer["id"])),
+            )
+            if offer_num >= 3:
+                add_save_message(
+                    conn, save_id, "transfers",
+                    "OFFER REJECTED",
+                    f"{club_name} rejected your final offer for {player_name}. No more offers this window.",
+                    current_date, "warning",
+                    f"offer_final_rejected:{offer['id']}",
+                )
+            else:
+                add_save_message(
+                    conn, save_id, "transfers",
+                    "OFFER REJECTED",
+                    f"{club_name} rejected your offer for {player_name}. {3 - offer_num} offer(s) remaining.",
+                    current_date, "warning",
+                    f"offer_rejected:{offer['id']}",
+                )
+
+
+def get_accepted_offers(conn: sqlite3.Connection, save_id: int) -> List[dict]:
+    rows = conn.execute(
+        """
+        SELECT to2.id, to2.player_id, to2.offer_amount, to2.window_type, to2.season_year,
+               p.name AS player_name, p.ovr, p.position,
+               tm.listed_club_id,
+               c.name AS club_name
+        FROM transfer_offers to2
+        JOIN players p ON p.id = to2.player_id
+        JOIN transfer_market tm ON tm.save_id = to2.save_id
+            AND tm.player_id = to2.player_id
+            AND tm.season_year = to2.season_year
+            AND tm.window_type = to2.window_type
+        JOIN clubs c ON c.id = tm.listed_club_id
+        WHERE to2.save_id = ? AND to2.status = 'accepted'
+        ORDER BY to2.id
+        """,
+        (int(save_id),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def complete_transfer(
+    conn: sqlite3.Connection,
+    save_id: int,
+    offer_id: int,
+    player_id: str,
+    to_club_id: str,
+    to_club_name: str,
+    weekly_wage: int,
+    contract_years: int,
+    current_date: str,
+    player_ovr: int,
+    user_league_position: int = 4,
+) -> dict:
+    num_clubs = max(1, conn.execute("SELECT COUNT(*) AS c FROM clubs").fetchone()["c"])
+    prestige = max(0.0, (num_clubs - user_league_position) / max(1, num_clubs - 1))
+    market_rate = player_ovr * 600
+    wage_ratio = min(3.0, weekly_wage / max(1, market_rate))
+    accept_prob = min(0.97, max(0.05,
+        0.50 * wage_ratio
+        + 0.30 * prestige
+        + 0.20 * random.uniform(0.5, 1.5)
+    ))
+    player_accepts = random.random() < accept_prob
+    player_row = conn.execute("SELECT name FROM players WHERE id = ?", (player_id,)).fetchone()
+    player_name = str(player_row["name"]) if player_row else player_id
+
+    if not player_accepts:
+        conn.execute(
+            "UPDATE transfer_offers SET status = 'negotiating_failed' WHERE id = ?",
+            (int(offer_id),),
+        )
+        add_save_message(
+            conn, save_id, "transfers",
+            "PLAYER REJECTED TERMS",
+            f"{player_name} rejected the contract offer. Try higher wage or longer contract.",
+            current_date, "warning",
+            f"player_rejected:{offer_id}",
+        )
+        return {"ok": False, "reason": "player_rejected"}
+
+    conn.execute(
+        """
+        INSERT INTO save_player_club (save_id, player_id, club_id)
+        VALUES (?, ?, ?)
+        ON CONFLICT(save_id, player_id) DO UPDATE SET club_id = excluded.club_id
+        """,
+        (int(save_id), player_id, to_club_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO player_contracts (save_id, player_id, club_id, weekly_wage, contract_years, start_date)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(save_id, player_id) DO UPDATE SET
+            club_id = excluded.club_id,
+            weekly_wage = excluded.weekly_wage,
+            contract_years = excluded.contract_years,
+            start_date = excluded.start_date
+        """,
+        (int(save_id), player_id, to_club_id, int(weekly_wage), int(contract_years), current_date),
+    )
+    conn.execute(
+        "UPDATE transfer_offers SET status = 'completed' WHERE id = ?",
+        (int(offer_id),),
+    )
+    conn.execute(
+        "UPDATE transfer_market SET status = 'sold' WHERE save_id = ? AND player_id = ?",
+        (int(save_id), player_id),
+    )
+    add_save_message(
+        conn, save_id, "transfers",
+        "TRANSFER COMPLETE",
+        f"{player_name} has joined {to_club_name} on a {contract_years}-year contract.",
+        current_date, "success",
+        f"transfer_done:{offer_id}",
+    )
+    return {"ok": True, "player_name": player_name}
+
+
+def load_transfer_data(conn: sqlite3.Connection, save_id: int, managed_club_id: str) -> dict:
+    market = get_transfer_market_listings(conn, save_id)
+    listings = get_user_transfer_listings(conn, save_id, managed_club_id)
+    accepted = get_accepted_offers(conn, save_id)
+    listed_ids = {str(r["player_id"]) for r in market + listings}
+    return {
+        "market": market,
+        "user_listings": listings,
+        "accepted_offers": accepted,
+        "listed_player_ids": list(listed_ids),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Club Finances
+# ---------------------------------------------------------------------------
+
+def _ensure_save_finances(conn: sqlite3.Connection, save_id: int) -> None:
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO save_finances (save_id) VALUES (?)
+        """,
+        (int(save_id),),
+    )
+
+
+def get_save_finances(conn: sqlite3.Connection, save_id: int) -> dict:
+    _ensure_save_finances(conn, save_id)
+    row = conn.execute(
+        "SELECT * FROM save_finances WHERE save_id = ?",
+        (int(save_id),),
+    ).fetchone()
+    if row is None:
+        return {
+            "balance": 25_000_000,
+            "transfer_budget": 10_000_000,
+            "wage_budget_weekly": 500_000,
+            "season_income_matchday": 0,
+            "season_income_sponsor": 0,
+            "season_income_transfers": 0,
+            "season_expenses_wages": 0,
+            "season_expenses_transfers": 0,
+        }
+    return dict(row)
+
+
+def _log_finance_transaction(
+    conn: sqlite3.Connection,
+    save_id: int,
+    category: str,
+    amount: int,
+    description: str,
+    transaction_date: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO finance_transactions (save_id, category, amount, description, transaction_date) VALUES (?, ?, ?, ?, ?)",
+        (int(save_id), category, int(amount), description, transaction_date),
+    )
+
+
+def apply_matchday_revenue(
+    conn: sqlite3.Connection,
+    save_id: int,
+    is_home: bool,
+    current_date: str,
+    club_league_position: int = 4,
+) -> int:
+    _ensure_save_finances(conn, save_id)
+    # Home gates earn more; away games earn nothing (simplification)
+    if not is_home:
+        return 0
+    # £150K base + bonus for larger clubs (proxy: lower position = more fans)
+    gate_revenue = max(100_000, 400_000 - (club_league_position - 1) * 30_000)
+    conn.execute(
+        """
+        UPDATE save_finances
+        SET balance = balance + ?,
+            season_income_matchday = season_income_matchday + ?
+        WHERE save_id = ?
+        """,
+        (gate_revenue, gate_revenue, int(save_id)),
+    )
+    _log_finance_transaction(conn, save_id, "matchday", gate_revenue, "Matchday gate revenue", current_date)
+    return gate_revenue
+
+
+def apply_weekly_finances(
+    conn: sqlite3.Connection,
+    save_id: int,
+    club_id: str,
+    current_date: str,
+    club_league_position: int = 4,
+) -> None:
+    _ensure_save_finances(conn, save_id)
+    # Sponsor income: £200K/wk for mid-table, scales with position
+    sponsor_weekly = max(100_000, 350_000 - (club_league_position - 1) * 30_000)
+    # Wage bill: sum of player contracts for this club in this save, fallback default
+    wage_row = conn.execute(
+        "SELECT COALESCE(SUM(weekly_wage), 0) AS total FROM player_contracts WHERE save_id = ? AND club_id = ?",
+        (int(save_id), club_id),
+    ).fetchone()
+    wage_bill = int(wage_row["total"] or 0)
+    if wage_bill == 0:
+        wage_bill = 50_000  # default squad wage bill before any contracts are signed
+    net = sponsor_weekly - wage_bill
+    conn.execute(
+        """
+        UPDATE save_finances
+        SET balance = balance + ?,
+            season_income_sponsor = season_income_sponsor + ?,
+            season_expenses_wages = season_expenses_wages + ?
+        WHERE save_id = ?
+        """,
+        (net, sponsor_weekly, wage_bill, int(save_id)),
+    )
+    _log_finance_transaction(conn, save_id, "sponsor", sponsor_weekly, "Weekly sponsorship income", current_date)
+    _log_finance_transaction(conn, save_id, "wages", -wage_bill, "Weekly player wages", current_date)
+
+
+def apply_transfer_fee(
+    conn: sqlite3.Connection,
+    save_id: int,
+    amount: int,
+    direction: str,  # "in" or "out"
+    player_name: str,
+    current_date: str,
+) -> None:
+    _ensure_save_finances(conn, save_id)
+    if direction == "in":
+        conn.execute(
+            "UPDATE save_finances SET balance = balance + ?, season_income_transfers = season_income_transfers + ? WHERE save_id = ?",
+            (amount, amount, int(save_id)),
+        )
+        _log_finance_transaction(conn, save_id, "transfer_in", amount, f"Transfer fee received: {player_name}", current_date)
+    else:
+        conn.execute(
+            "UPDATE save_finances SET balance = balance - ?, season_expenses_transfers = season_expenses_transfers + ? WHERE save_id = ?",
+            (amount, amount, int(save_id)),
+        )
+        _log_finance_transaction(conn, save_id, "transfer_out", -amount, f"Transfer fee paid: {player_name}", current_date)
+
+
+def get_finance_transactions(conn: sqlite3.Connection, save_id: int, limit: int = 20) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM finance_transactions WHERE save_id = ? ORDER BY id DESC LIMIT ?",
+        (int(save_id), int(limit)),
+    ).fetchall()
+    return [dict(r) for r in rows]

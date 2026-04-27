@@ -109,7 +109,7 @@ def training_attribute_gain(
     current_day: int,
 ) -> float:
     intensity_info = TRAINING_INTENSITY_OPTIONS[normalize_training_intensity(intensity)]
-    base = 0.018 * float(intensity_info["growth"])
+    base = 0.005 * float(intensity_info["growth"])
     age_factor = 1.0
     # No ages exist yet; deterministic player-id variation gives different growth curves without randomness.
     age_factor += ((sum(ord(ch) for ch in player.id) + current_day) % 7 - 3) * 0.015

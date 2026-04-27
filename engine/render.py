@@ -37,6 +37,27 @@ PLAYER_OUTER_RADIUS = 14
 PLAYER_INNER_RADIUS = 11
 PLAYER_HAS_BALL_RADIUS = 18
 
+_ATTR_SHORT: dict[str, str] = {
+    "free_kick_taking": "FK TAKING",
+    "penalty_taking":   "PENALTY",
+    "short_passing":    "SHORT PASS",
+    "long_passing":     "LONG PASS",
+    "first_touch":      "FIRST TCH",
+    "jumping_reach":    "JUMP REACH",
+    "natural_fitness":  "NAT FIT",
+    "acceleration":     "ACCEL",
+    "off_ball":         "OFF BALL",
+    "command_of_area":  "CMD AREA",
+    "rushing_out":      "RUSH OUT",
+    "one_on_ones":      "1 VS 1",
+    "aerial_reach":     "AIR REACH",
+    "concentration":    "CONCENTR",
+    "communication":    "COMMUN",
+    "long_shots":       "LONG SHOTS",
+    "work_rate":        "WORK RATE",
+    "shooting_power":   "SHOOT PWR",
+}
+
 
 def configure_display_metrics(width: int, height: int) -> None:
     global SCREEN_W, SCREEN_H, VIEWPORT_H, SIDE_PANEL_W, PANEL_GAP, SIDE_PANEL, PITCH_PANEL, VIEWPORT_PAD_X, PITCH_X, PITCH_Y, PITCH_W, PITCH_H
@@ -2139,6 +2160,15 @@ class Renderer:
             else:
                 self._draw_overview_fixtures_tab(view, overview, clubs, primary, secondary)
             return
+        if overview_tab.startswith("transfers_"):
+            if overview_tab == "transfers_listings":
+                self._draw_overview_transfers_listings_tab(view, overview, primary, secondary)
+            else:
+                self._draw_overview_transfers_market_tab(view, overview, primary, secondary)
+            return
+        if overview_tab.startswith("club_"):
+            self._draw_overview_club_finances_tab(view, overview, primary, secondary)
+            return
 
         self._draw_overview_home_tab(view, overview, selected_club_id, clubs, players_by_club, standings, fixtures, primary, secondary)
 
@@ -2174,17 +2204,33 @@ class Renderer:
             ("SQUAD", "squad"),
             ("MATCHES", "matches"),
             ("TRANSFERS", "transfers"),
+            ("CLUB", "club"),
             ("CAREER", "career"),
         ]
         x = brand.right + 20
         submenu_anchor_x = x
         for label, tab_key in nav_items:
             tab_x = x
-            active = overview_tab == tab_key or (tab_key == "squad" and overview_tab.startswith("squad_")) or (tab_key == "matches" and overview_tab.startswith("matches_"))
+            active = (
+                overview_tab == tab_key
+                or (tab_key == "squad" and overview_tab.startswith("squad_"))
+                or (tab_key == "matches" and overview_tab.startswith("matches_"))
+                or (tab_key == "transfers" and overview_tab.startswith("transfers_"))
+                or (tab_key == "club" and overview_tab.startswith("club_"))
+            )
             color = (248, 187, 32) if active else (220, 220, 224)
             rect = pygame.Rect(tab_x - 6, 10, text_width(label, 2) + 12, 28)
             draw_text(self.screen, label, tab_x, 20, color, scale=2)
-            action = "overview_tab:squad_formation" if tab_key == "squad" else "overview_tab:matches_fixtures" if tab_key == "matches" else f"overview_tab:{tab_key}"
+            if tab_key == "squad":
+                action = "overview_tab:squad_formation"
+            elif tab_key == "matches":
+                action = "overview_tab:matches_fixtures"
+            elif tab_key == "transfers":
+                action = "overview_tab:transfers_market"
+            elif tab_key == "club":
+                action = "overview_tab:club_finances"
+            else:
+                action = f"overview_tab:{tab_key}"
             self._register_ui(action, rect)
             if tab_key == "squad" and overview_tab.startswith("squad_"):
                 sub_x = submenu_anchor_x
@@ -2199,6 +2245,24 @@ class Renderer:
                 sub_x = submenu_anchor_x
                 sub_y = 44
                 for sub_label, sub_tab in (("FIXTURES", "matches_fixtures"), ("STANDINGS", "matches_standings")):
+                    sub_color = (248, 187, 32) if overview_tab == sub_tab else (170, 174, 182)
+                    sub_rect = pygame.Rect(sub_x - 3, sub_y - 2, text_width(sub_label, 1) + 6, 12)
+                    draw_text(self.screen, sub_label, sub_x, sub_y, sub_color, scale=1)
+                    self._register_ui(f"overview_tab:{sub_tab}", sub_rect)
+                    sub_x += text_width(sub_label, 1) + 12
+            if tab_key == "transfers" and overview_tab.startswith("transfers_"):
+                sub_x = submenu_anchor_x
+                sub_y = 44
+                for sub_label, sub_tab in (("MARKET", "transfers_market"), ("LISTINGS", "transfers_listings")):
+                    sub_color = (248, 187, 32) if overview_tab == sub_tab else (170, 174, 182)
+                    sub_rect = pygame.Rect(sub_x - 3, sub_y - 2, text_width(sub_label, 1) + 6, 12)
+                    draw_text(self.screen, sub_label, sub_x, sub_y, sub_color, scale=1)
+                    self._register_ui(f"overview_tab:{sub_tab}", sub_rect)
+                    sub_x += text_width(sub_label, 1) + 12
+            if tab_key == "club" and overview_tab.startswith("club_"):
+                sub_x = submenu_anchor_x
+                sub_y = 44
+                for sub_label, sub_tab in (("FINANCES", "club_finances"),):
                     sub_color = (248, 187, 32) if overview_tab == sub_tab else (170, 174, 182)
                     sub_rect = pygame.Rect(sub_x - 3, sub_y - 2, text_width(sub_label, 1) + 6, 12)
                     draw_text(self.screen, sub_label, sub_x, sub_y, sub_color, scale=1)
@@ -2461,6 +2525,9 @@ class Renderer:
             draw_text(self.screen, title, row.x + 12, row.y + 9, accent, scale=1)
             body = str(message.get("body", "")).upper()[: max(12, (row.width - 24) // 6)]
             draw_text(self.screen, body, row.x + 12, row.y + 28, (210, 214, 224), scale=1)
+            msg_id = message.get("id")
+            if msg_id is not None:
+                self._register_ui(f"news:open:{msg_id}", row)
             message_y += 56
 
     def _draw_overview_formation_tab(
@@ -2738,11 +2805,14 @@ class Renderer:
         self._draw_panel(panel, "FIXTURES", (16, 18, 20), (245, 245, 245))
 
         nav_y = panel.y + 48
-        nav_x = panel.x + 14
-
         prev_enabled = selected_gameweek > available_gameweeks[0]
         next_enabled = selected_gameweek < available_gameweeks[-1]
-        prev_rect = pygame.Rect(nav_x, nav_y, 66, 26)
+        gw_label = f"GAMEWEEK {selected_gameweek}"
+        btn_w = 66
+        total_nav_w = btn_w + 12 + text_width(gw_label, 2) + 12 + btn_w
+        nav_x = panel.centerx - total_nav_w // 2
+
+        prev_rect = pygame.Rect(nav_x, nav_y, btn_w, 26)
         self._draw_ui_button(
             prev_rect,
             "PREV",
@@ -2751,13 +2821,12 @@ class Renderer:
             "fixtures:prev_gameweek" if prev_enabled else None,
             scale=1,
         )
-        nav_x += 78
+        nav_x += btn_w + 12
 
-        gw_label = f"GAMEWEEK {selected_gameweek}"
         draw_text(self.screen, gw_label, nav_x, nav_y + 5, (245, 245, 245), scale=2)
-        nav_x += text_width(gw_label, 2) + 20
+        nav_x += text_width(gw_label, 2) + 12
 
-        next_rect = pygame.Rect(nav_x, nav_y, 66, 26)
+        next_rect = pygame.Rect(nav_x, nav_y, btn_w, 26)
         self._draw_ui_button(
             next_rect,
             "NEXT",
@@ -2779,14 +2848,13 @@ class Renderer:
         y = table_y + 8
         row_h = max(52, min(72, (table_h - 12) // max(1, min(len(gameweek_fixtures), 10))))
         club_by_id = {club["id"]: club for club in clubs}
-        name_chars = max(8, min(20, (panel.width - 300) // 36))
         for fixture in gameweek_fixtures:
             if y + row_h > table_y + table_h:
                 break
             home_club = club_by_id.get(fixture.get("home_club_id"))
             away_club = club_by_id.get(fixture.get("away_club_id"))
-            home_name = short_display_name(str(fixture.get("home_name") or (home_club or {}).get("name", "HOME")), name_chars)
-            away_name = short_display_name(str(fixture.get("away_name") or (away_club or {}).get("name", "AWAY")), name_chars)
+            home_name = str(fixture.get("home_name") or (home_club or {}).get("name", "HOME")).upper()
+            away_name = str(fixture.get("away_name") or (away_club or {}).get("name", "AWAY")).upper()
             score = "--" if fixture.get("home_goals") is None else f"{fixture.get('home_goals')}-{fixture.get('away_goals')}"
             date_label = str(fixture.get("fixture_date_label", ""))[:9]
             played = bool(fixture.get("played"))
@@ -2907,13 +2975,28 @@ class Renderer:
         draw_text(self.screen, str(selected_player.get("name", "PLAYER")).upper()[:text_limit], top.x + 16, top.y + 14, secondary, scale=2)
         meta = f"{selected_player.get('position')}  OVR {selected_player.get('ovr')}  FOOT {str(selected_player.get('preferred_foot', 'right')).upper()}"
         draw_text(self.screen, meta[:44], top.x + 16, top.y + 42, secondary, scale=1)
-        status_bits = [
-            f"STM {int(float(selected_player.get('current_stamina', 100) or 0))}",
-            f"YC {int(selected_player.get('yellow_card_count', 0) or 0)}",
-            f"INJ {int(selected_player.get('injury_days_remaining', 0) or 0)}D",
-            f"BAN {int(selected_player.get('suspension_matches_remaining', 0) or 0)}",
-        ]
-        draw_text(self.screen, "  ".join(status_bits)[:50], top.x + 16, top.y + 62, secondary, scale=1)
+        # Status bits row — icons instead of plain text
+        ix = top.x + 16
+        stamina = int(float(selected_player.get("current_stamina", 100) or 0))
+        stm_text = f"STM {stamina}"
+        draw_text(self.screen, stm_text, ix, top.y + 62, secondary, scale=1)
+        ix += text_width(stm_text, 1) + 10
+        yc = int(selected_player.get("yellow_card_count", 0) or 0)
+        if yc > 0:
+            self._draw_card_icon(ix + 5, top.y + 67, (248, 187, 32), str(yc))
+            ix += 20
+        inj = int(selected_player.get("injury_days_remaining", 0) or 0)
+        if inj > 0:
+            self._draw_injury_icon(pygame.Rect(ix, top.y + 60, 13, 13))
+            ix += 16
+            inj_text = f"{inj}D"
+            draw_text(self.screen, inj_text, ix, top.y + 62, (206, 96, 84), scale=1)
+            ix += text_width(inj_text, 1) + 8
+        ban = int(selected_player.get("suspension_matches_remaining", 0) or 0)
+        if ban > 0:
+            self._draw_card_icon(ix + 5, top.y + 67, (206, 96, 84), str(ban))
+            ix += 16
+            draw_text(self.screen, "BAN", ix, top.y + 62, (206, 96, 84), scale=1)
         self._draw_pixel_player_face(face_rect, selected_player, primary)
 
         stat_y = top.bottom + 16
@@ -2931,7 +3014,17 @@ class Renderer:
             draw_text(self.screen, label, card.x + 9, card.y + 9, (170, 174, 182), scale=1)
             draw_text(self.screen, str(value), card.x + 9, card.y + 29, (245, 245, 245), scale=2 if len(str(value)) <= 4 else 1)
 
-        recent_y = stat_y + 76
+        # "List on Market" button
+        listed_ids = set(view.get("transfer_listed_ids", []))
+        player_id_str = str(selected_player.get("id", ""))
+        if player_id_str and player_id_str not in listed_ids:
+            list_btn = pygame.Rect(right.x + 12, stat_y + 62, 150, 26)
+            self._draw_ui_button(list_btn, "LIST ON MARKET", (36, 52, 96), (245, 245, 245),
+                                 f"squad:list_player:{player_id_str}", scale=1)
+        elif player_id_str in listed_ids:
+            draw_text(self.screen, "LISTED FOR TRANSFER", right.x + 12, stat_y + 66, (248, 187, 32), scale=1)
+
+        recent_y = stat_y + 96
         draw_text(self.screen, "RECENT FORM", right.x + 12, recent_y, (248, 187, 32), scale=1)
         recent = list(selected_player.get("recent_ratings", []))[-5:]
         if not recent:
@@ -2946,31 +3039,298 @@ class Renderer:
             opponent = short_display_name(str(entry.get("opponent_name") or "OPP"), 8)
             draw_text(self.screen, opponent, chip.x + 8, chip.y + 30, (210, 214, 224), scale=1)
 
-        radar_rect = pygame.Rect(right.x + 16, recent_y + 88, min(260, right.width // 2 - 24), min(260, right.bottom - recent_y - 106))
-        self._draw_attribute_radar(radar_rect, selected_player)
+        # Attribute list (spans full width, two columns)
+        attr_y = recent_y + 80
         attrs = sorted(dict(selected_player.get("attributes", {})).items(), key=lambda item: item[0])
-        attr_x = radar_rect.right + 22
-        attr_y = recent_y + 88
-        attr_col_w = max(150, (right.right - attr_x - 16) // 2)
+        attr_col_w = max(150, (right.width - 28) // 2)
         row_step = 18
-        rows_per_col = max(1, (right.bottom - attr_y - 10) // row_step)
+        rows_per_col = max(1, (right.bottom - attr_y - 80) // row_step)
+        attr_list_bottom = attr_y
         for idx, (key, value) in enumerate(attrs):
             col = idx // rows_per_col
-            row = idx % rows_per_col
+            row_i = idx % rows_per_col
             if col > 1:
                 break
-            x = attr_x + col * attr_col_w
-            y = attr_y + row * row_step
-            label = str(key).replace("_", " ").upper()[:18]
+            x = right.x + 14 + col * attr_col_w
+            y = attr_y + row_i * row_step
+            attr_list_bottom = max(attr_list_bottom, y + row_step)
+            label = _ATTR_SHORT.get(key, str(key).replace("_", " ").upper())[:12]
             value_int = int(round(float(value)))
             value_text = str(value_int)
             value_color = self._attribute_value_color(value_int)
             draw_text(self.screen, label, x, y, (210, 214, 224), scale=1)
-            bar = pygame.Rect(x + 82, y + 4, max(32, attr_col_w - 126), 5)
+            bar = pygame.Rect(x + 78, y + 4, max(32, attr_col_w - 122), 5)
             pygame.draw.rect(self.screen, (34, 36, 42), bar, border_radius=3)
             pygame.draw.rect(self.screen, value_color, pygame.Rect(bar.x, bar.y, max(2, int(bar.width * value_int / 100.0)), bar.height), border_radius=3)
             pygame.draw.rect(self.screen, (76, 78, 88), bar, 1, border_radius=3)
             draw_text(self.screen, value_text, x + attr_col_w - 8 - text_width(value_text, 1), y, value_color, scale=1)
+
+        # Radar chart drawn below attribute list
+        radar_h = min(180, right.bottom - attr_list_bottom - 12)
+        if radar_h >= 80:
+            radar_w = min(220, right.width - 28)
+            radar_rect = pygame.Rect(right.centerx - radar_w // 2, attr_list_bottom + 6, radar_w, radar_h)
+            self._draw_attribute_radar(radar_rect, selected_player)
+
+    def _draw_overview_transfers_market_tab(
+        self,
+        view: dict,
+        overview: dict,
+        primary: Tuple[int, int, int],
+        secondary: Tuple[int, int, int],
+    ) -> None:
+        content_y = 74
+        content_h = SCREEN_H - content_y - 24
+        panel = pygame.Rect(20, content_y, SCREEN_W - 40, content_h)
+        self._draw_panel(panel, "TRANSFER MARKET", (16, 18, 20), (245, 245, 245))
+
+        transfer_data = view.get("transfer_data", {})
+        window_open = bool(transfer_data.get("window_open", False))
+        window_type = str(transfer_data.get("window_type", ""))
+        listings = list(transfer_data.get("market", []))
+
+        status_y = panel.y + 56
+        if window_open:
+            window_label = f"TRANSFER WINDOW OPEN — {window_type.upper()}"
+            draw_text(self.screen, window_label, panel.x + 16, status_y, (88, 170, 104), scale=2)
+        else:
+            draw_text(self.screen, "TRANSFER WINDOW CLOSED", panel.x + 16, status_y, (206, 96, 84), scale=2)
+            next_label = "NEXT WINDOW: JANUARY (WINTER) OR JULY 7 (SUMMER)"
+            draw_text(self.screen, next_label, panel.x + 16, status_y + 24, (170, 174, 182), scale=1)
+
+        table_y = status_y + 52
+        col_name = panel.x + 16
+        col_pos = panel.x + 300
+        col_ovr = panel.x + 360
+        col_club = panel.x + 420
+        col_price = panel.x + 680
+        col_btn = panel.right - 160
+
+        header_color = (170, 174, 182)
+        draw_text(self.screen, "PLAYER", col_name, table_y, header_color, scale=1)
+        draw_text(self.screen, "POS", col_pos, table_y, header_color, scale=1)
+        draw_text(self.screen, "OVR", col_ovr, table_y, header_color, scale=1)
+        draw_text(self.screen, "CLUB", col_club, table_y, header_color, scale=1)
+        draw_text(self.screen, "ASKING PRICE", col_price, table_y, header_color, scale=1)
+        pygame.draw.line(self.screen, (42, 46, 54), (panel.x + 8, table_y + 18), (panel.right - 8, table_y + 18))
+
+        row_y = table_y + 26
+        if not listings:
+            draw_text(self.screen, "NO PLAYERS CURRENTLY LISTED" if window_open else "WINDOW CLOSED — NO MARKET DATA", panel.x + 16, row_y + 16, (170, 174, 182), scale=1)
+        for listing in listings:
+            if row_y + 38 > panel.bottom - 12:
+                break
+            row_rect = pygame.Rect(panel.x + 8, row_y - 4, panel.width - 16, 36)
+            pygame.draw.rect(self.screen, (20, 23, 28), row_rect, border_radius=5)
+            pygame.draw.rect(self.screen, (36, 40, 48), row_rect, 1, border_radius=5)
+            player_name = str(listing.get("player_name", "UNKNOWN")).upper()[:22]
+            draw_text(self.screen, player_name, col_name, row_y + 6, (245, 245, 245), scale=1)
+            draw_text(self.screen, str(listing.get("position", "")).upper()[:3], col_pos, row_y + 6, (210, 214, 224), scale=1)
+            ovr_val = int(listing.get("ovr", 0))
+            ovr_color = self._attribute_value_color(ovr_val)
+            draw_text(self.screen, str(ovr_val), col_ovr, row_y + 6, ovr_color, scale=1)
+            club_name = str(listing.get("club_name", "")).upper()[:18]
+            draw_text(self.screen, club_name, col_club, row_y + 6, (210, 214, 224), scale=1)
+            price = int(listing.get("asking_price", 0))
+            price_label = f"£{price // 1_000_000}M" if price >= 1_000_000 else f"£{price // 1_000}K"
+            draw_text(self.screen, price_label, col_price, row_y + 6, (248, 187, 32), scale=1)
+            if window_open:
+                btn_rect = pygame.Rect(col_btn, row_y + 2, 120, 28)
+                player_id = str(listing.get("player_id", ""))
+                self._draw_ui_button(btn_rect, "MAKE OFFER", (36, 52, 96), (245, 245, 245), f"transfers:make_offer:{player_id}", scale=1)
+            row_y += 42
+
+    def _draw_overview_transfers_listings_tab(
+        self,
+        view: dict,
+        overview: dict,
+        primary: Tuple[int, int, int],
+        secondary: Tuple[int, int, int],
+    ) -> None:
+        content_y = 74
+        content_h = SCREEN_H - content_y - 24
+        panel = pygame.Rect(20, content_y, SCREEN_W - 40, content_h)
+        self._draw_panel(panel, "MY TRANSFER LISTINGS", (16, 18, 20), (245, 245, 245))
+
+        transfer_data = view.get("transfer_data", {})
+        window_open = bool(transfer_data.get("window_open", False))
+        listings = list(transfer_data.get("user_listings", []))
+        accepted_offers = list(transfer_data.get("accepted_offers", []))
+
+        status_y = panel.y + 56
+        if window_open:
+            draw_text(self.screen, "TRANSFER WINDOW OPEN", panel.x + 16, status_y, (88, 170, 104), scale=2)
+        else:
+            draw_text(self.screen, "TRANSFER WINDOW CLOSED — LISTINGS HELD FOR NEXT WINDOW", panel.x + 16, status_y, (206, 96, 84), scale=1)
+
+        if accepted_offers:
+            acc_y = status_y + 30
+            draw_text(self.screen, "ACCEPTED OFFERS — NEGOTIATE NOW:", panel.x + 16, acc_y, (248, 187, 32), scale=1)
+            for offer in accepted_offers[:3]:
+                acc_y += 22
+                player_name = str(offer.get("player_name", "PLAYER")).upper()[:20]
+                offer_amt = int(offer.get("offer_amount", 0))
+                amt_label = f"£{offer_amt // 1_000_000}M" if offer_amt >= 1_000_000 else f"£{offer_amt // 1_000}K"
+                row_label = f"{player_name}  {amt_label}"
+                draw_text(self.screen, row_label, panel.x + 16, acc_y, (245, 245, 245), scale=1)
+                neg_btn = pygame.Rect(panel.x + 340, acc_y - 2, 130, 22)
+                offer_id = str(offer.get("id", ""))
+                self._draw_ui_button(neg_btn, "NEGOTIATE", (46, 160, 67), (245, 245, 245), f"transfers:negotiate:{offer_id}", scale=1)
+
+        table_y = status_y + (30 + len(accepted_offers) * 22 + 16 if accepted_offers else 32)
+        col_name = panel.x + 16
+        col_pos = panel.x + 300
+        col_ovr = panel.x + 360
+        col_price = panel.x + 420
+        col_offers = panel.x + 600
+        col_btn = panel.right - 160
+
+        header_color = (170, 174, 182)
+        draw_text(self.screen, "PLAYER", col_name, table_y, header_color, scale=1)
+        draw_text(self.screen, "POS", col_pos, table_y, header_color, scale=1)
+        draw_text(self.screen, "OVR", col_ovr, table_y, header_color, scale=1)
+        draw_text(self.screen, "ASKING", col_price, table_y, header_color, scale=1)
+        draw_text(self.screen, "OFFERS", col_offers, table_y, header_color, scale=1)
+        pygame.draw.line(self.screen, (42, 46, 54), (panel.x + 8, table_y + 18), (panel.right - 8, table_y + 18))
+
+        row_y = table_y + 26
+        if not listings:
+            draw_text(self.screen, "NO PLAYERS LISTED FOR TRANSFER", panel.x + 16, row_y + 16, (170, 174, 182), scale=1)
+        for listing in listings:
+            if row_y + 38 > panel.bottom - 12:
+                break
+            row_rect = pygame.Rect(panel.x + 8, row_y - 4, panel.width - 16, 36)
+            pygame.draw.rect(self.screen, (20, 23, 28), row_rect, border_radius=5)
+            pygame.draw.rect(self.screen, (36, 40, 48), row_rect, 1, border_radius=5)
+            player_name = str(listing.get("player_name", "UNKNOWN")).upper()[:22]
+            draw_text(self.screen, player_name, col_name, row_y + 6, (245, 245, 245), scale=1)
+            draw_text(self.screen, str(listing.get("position", "")).upper()[:3], col_pos, row_y + 6, (210, 214, 224), scale=1)
+            ovr_val = int(listing.get("ovr", 0))
+            ovr_color = self._attribute_value_color(ovr_val)
+            draw_text(self.screen, str(ovr_val), col_ovr, row_y + 6, ovr_color, scale=1)
+            price = int(listing.get("asking_price", 0))
+            price_label = f"£{price // 1_000_000}M" if price >= 1_000_000 else f"£{price // 1_000}K"
+            draw_text(self.screen, price_label, col_price, row_y + 6, (248, 187, 32), scale=1)
+            offer_count = int(listing.get("offer_count", 0))
+            draw_text(self.screen, str(offer_count), col_offers, row_y + 6, (210, 214, 224), scale=1)
+            listing_id = str(listing.get("id", ""))
+            btn_rect = pygame.Rect(col_btn, row_y + 2, 120, 28)
+            self._draw_ui_button(btn_rect, "WITHDRAW", (96, 40, 40), (245, 245, 245), f"transfers:withdraw:{listing_id}", scale=1)
+            row_y += 42
+
+    def _draw_overview_club_finances_tab(
+        self,
+        view: dict,
+        overview: dict,
+        primary: Tuple[int, int, int],
+        secondary: Tuple[int, int, int],
+    ) -> None:
+        content_y = 74
+        content_h = SCREEN_H - content_y - 24
+        panel = pygame.Rect(20, content_y, SCREEN_W - 40, content_h)
+        self._draw_panel(panel, "CLUB FINANCES", (16, 18, 20), (245, 245, 245))
+
+        finances = overview.get("finances", {})
+        balance = int(finances.get("balance", 25_000_000))
+        transfer_budget = int(finances.get("transfer_budget", 10_000_000))
+        s_matchday = int(finances.get("season_income_matchday", 0))
+        s_sponsor = int(finances.get("season_income_sponsor", 0))
+        s_transfers_in = int(finances.get("season_income_transfers", 0))
+        s_wages = int(finances.get("season_expenses_wages", 0))
+        s_transfers_out = int(finances.get("season_expenses_transfers", 0))
+        season_income = s_matchday + s_sponsor + s_transfers_in
+        season_expenses = s_wages + s_transfers_out
+
+        def fmt_money(v: int) -> str:
+            if abs(v) >= 1_000_000:
+                return f"£{v // 1_000_000:,}M"
+            if abs(v) >= 1_000:
+                return f"£{v // 1_000:,}K"
+            return f"£{v:,}"
+
+        gold = (248, 187, 32)
+        green = (88, 170, 104)
+        red = (206, 96, 84)
+        muted = (170, 174, 182)
+        white = (245, 245, 245)
+
+        # ── Top summary cards ──────────────────────────────────────────
+        card_y = panel.y + 56
+        card_w = 260
+        card_h = 80
+        card_gap = 20
+        cards = [
+            ("CURRENT BALANCE", fmt_money(balance), green if balance >= 0 else red),
+            ("TRANSFER BUDGET", fmt_money(transfer_budget), gold),
+            ("SEASON INCOME", fmt_money(season_income), green),
+            ("SEASON EXPENSES", fmt_money(season_expenses), red),
+            ("NET THIS SEASON", fmt_money(season_income - season_expenses), green if season_income >= season_expenses else red),
+        ]
+        cx = panel.x + 20
+        for card_label, card_val, card_color in cards:
+            card_rect = pygame.Rect(cx, card_y, card_w, card_h)
+            pygame.draw.rect(self.screen, (22, 25, 32), card_rect, border_radius=8)
+            pygame.draw.rect(self.screen, (42, 46, 54), card_rect, 1, border_radius=8)
+            draw_text(self.screen, card_label, cx + 12, card_y + 10, muted, scale=1)
+            draw_text(self.screen, card_val, cx + 12, card_y + 32, card_color, scale=3)
+            cx += card_w + card_gap
+
+        # ── Season breakdown ───────────────────────────────────────────
+        breakdown_y = card_y + card_h + 28
+        left_col = panel.x + 20
+        right_col = panel.x + panel.width // 2 + 10
+
+        draw_text(self.screen, "SEASON INCOME BREAKDOWN", left_col, breakdown_y, gold, scale=2)
+        pygame.draw.line(self.screen, (54, 58, 70), (left_col, breakdown_y + 20), (left_col + 560, breakdown_y + 20))
+        rows_income = [
+            ("Matchday Revenue", s_matchday),
+            ("Sponsorship & Commercial", s_sponsor),
+            ("Transfer Fees Received", s_transfers_in),
+        ]
+        ry = breakdown_y + 30
+        for row_label, row_val in rows_income:
+            draw_text(self.screen, row_label.upper(), left_col, ry, white, scale=1)
+            val_str = fmt_money(row_val)
+            draw_text(self.screen, val_str, left_col + 400, ry, green, scale=1)
+            ry += 22
+
+        draw_text(self.screen, "SEASON EXPENSE BREAKDOWN", right_col, breakdown_y, gold, scale=2)
+        pygame.draw.line(self.screen, (54, 58, 70), (right_col, breakdown_y + 20), (right_col + 560, breakdown_y + 20))
+        rows_expenses = [
+            ("Player Wages", s_wages),
+            ("Transfer Fees Paid", s_transfers_out),
+        ]
+        ry = breakdown_y + 30
+        for row_label, row_val in rows_expenses:
+            draw_text(self.screen, row_label.upper(), right_col, ry, white, scale=1)
+            val_str = fmt_money(row_val)
+            draw_text(self.screen, val_str, right_col + 400, ry, red, scale=1)
+            ry += 22
+
+        # ── Recent transactions ────────────────────────────────────────
+        tx_y = breakdown_y + 120
+        pygame.draw.line(self.screen, (54, 58, 70), (panel.x + 16, tx_y - 6), (panel.right - 16, tx_y - 6))
+        draw_text(self.screen, "RECENT TRANSACTIONS", panel.x + 20, tx_y, gold, scale=2)
+        transactions = view.get("finance_transactions", [])
+        col_date = panel.x + 20
+        col_desc = panel.x + 160
+        col_amt = panel.right - 180
+        draw_text(self.screen, "DATE", col_date, tx_y + 22, muted, scale=1)
+        draw_text(self.screen, "DESCRIPTION", col_desc, tx_y + 22, muted, scale=1)
+        draw_text(self.screen, "AMOUNT", col_amt, tx_y + 22, muted, scale=1)
+        tx_row_y = tx_y + 40
+        for tx in transactions[:12]:
+            if tx_row_y + 16 > panel.bottom - 12:
+                break
+            tx_date = str(tx.get("transaction_date", ""))[:10]
+            tx_desc = str(tx.get("description", "")).upper()[:50]
+            tx_amt = int(tx.get("amount", 0))
+            tx_color = green if tx_amt >= 0 else red
+            tx_amt_str = (("+" if tx_amt >= 0 else "") + fmt_money(abs(tx_amt)))
+            draw_text(self.screen, tx_date, col_date, tx_row_y, (210, 214, 224), scale=1)
+            draw_text(self.screen, tx_desc, col_desc, tx_row_y, white, scale=1)
+            draw_text(self.screen, tx_amt_str, col_amt, tx_row_y, tx_color, scale=1)
+            tx_row_y += 18
 
     def _draw_overview_standings_tab(
         self,
@@ -3093,70 +3453,93 @@ class Renderer:
         focus_options = list(training.get("focus_options", []))
         intensity_options = list(training.get("intensity_options", []))
         player_focus_options = list(training.get("player_focus_options", []))
+
         content_y = 74
         content_h = SCREEN_H - content_y - 24
-        left = pygame.Rect(20, content_y, (SCREEN_W - 58) // 2, content_h)
-        right = pygame.Rect(left.right + 18, content_y, SCREEN_W - left.right - 38, content_h)
-        self._draw_panel(left, "TEAM TRAINING", (16, 18, 20), (245, 245, 245))
-        self._draw_panel(right, "INDIVIDUAL FOCUS", (16, 18, 20), (245, 245, 245))
+        full_panel = pygame.Rect(20, content_y, SCREEN_W - 40, content_h)
+        self._draw_panel(full_panel, "TRAINING", (16, 18, 20), (245, 245, 245))
 
-        draw_text(self.screen, "WEEKLY FOCUS", left.x + 18, left.y + 52, (248, 187, 32), scale=1)
-        button_y = left.y + 74
-        button_x = left.x + 18
-        max_x = left.right - 18
+        # ── Top strip: Team Focus + Intensity ──────────────────────────────
+        strip_x = full_panel.x + 18
+        strip_right = full_panel.right - 18
+
+        # Date/day label top right
+        current_date = str(overview.get("current_date", ""))
+        if current_date:
+            try:
+                from datetime import date as _date
+                _d = _date.fromisoformat(current_date)
+                date_label = _d.strftime("%a %d %b").upper()
+            except ValueError:
+                date_label = current_date
+            draw_text(self.screen, date_label, strip_right - text_width(date_label, 1), full_panel.y + 16, (170, 174, 182), scale=1)
+
+        section_y = full_panel.y + 52
+        draw_text(self.screen, "TEAM WEEKLY FOCUS", strip_x, section_y, (248, 187, 32), scale=1)
+        pygame.draw.line(self.screen, (54, 58, 70), (strip_x + text_width("TEAM WEEKLY FOCUS", 1) + 10, section_y + 8), (strip_right, section_y + 8))
+
+        btn_y = section_y + 24
+        btn_x = strip_x
         for option in focus_options:
             value = str(option.get("value", "balanced"))
             label = str(option.get("label", value)).upper()
-            width = min(max(82, text_width(label, 1) + 20), 148)
-            if button_x + width > max_x:
-                button_x = left.x + 18
-                button_y += 34
-            rect = pygame.Rect(button_x, button_y, width, 26)
+            width = min(max(96, text_width(label, 1) + 22), 160)
+            rect = pygame.Rect(btn_x, btn_y, width, 34)
             active = value == team_focus
             fill = (248, 187, 32) if active else (36, 52, 96)
-            text = (24, 24, 28) if active else (245, 245, 245)
-            self._draw_ui_button(rect, label, fill, text, f"training:team_focus:{value}", scale=1)
-            button_x += width + 8
+            text_col = (24, 24, 28) if active else (245, 245, 245)
+            self._draw_ui_button(rect, label, fill, text_col, f"training:team_focus:{value}", scale=1)
+            btn_x += width + 8
 
-        intensity_y = button_y + 46
-        draw_text(self.screen, "INTENSITY", left.x + 18, intensity_y, (248, 187, 32), scale=1)
-        ix = left.x + 18
+        # "Trains:" attribute preview
+        trains_attrs: list[str] = []
+        from .training import TEAM_TRAINING_FOCUS_OPTIONS as _TFO
+        if team_focus in _TFO:
+            trains_attrs = [a.replace("_", " ").upper() for a in _TFO[team_focus]["attributes"]]
+        trains_y = btn_y + 42
+        draw_text(self.screen, "TRAINS:", strip_x, trains_y, (170, 174, 182), scale=1)
+        tx = strip_x + text_width("TRAINS:", 1) + 8
+        for attr_name in trains_attrs:
+            chip_w = text_width(attr_name, 1) + 14
+            chip = pygame.Rect(tx, trains_y - 2, chip_w, 16)
+            pygame.draw.rect(self.screen, (40, 44, 52), chip, border_radius=3)
+            draw_text(self.screen, attr_name, chip.x + 7, chip.y + 2, (200, 170, 80), scale=1)
+            tx += chip_w + 6
+
+        intensity_y = trains_y + 26
+        draw_text(self.screen, "INTENSITY", strip_x, intensity_y, (248, 187, 32), scale=1)
+        pygame.draw.line(self.screen, (54, 58, 70), (strip_x + text_width("INTENSITY", 1) + 10, intensity_y + 8), (strip_right, intensity_y + 8))
+        ix = strip_x
         for option in intensity_options:
             value = str(option.get("value", "normal"))
             label = str(option.get("label", value)).upper()
-            width = max(92, text_width(label, 1) + 22)
-            rect = pygame.Rect(ix, intensity_y + 22, width, 28)
+            width = max(96, text_width(label, 1) + 24)
+            rect = pygame.Rect(ix, intensity_y + 22, width, 30)
             active = value == intensity
             fill = (248, 187, 32) if active else (46, 48, 56)
-            text = (24, 24, 28) if active else (245, 245, 245)
-            self._draw_ui_button(rect, label, fill, text, f"training:intensity:{value}", scale=1)
+            text_col = (24, 24, 28) if active else (245, 245, 245)
+            self._draw_ui_button(rect, label, fill, text_col, f"training:intensity:{value}", scale=1)
             ix += width + 10
 
-        summary_y = intensity_y + 70
-        load_labels = {"light": "LOW LOAD", "normal": "BALANCED LOAD", "double": "HIGH LOAD"}
-        focus_labels = {str(option.get("value")): str(option.get("label")) for option in focus_options}
-        cards = [
-            ("FOCUS", focus_labels.get(team_focus, team_focus).upper()),
-            ("WORKLOAD", load_labels.get(intensity, intensity.upper())),
-            ("DEVELOPMENT", "SAVE-SCOPED ATTRIBUTE GROWTH"),
-            ("RECOVERY", "INJURED PLAYERS SKIP TRAINING"),
-        ]
-        for idx, (title, value) in enumerate(cards):
-            card_w = (left.width - 54) // 2
-            card = pygame.Rect(left.x + 18 + (idx % 2) * (card_w + 18), summary_y + (idx // 2) * 86, card_w, 72)
-            pygame.draw.rect(self.screen, (22, 24, 30), card, border_radius=8)
-            pygame.draw.rect(self.screen, (54, 58, 70), card, 1, border_radius=8)
-            draw_text(self.screen, title, card.x + 12, card.y + 10, (248, 187, 32), scale=1)
-            draw_text(self.screen, value[:24], card.x + 12, card.y + 34, (230, 234, 240), scale=1)
+        top_strip_bottom = intensity_y + 62
+        pygame.draw.line(self.screen, (54, 58, 70), (full_panel.x + 12, top_strip_bottom), (full_panel.right - 12, top_strip_bottom))
 
-        list_rect = pygame.Rect(right.x + 18, right.y + 52, min(320, right.width // 2 - 24), right.height - 76)
-        detail_rect = pygame.Rect(list_rect.right + 18, right.y + 52, right.right - list_rect.right - 36, right.height - 76)
+        # ── Bottom: Squad list (left) + Player detail (right) ──────────────
+        bottom_y = top_strip_bottom + 12
+        bottom_h = full_panel.bottom - bottom_y - 10
+        list_w = min(340, (full_panel.width - 54) // 2)
+        list_rect = pygame.Rect(full_panel.x + 18, bottom_y, list_w, bottom_h)
+        detail_rect = pygame.Rect(list_rect.right + 18, bottom_y, full_panel.right - list_rect.right - 36, bottom_h)
+
         pygame.draw.rect(self.screen, (18, 20, 26), list_rect, border_radius=8)
         pygame.draw.rect(self.screen, (50, 52, 58), list_rect, 1, border_radius=8)
         pygame.draw.rect(self.screen, (18, 20, 26), detail_rect, border_radius=8)
         pygame.draw.rect(self.screen, (50, 52, 58), detail_rect, 1, border_radius=8)
-        draw_text(self.screen, "SQUAD", list_rect.x + 10, list_rect.y + 10, (248, 187, 32), scale=1)
-        row_y = list_rect.y + 34
+
+        draw_text(self.screen, f"SQUAD ({len(players)})", list_rect.x + 10, list_rect.y + 10, (248, 187, 32), scale=1)
+        pygame.draw.line(self.screen, (54, 58, 70), (list_rect.x + 10, list_rect.y + 28), (list_rect.right - 10, list_rect.y + 28))
+
+        row_y = list_rect.y + 36
         row_h = 24
         for player in players[:18]:
             player_id = str(player["id"])
@@ -3164,14 +3547,17 @@ class Renderer:
             active = player_id == selected_player_id
             fill = (50, 58, 84) if active else (24, 26, 32)
             pygame.draw.rect(self.screen, fill, row, border_radius=6)
-            pygame.draw.rect(self.screen, (84, 88, 98) if active else (58, 60, 68), row, 1, border_radius=6)
+            if active:
+                pygame.draw.rect(self.screen, (84, 88, 98), row, 1, border_radius=6)
             name_color = (245, 245, 245) if bool(player.get("available", True)) else (190, 154, 154)
-            draw_text(self.screen, player["position"], row.x + 8, row.y + 8, (170, 174, 182), scale=1)
-            draw_text(self.screen, short_display_name(player["name"], 13), row.x + 40, row.y + 8, name_color, scale=1)
-            focus_text = str(player_focuses.get(player_id, "auto")).replace("_", " ").upper()[:10]
-            draw_text(self.screen, focus_text, row.right - 8 - text_width(focus_text, 1), row.y + 8, (210, 214, 224), scale=1)
+            draw_text(self.screen, player["position"][:2], row.x + 8, row.y + 7, (170, 174, 182), scale=1)
+            draw_text(self.screen, short_display_name(player["name"], 14), row.x + 38, row.y + 7, name_color, scale=1)
+            stm_val = int(player.get("current_stamina", 100) or 100)
+            stm_color = (88, 170, 104) if stm_val >= 80 else (232, 190, 72) if stm_val >= 60 else (206, 96, 84)
+            stm_text = str(stm_val)
+            draw_text(self.screen, stm_text, row.right - 8 - text_width(stm_text, 1), row.y + 7, stm_color, scale=1)
             self._register_ui(f"squad:select_player:{player_id}", row)
-            row_y += row_h + 5
+            row_y += row_h + 4
             if row_y + row_h > list_rect.bottom - 8:
                 break
 
@@ -3180,39 +3566,50 @@ class Renderer:
             draw_text(self.screen, selected_player["name"].upper()[:28], detail_rect.x + 14, detail_rect.y + 14, (248, 187, 32), scale=2)
             meta = f"{selected_player['position']}  OVR {selected_player['ovr']}  STM {int(selected_player.get('current_stamina', 100))}"
             draw_text(self.screen, meta, detail_rect.x + 14, detail_rect.y + 42, (210, 214, 224), scale=1)
+            pygame.draw.line(self.screen, (54, 58, 70), (detail_rect.x + 10, detail_rect.y + 58), (detail_rect.right - 10, detail_rect.y + 58))
+
             current_focus = str(player_focuses.get(player_id, "auto"))
-            draw_text(self.screen, "PLAYER FOCUS", detail_rect.x + 14, detail_rect.y + 76, (248, 187, 32), scale=1)
+            draw_text(self.screen, "PLAYER FOCUS", detail_rect.x + 14, detail_rect.y + 68, (248, 187, 32), scale=1)
             fx = detail_rect.x + 14
-            fy = detail_rect.y + 100
+            fy = detail_rect.y + 90
             max_fx = detail_rect.right - 14
             for option in player_focus_options:
                 value = str(option.get("value", "auto"))
                 label = str(option.get("label", value)).upper()
-                width = min(max(96, text_width(label, 1) + 20), 152)
+                width = min(max(86, text_width(label, 1) + 18), 148)
                 if fx + width > max_fx:
                     fx = detail_rect.x + 14
                     fy += 34
-                rect = pygame.Rect(fx, fy, width, 26)
+                rect = pygame.Rect(fx, fy, width, 28)
                 active = value == current_focus
                 fill = (248, 187, 32) if active else (36, 52, 96)
-                text = (24, 24, 28) if active else (245, 245, 245)
-                self._draw_ui_button(rect, label, fill, text, f"training:player_focus:{player_id}:{value}", scale=1)
+                text_col = (24, 24, 28) if active else (245, 245, 245)
+                self._draw_ui_button(rect, label, fill, text_col, f"training:player_focus:{player_id}:{value}", scale=1)
                 fx += width + 8
+
+            attr_section_y = fy + 44
+            pygame.draw.line(self.screen, (54, 58, 70), (detail_rect.x + 10, attr_section_y - 6), (detail_rect.right - 10, attr_section_y - 6))
+            draw_text(self.screen, "TOP ATTRIBUTES", detail_rect.x + 14, attr_section_y, (248, 187, 32), scale=1)
             attrs = selected_player.get("attributes", {})
-            focus_attrs = []
-            for option in player_focus_options:
-                if option.get("value") == current_focus:
-                    focus_attrs = []
+            top_attrs = sorted(attrs.items(), key=lambda item: float(item[1]), reverse=True)[:8]
+            ay = attr_section_y + 22
+            attr_col_w = (detail_rect.width - 28) // 2
+            for a_idx, (key, value) in enumerate(top_attrs):
+                col = a_idx % 2
+                row_i = a_idx // 2
+                ax = detail_rect.x + 14 + col * attr_col_w
+                a_y = ay + row_i * 20
+                if a_y + 16 > detail_rect.bottom - 8:
                     break
-            top_attrs = sorted(attrs.items(), key=lambda item: float(item[1]), reverse=True)[:6]
-            draw_text(self.screen, "CURRENT PROFILE", detail_rect.x + 14, detail_rect.bottom - 158, (248, 187, 32), scale=1)
-            ay = detail_rect.bottom - 132
-            for key, value in top_attrs:
-                label = str(key).replace("_", " ").upper()[:18]
-                value_text = str(int(round(float(value))))
-                draw_text(self.screen, label, detail_rect.x + 14, ay, (220, 224, 232), scale=1)
-                draw_text(self.screen, value_text, detail_rect.right - 20 - text_width(value_text, 1), ay, (245, 245, 245), scale=1)
-                ay += 18
+                label = _ATTR_SHORT.get(key, str(key).replace("_", " ").upper())[:12]
+                value_int = int(round(float(value)))
+                value_text = str(value_int)
+                value_color = self._attribute_value_color(value_int)
+                draw_text(self.screen, label, ax, a_y, (220, 224, 232), scale=1)
+                bar = pygame.Rect(ax + 76, a_y + 4, max(28, attr_col_w - 108), 5)
+                pygame.draw.rect(self.screen, (34, 36, 42), bar, border_radius=3)
+                pygame.draw.rect(self.screen, value_color, pygame.Rect(bar.x, bar.y, max(2, int(bar.width * value_int / 100.0)), bar.height), border_radius=3)
+                draw_text(self.screen, value_text, ax + attr_col_w - 8 - text_width(value_text, 1), a_y, value_color, scale=1)
 
     def _draw_team_instruction_preview(self, card: pygame.Rect, key: str, current_value: str, action_prefix: str = "squad") -> None:
         left_label, center_label, right_label = instruction_preview_labels(key, current_value)
@@ -3830,11 +4227,60 @@ class Renderer:
             self._draw_ui_button(rect, button["label"], button.get("fill", (36, 52, 96)), button.get("text_color", (245, 245, 245)), button.get("action"), scale=2)
             x += 196
 
+    def _draw_news_detail_modal(self, modal: dict) -> None:
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 170))
+        self.screen.blit(overlay, (0, 0))
+        # clicking outside the panel closes it — register the overlay area as the backdrop
+        severity_colors = {
+            "success": (88, 170, 104),
+            "warning": (232, 190, 72),
+            "danger": (206, 96, 84),
+            "info": (72, 124, 188),
+        }
+        severity = str(modal.get("severity", "info"))
+        accent = severity_colors.get(severity, severity_colors["info"])
+        panel = pygame.Rect((SCREEN_W - 640) // 2, (SCREEN_H - 380) // 2, 640, 380)
+        self._draw_panel(panel, None)
+        header_rect = pygame.Rect(panel.x, panel.y, panel.width, 48)
+        pygame.draw.rect(self.screen, accent, header_rect, border_top_left_radius=8, border_top_right_radius=8)
+        title = str(modal.get("title", "MESSAGE")).upper()
+        max_title_chars = (panel.width - 64) // (6 * 2)
+        draw_text(self.screen, title[:max_title_chars], panel.x + 16, panel.y + 14, (10, 12, 16), scale=2)
+        close_rect = pygame.Rect(panel.right - 42, panel.y + 10, 28, 28)
+        pygame.draw.rect(self.screen, (20, 23, 28), close_rect, border_radius=4)
+        draw_text(self.screen, "X", close_rect.x + 9, close_rect.y + 7, (245, 245, 245), scale=2)
+        self._register_ui("modal:close", close_rect)
+        cat_date = f"{str(modal.get('category', '')).upper()}  {str(modal.get('date', '')).upper()}"
+        draw_text(self.screen, cat_date, panel.x + 16, panel.y + 60, (170, 174, 182), scale=1)
+        body_text = str(modal.get("body", ""))
+        words = body_text.split()
+        lines: list[str] = []
+        current = ""
+        char_limit = (panel.width - 32) // 6  # scale=1: each char = 6px
+        for word in words:
+            test = (current + " " + word).strip()
+            if len(test) <= char_limit:
+                current = test
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+        body_y = panel.y + 80
+        for line in lines[:14]:
+            draw_text(self.screen, line.upper(), panel.x + 16, body_y, (220, 224, 232), scale=1)
+            body_y += 16
+
     def draw_modal(self, modal: dict) -> None:
         self.ui_click_targets = {}
         self.ui_interaction_enabled = True
         if modal.get("type") == "match_preview":
             self._draw_match_preview_modal(modal)
+            return
+        if modal.get("type") == "news_detail":
+            self._draw_news_detail_modal(modal)
             return
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 150))
