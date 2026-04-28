@@ -267,6 +267,16 @@ class Renderer:
         luminance = fill[0] * 0.299 + fill[1] * 0.587 + fill[2] * 0.114
         return (24, 24, 28) if luminance >= 170.0 else (255, 255, 255)
 
+    @staticmethod
+    def _format_goal_difference(gd: int) -> str:
+        """Format goal difference with appropriate sign: +2, -2, or 0"""
+        if gd > 0:
+            return f"+{gd}"
+        elif gd < 0:
+            return str(gd)
+        else:
+            return "0"
+
     def _planner_unavailable_player_ids(self, players: list[dict], xi_ids: list[str], bench_ids: list[str]) -> list[str]:
         used_ids = {str(player_id) for player_id in xi_ids}
         return [
@@ -842,18 +852,34 @@ class Renderer:
         self.screen.blit(overlay, (0, 0))
 
         pairs = list(animation.get("pairs", []))
-        panel_h = 72 + min(5, len(pairs)) * 28
+        panel_h = 100 + min(5, len(pairs)) * 28
         panel = pygame.Rect(0, 0, min(520, SCREEN_W - 120), panel_h)
         panel.center = (SCREEN_W // 2, VIEWPORT_Y + VIEWPORT_H // 2)
         pygame.draw.rect(self.screen, (16, 18, 22), panel, border_radius=8)
         pygame.draw.rect(self.screen, (76, 76, 84), panel, 2, border_radius=8)
-        draw_text(self.screen, "SUBSTITUTION", panel.x + (panel.width - text_width("SUBSTITUTION", 2)) // 2, panel.y + 12, (245, 245, 245), scale=2)
 
         pairs = pairs[:5]
         team = state.home if animation.get("side") == "home" else state.away
         profile_lookup = {profile.id: profile for profile in team.club.players}
+
+        # Draw club badge and name at the top (use badge dict / safe fallbacks)
+        badge_rect = pygame.Rect(panel.x + 14, panel.y + 10, 20, 24)
+        badge_meta = getattr(team.club, "badge", {}) or {}
+        self._draw_club_badge(
+            {
+                "template_id": badge_meta.get("template_id", badge_meta.get("badge_id", getattr(team.club, "badge_id", "1"))),
+                "primary": badge_meta.get("primary", getattr(team.club, "badge_primary", "#2E3A6A")),
+                "secondary": badge_meta.get("secondary", getattr(team.club, "badge_secondary", "#F5F5F5")),
+                "border": badge_meta.get("border", badge_meta.get("badge_border", "#F5F5F5")),
+            },
+            badge_rect,
+        )
+        club_name = str(getattr(team.club, "name", "")).upper()[:28]
+        draw_text(self.screen, club_name, badge_rect.right + 8, panel.y + 14, (245, 245, 245), scale=2)
+        draw_text(self.screen, "SUBSTITUTION", panel.x + (panel.width - text_width("SUBSTITUTION", 2)) // 2, panel.y + 38, (245, 245, 245), scale=2)
+
         for idx, (outgoing_id, incoming_id) in enumerate(pairs):
-            row_y = panel.y + 46 + idx * 28
+            row_y = panel.y + 64 + idx * 28
             outgoing = profile_lookup.get(outgoing_id)
             incoming = profile_lookup.get(incoming_id)
             outgoing_name = short_display_name(outgoing.name if outgoing else outgoing_id, 14)
@@ -2495,7 +2521,7 @@ class Renderer:
             draw_text(self.screen, club_label, badge_rect.right + 7, y, color, scale=1)
             for value, center_x in (
                 (str(row["played"]), col_t_mp),
-                (f"{row['goal_difference']:+d}", col_t_gd),
+                (self._format_goal_difference(int(row["goal_difference"])), col_t_gd),
                 (str(row["points"]), col_t_p),
             ):
                 draw_text(self.screen, value, center_x - text_width(value, 1) // 2, y, color, scale=1)
@@ -3029,23 +3055,56 @@ class Renderer:
         recent = list(selected_player.get("recent_ratings", []))[-5:]
         if not recent:
             draw_text(self.screen, "NO MATCHES PLAYED", right.x + 12, recent_y + 24, (170, 174, 182), scale=1)
+        
+        # Create club lookup for opponent badges
+        club_by_id = {club["id"]: club for club in clubs}
+        
         for idx, entry in enumerate(recent):
             chip = pygame.Rect(right.x + 12 + idx * 94, recent_y + 22, 84, 44)
             rating = float(entry.get("rating", 0.0) or 0.0)
             chip_color = (88, 170, 104) if rating >= 7.0 else (232, 190, 72) if rating >= 6.2 else (206, 96, 84)
             pygame.draw.rect(self.screen, (22, 24, 30), chip, border_radius=6)
             pygame.draw.rect(self.screen, chip_color, chip, 2, border_radius=6)
-            draw_text(self.screen, f"{rating:.1f}", chip.x + 8, chip.y + 8, chip_color, scale=2)
-            opponent = short_display_name(str(entry.get("opponent_name") or "OPP"), 8)
-            draw_text(self.screen, opponent, chip.x + 8, chip.y + 30, (210, 214, 224), scale=1)
+            
+            # Draw opponent badge
+            opponent_id = str(entry.get("opponent_id") or "")
+            opponent_club = club_by_id.get(opponent_id)
+            if opponent_club:
+                badge_rect = pygame.Rect(chip.x + 4, chip.y + 6, 14, 17)
+                self._draw_club_badge(
+                    {
+                        "template_id": opponent_club.get("badge_template_id", "1"),
+                        "primary": opponent_club.get("badge_primary", "#2E3A6A"),
+                        "secondary": opponent_club.get("badge_secondary", "#F5F5F5"),
+                        "border": opponent_club.get("badge_border", "#F5F5F5"),
+                    },
+                    badge_rect,
+                )
+                # Opponent name next to badge
+                opponent_name = str(entry.get("opponent_name") or "OPP").upper()[:10]
+                draw_text(self.screen, opponent_name, chip.x + 22, chip.y + 8, (210, 214, 224), scale=1)
+            else:
+                # Fallback if no club found
+                opponent = short_display_name(str(entry.get("opponent_name") or "OPP"), 8)
+                draw_text(self.screen, opponent, chip.x + 8, chip.y + 14, (210, 214, 224), scale=1)
+            
+            # Rating display
+            draw_text(self.screen, f"{rating:.1f}", chip.x + 8, chip.y + 28, chip_color, scale=1)
 
-        # Attribute list (spans full width, two columns)
+        # Attribute list (left side, two columns) + Radar chart (right side)
         attr_y = recent_y + 80
         attrs = sorted(dict(selected_player.get("attributes", {})).items(), key=lambda item: item[0])
-        attr_col_w = max(150, (right.width - 28) // 2)
+        
+        # Define layout: left side for attributes, right side for radar
+        attr_area_w = (right.width - 32) // 2
+        radar_area_w = (right.width - 32) // 2
+        
+        # Draw attributes in two columns on the left side
+        attr_col_w = max(120, attr_area_w // 2)
         row_step = 18
-        rows_per_col = max(1, (right.bottom - attr_y - 80) // row_step)
+        rows_per_col = max(1, (right.bottom - attr_y - 12) // row_step)
         attr_list_bottom = attr_y
+        
         for idx, (key, value) in enumerate(attrs):
             col = idx // rows_per_col
             row_i = idx % rows_per_col
@@ -3059,17 +3118,19 @@ class Renderer:
             value_text = str(value_int)
             value_color = self._attribute_value_color(value_int)
             draw_text(self.screen, label, x, y, (210, 214, 224), scale=1)
-            bar = pygame.Rect(x + 78, y + 4, max(32, attr_col_w - 122), 5)
+            bar = pygame.Rect(x + 78, y + 4, max(20, attr_col_w - 100), 5)
             pygame.draw.rect(self.screen, (34, 36, 42), bar, border_radius=3)
             pygame.draw.rect(self.screen, value_color, pygame.Rect(bar.x, bar.y, max(2, int(bar.width * value_int / 100.0)), bar.height), border_radius=3)
             pygame.draw.rect(self.screen, (76, 78, 88), bar, 1, border_radius=3)
             draw_text(self.screen, value_text, x + attr_col_w - 8 - text_width(value_text, 1), y, value_color, scale=1)
 
-        # Radar chart drawn below attribute list
-        radar_h = min(180, right.bottom - attr_list_bottom - 12)
-        if radar_h >= 80:
-            radar_w = min(220, right.width - 28)
-            radar_rect = pygame.Rect(right.centerx - radar_w // 2, attr_list_bottom + 6, radar_w, radar_h)
+        # Radar chart drawn on the right side (centered in the blank space)
+        radar_h = right.bottom - attr_y - 12
+        if radar_h >= 100 and radar_area_w >= 100:
+            radar_w = min(radar_area_w - 8, 200)
+            # center the radar within the right-side blank area instead of hugging the far right
+            radar_x = int(right.x + 14 + attr_area_w + max(0, (radar_area_w - radar_w) // 2))
+            radar_rect = pygame.Rect(radar_x, attr_y, radar_w, radar_h)
             self._draw_attribute_radar(radar_rect, selected_player)
 
     def _draw_overview_transfers_market_tab(
@@ -3418,7 +3479,10 @@ class Renderer:
                         mouse[1],
                     )
             for key, col_key in (("played", "mp"), ("wins", "w"), ("draws", "d"), ("losses", "l"), ("goals_for", "gs"), ("goals_against", "gc"), ("goal_difference", "gd"), ("points", "pts")):
-                value = f"{int(row.get(key, 0)):+d}" if key == "goal_difference" else str(int(row.get(key, 0)))
+                if key == "goal_difference":
+                    value = self._format_goal_difference(int(row.get(key, 0)))
+                else:
+                    value = str(int(row.get(key, 0)))
                 draw_text(self.screen, value, columns[col_key] - text_width(value, 1) // 2, y + 4, color, scale=1)
             y += row_h
         if hover_tooltip:
@@ -3858,7 +3922,8 @@ class Renderer:
         self._draw_stat_chip(pygame.Rect(info_rect.x, stats_y, 48, 18), "apps", int(player.get("apps", 0)))
         self._draw_stat_chip(pygame.Rect(info_rect.x + 74, stats_y, 48, 18), "goals", int(player.get("goals", 0)))
         self._draw_stat_chip(pygame.Rect(info_rect.x + 148, stats_y, 48, 18), "assists", int(player.get("assists", 0)))
-        radar_size = min(info_rect.width - 12, info_rect.height - 108, 270 if not stacked else 230)
+        # Increase radar maximum size so it appears larger in the player profile
+        radar_size = min(info_rect.width - 12, info_rect.height - 108, 340 if not stacked else 300)
         radar_rect = pygame.Rect(info_rect.x + (info_rect.width - radar_size) // 2, info_rect.y + 82, radar_size, radar_size)
         self._draw_attribute_radar(radar_rect, player)
 
@@ -4175,6 +4240,8 @@ class Renderer:
         meta = f"{date_label}  {league_label}"
         draw_text(self.screen, meta[:60], panel.centerx - text_width(meta[:60], 1) // 2, panel.y + 100, (170, 174, 182), scale=1)
 
+        # Average OVR will be displayed beneath the subs/bench list for each side
+
         manager_name = str(overview.get("manager_name", "MANAGER"))
         home_manager = manager_name if home_id == str(overview.get("club_id")) else str((home_club or {}).get("manager_name") or "AI MANAGER")
         away_manager = manager_name if away_id == str(overview.get("club_id")) else str((away_club or {}).get("manager_name") or "AI MANAGER")
@@ -4188,12 +4255,22 @@ class Renderer:
 
         if home_club:
             self._draw_club_badge(
-                {"template_id": home_club.get("badge_template_id", "1"), "primary": home_club.get("badge_primary", "#2E3A6A"), "secondary": home_club.get("badge_secondary", "#F5F5F5"), "border": home_club.get("badge_border", "#F5F5F5")},
+                {
+                    "template_id": home_club.get("badge_template_id", home_club.get("badge_template", home_club.get("badge_id", "1"))),
+                    "primary": home_club.get("badge_primary", (home_club.get("badge") or {}).get("primary", "#2E3A6A")),
+                    "secondary": home_club.get("badge_secondary", (home_club.get("badge") or {}).get("secondary", "#F5F5F5")),
+                    "border": home_club.get("badge_border", (home_club.get("badge") or {}).get("border", "#F5F5F5")),
+                },
                 home_badge_rect,
             )
         if away_club:
             self._draw_club_badge(
-                {"template_id": away_club.get("badge_template_id", "1"), "primary": away_club.get("badge_primary", "#2E3A6A"), "secondary": away_club.get("badge_secondary", "#F5F5F5"), "border": away_club.get("badge_border", "#F5F5F5")},
+                {
+                    "template_id": away_club.get("badge_template_id", away_club.get("badge_template", away_club.get("badge_id", "1"))),
+                    "primary": away_club.get("badge_primary", (away_club.get("badge") or {}).get("primary", "#D85858")),
+                    "secondary": away_club.get("badge_secondary", (away_club.get("badge") or {}).get("secondary", "#F5F5F5")),
+                    "border": away_club.get("badge_border", (away_club.get("badge") or {}).get("border", "#F5F5F5")),
+                },
                 away_badge_rect,
             )
         board_gap = 28
@@ -4206,17 +4283,22 @@ class Renderer:
         self._draw_modal_lineup_board(home_board, home_club, home_players, setups.get(home_id, {}), mirror=False)
         self._draw_modal_lineup_board(away_board, away_club, away_players, setups.get(away_id, {}), mirror=True)
 
-        def draw_subs(rect: pygame.Rect, players_by_id: dict[str, dict], setup: dict) -> None:
+        def draw_subs(rect: pygame.Rect, players_by_id: dict[str, dict], setup: dict, club_meta: dict | None) -> None:
             bench_ids = list(setup.get("bench_ids", []))
             names = [
                 short_display_name(str(players_by_id.get(str(player_id), {}).get("name", str(player_id))), 10).upper()
                 for player_id in bench_ids[:6]
             ]
             label = "SUBS: " + ", ".join(names) if names else "SUBS: --"
-            draw_text(self.screen, label[: max(10, rect.width // 6)], rect.x + 4, rect.bottom + 12, (210, 214, 224), scale=1)
+            draw_text(self.screen, label[: max(10, rect.width // 6)], rect.x + 4, rect.bottom + 4, (210, 214, 224), scale=1)
+            # show average OVR for the club under the subs list (if available)
+            avg_ovr = float((club_meta or {}).get("avg_ovr", 0.0) or 0.0)
+            if avg_ovr > 0:
+                ovr_label = f"AVG OVR: {avg_ovr:.1f}"
+                draw_text(self.screen, ovr_label, rect.x + 4, rect.bottom + 20, (210, 214, 224), scale=1)
 
-        draw_subs(home_board, home_players, setups.get(home_id, {}))
-        draw_subs(away_board, away_players, setups.get(away_id, {}))
+        draw_subs(home_board, home_players, setups.get(home_id, {}), home_club)
+        draw_subs(away_board, away_players, setups.get(away_id, {}), away_club)
 
         button_y = panel.bottom - 72
         buttons = list(modal.get("buttons", []))
