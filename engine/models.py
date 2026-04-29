@@ -208,6 +208,7 @@ class PlayerProfile:
     suspension_matches_remaining: int = 0
     injury_days_remaining: int = 0
     injury_count: int = 0
+    age: int = 0
 
     @property
     def is_available(self) -> bool:

@@ -489,7 +489,7 @@ class Renderer:
             self._draw_pitch()
             self._draw_players_and_ball(state, alpha)
             self._draw_pitch_overlay(state, fixture_label)
-            self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds, managed_side)
+            self._draw_scoreboard(state, fixture_label, paused, speed_label, clock_seconds, managed_side, subs_mode, subs_pending)
             self._draw_events(state, commentary_colors, instruction_mode, instructions_pending, managed_side)
         self._draw_goal_banner(state)
         if drag_player_id and drag_pos and not state.is_finished:
@@ -566,11 +566,15 @@ class Renderer:
         pygame.draw.rect(self.screen, (12, 12, 14), panel, border_radius=4)
         pygame.draw.rect(self.screen, (44, 44, 48), panel, 1, border_radius=4)
         mid_y = panel.y + 8
-        section_h = (panel.height - 22) // 2
+        avail_h = panel.height - 22
+        man_h = avail_h // 2
+        opp_h = avail_h - man_h
+        home_h = man_h if managed_side == "home" else opp_h
+        away_h = man_h if managed_side == "away" else opp_h
         self._draw_team_squad_section(
             state.home,
             state,
-            pygame.Rect(panel.x + 8, mid_y, panel.width - 16, section_h - 6),
+            pygame.Rect(panel.x + 8, mid_y, panel.width - 16, home_h - 6),
             is_managed_team=managed_side == "home",
             subs_mode=subs_mode,
             draft_xi_ids=draft_xi_ids if managed_side == "home" else None,
@@ -582,7 +586,7 @@ class Renderer:
         self._draw_team_squad_section(
             state.away,
             state,
-            pygame.Rect(panel.x + 8, mid_y + section_h + 6, panel.width - 16, section_h - 6),
+            pygame.Rect(panel.x + 8, mid_y + home_h + 6, panel.width - 16, away_h - 6),
             is_managed_team=managed_side == "away",
             subs_mode=subs_mode,
             draft_xi_ids=draft_xi_ids if managed_side == "away" else None,
@@ -610,19 +614,40 @@ class Renderer:
         pygame.draw.rect(self.screen, (18, 18, 22), rect, border_radius=4)
         pygame.draw.rect(self.screen, primary, (rect.x, rect.y, rect.width, 28), border_radius=4)
         draw_text(self.screen, compact_team_name(team.name), rect.x + 10, rect.y + 8, secondary, scale=2)
+        can_sub = is_managed_team and not (team.substitutions_used >= 5 or team.substitution_windows_used >= 3)
         if is_managed_team:
-            counter_text = f"{5 - team.substitutions_used} SUBS {3 - team.substitution_windows_used} WIN"
-            draw_text(self.screen, counter_text, rect.right - text_width(counter_text, 1) - 10, rect.y + 10, secondary, scale=1)
+            if subs_mode:
+                # Cancel / Confirm buttons in the header bar
+                btn_h = 18
+                btn_y = rect.y + 5
+                confirm_w = 56
+                cancel_w = 48
+                confirm_r = pygame.Rect(rect.right - confirm_w - 6, btn_y, confirm_w, btn_h)
+                cancel_r = pygame.Rect(confirm_r.x - cancel_w - 4, btn_y, cancel_w, btn_h)
+                pygame.draw.rect(self.screen, (48, 110, 64), confirm_r, border_radius=3)
+                draw_text(self.screen, "CONFIRM", confirm_r.x + (confirm_r.width - text_width("CONFIRM", 1)) // 2, btn_y + 4, (245, 255, 245), scale=1)
+                self._register_ui("match:subs:confirm", confirm_r)
+                pygame.draw.rect(self.screen, (60, 64, 78), cancel_r, border_radius=3)
+                draw_text(self.screen, "CANCEL", cancel_r.x + (cancel_r.width - text_width("CANCEL", 1)) // 2, btn_y + 4, (220, 220, 228), scale=1)
+                self._register_ui("match:subs:cancel", cancel_r)
+            elif subs_pending:
+                pending_text = "WAIT STOP"
+                draw_text(self.screen, pending_text, rect.right - text_width(pending_text, 1) - 10, rect.y + 10, (240, 200, 80), scale=1)
+            else:
+                counter_text = f"{5 - team.substitutions_used} SUBS {3 - team.substitution_windows_used} WIN"
+                draw_text(self.screen, counter_text, rect.right - text_width(counter_text, 1) - 10, rect.y + 10, secondary, scale=1)
+                if not state.is_finished and can_sub:
+                    self._register_ui("match:subs:start", rect)
 
         col_name = rect.x + 10
         col_avg = rect.right - 106
         col_stam = rect.right - 72
-        y = rect.y + 36
+        row_h = 16
+        y = rect.y + 34
         draw_text(self.screen, "XI", col_name, y + 2, (245, 245, 245), scale=1)
         draw_text(self.screen, "AVG", col_avg, y, (180, 180, 186), scale=1)
         draw_text(self.screen, "STM", col_stam, y, (180, 180, 186), scale=1)
-        y += 18
-        row_h = 18
+        y += row_h
         xi_lookup = {player.profile.id: player for player in team.xi}
         profile_lookup = {profile.id: profile for profile in team.club.players}
         xi_ids = draft_xi_ids if is_managed_team and draft_xi_ids else [player.profile.id for player in team.xi]
@@ -659,6 +684,7 @@ class Renderer:
                 state.player_goals.get(player_id, 0),
                 state.player_assists.get(player_id, 0),
                 row_fill=row_fill,
+                position=profile.position,
             )
             if subs_mode and is_managed_team:
                 self.sub_row_targets[player_id] = {
@@ -667,13 +693,15 @@ class Renderer:
                     "rect": pygame.Rect(rect.x + 4, y - 1, rect.width - 8, row_h),
                     "unavailable": False,
                 }
-            y += 18
+            y += row_h
 
-        y += 4
+        y += 2
         draw_text(self.screen, "BENCH", col_name, y + 2, (245, 245, 245), scale=1)
-        y += 18
+        y += row_h
         bench_ids = draft_bench_ids if is_managed_team and draft_bench_ids else [player.id for player in team.bench]
-        for bench_player_id in bench_ids[:7]:
+        for bench_player_id in bench_ids[:9]:
+            if y + row_h > rect.bottom:
+                break
             bench_player = profile_lookup.get(bench_player_id)
             if bench_player is None:
                 continue
@@ -697,6 +725,7 @@ class Renderer:
                 state.player_assists.get(bench_player.id, 0),
                 row_fill=row_fill,
                 subbed_out=unavailable,
+                position=bench_player.position,
             )
             if subs_mode and is_managed_team:
                 self.sub_row_targets[bench_player.id] = {
@@ -705,9 +734,14 @@ class Renderer:
                     "rect": pygame.Rect(rect.x + 4, y - 1, rect.width - 8, row_h),
                     "unavailable": unavailable,
                 }
-            y += 18
-        if is_managed_team:
-            self._draw_sub_controls(rect, team, subs_mode, subs_pending)
+            y += row_h
+
+        if is_managed_team and not subs_mode and not subs_pending and not state.is_finished and can_sub:
+            if y + 14 <= rect.bottom:
+                hint_text = "TAP PANEL TO MAKE CHANGES"
+                draw_text(self.screen, hint_text,
+                          rect.x + (rect.width - text_width(hint_text, 1)) // 2,
+                          y + 2, (110, 120, 140), scale=1)
 
     def _draw_squad_row(
         self,
@@ -724,13 +758,14 @@ class Renderer:
         assists: int,
         row_fill: Tuple[int, int, int] | None = None,
         subbed_out: bool = False,
+        position: str = "",
     ) -> None:
         row_rect = pygame.Rect(rect.x + 4, y - 1, rect.width - 8, 18)
         if row_fill:
             pygame.draw.rect(self.screen, row_fill, row_rect, border_radius=3)
             pygame.draw.rect(self.screen, (58, 58, 64), row_rect, 1, border_radius=3)
-        shirt_number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "0"
-        draw_text(self.screen, shirt_number.rjust(2, "0"), rect.x + 8, y + 2, (168, 168, 174), scale=1)
+        pos_label = str(position)[:3] if position else ("".join(ch for ch in player_id if ch.isdigit())[-2:] or "--")
+        draw_text(self.screen, pos_label, rect.x + 6, y + 2, (168, 168, 174), scale=1)
         label = short_display_name(name, 11)
         draw_text(self.screen, label, rect.x + 28, y + 2, (238, 238, 240), scale=1)
 
@@ -1125,6 +1160,8 @@ class Renderer:
         speed_label: str,
         clock_seconds: float | None,
         managed_side: str | None = None,
+        subs_mode: bool = False,
+        subs_pending: bool = False,
     ) -> None:
         panel = pygame.Rect(0, 0, SCREEN_W, TOP_BAR_H)
         pygame.draw.rect(self.screen, (10, 10, 12), panel)
@@ -1132,7 +1169,7 @@ class Renderer:
         minute = min(90, int(shown_seconds // 60))
         second = int(shown_seconds % 60)
         minute_text = f"{minute:02d}:{second:02d}"
-        self._draw_top_bar(state, minute_text, paused, speed_label, managed_side)
+        self._draw_top_bar(state, minute_text, paused, speed_label, managed_side, subs_mode, subs_pending)
 
     def _draw_events(
         self,
@@ -1742,7 +1779,7 @@ class Renderer:
         if present:
             pygame.display.flip()
 
-    def _draw_top_bar(self, state: MatchState, minute_text: str, paused: bool, speed_label: str, managed_side: str | None = None) -> None:
+    def _draw_top_bar(self, state: MatchState, minute_text: str, paused: bool, speed_label: str, managed_side: str | None = None, subs_mode: bool = False, subs_pending: bool = False) -> None:
         time_box = pygame.Rect(14, 0, 96, TOP_BAR_H)
         home_box = pygame.Rect(time_box.right, 0, 160, TOP_BAR_H)
         score_box = pygame.Rect(home_box.right, 0, 116, TOP_BAR_H)
@@ -1832,6 +1869,8 @@ class Renderer:
         draw_text(self.screen, status_text, pause_box.x + (pause_box.width - text_width(status_text, 2)) // 2, 11, status_color, scale=2)
         self.start_rect = pause_box
         self._draw_speed_menu(speed_label)
+
+        # subs cancel/confirm and wait-stop indicator are now drawn in the side panel header
 
     def _draw_speed_menu(self, current_label: str) -> None:
         self.speed_option_rects = {}
@@ -2117,6 +2156,9 @@ class Renderer:
                 x += width + 12
         bind_rows_used = (len(bind_rows) + bind_cols - 1) // bind_cols
         y += bind_rows_used * bind_row_h
+        if y + 36 < panel.bottom - 60:
+            draw_text(self.screen, "ADVANCE / PLAY MATCH", panel.x + 28, y + 10, (120, 124, 134), scale=1)
+            draw_text(self.screen, "SPACE", panel.x + 28 + (170 if compact else 240), y + 10, (120, 124, 134), scale=1)
         self._draw_ui_button(pygame.Rect(panel.x + 28, panel.bottom - 56, 128, 40), "BACK", (36, 52, 96), (245, 245, 245), "back:menu")
 
     def _draw_load_game_screen(self, view: dict) -> None:
@@ -2171,12 +2213,19 @@ class Renderer:
         primary = hex_to_rgb(next((club["primary_color"] for club in clubs if club["id"] == overview.get("club_id")), "#D03434"), (208, 52, 52))
         secondary = hex_to_rgb(next((club["secondary_color"] for club in clubs if club["id"] == overview.get("club_id")), "#F5F5F5"), (245, 245, 245))
 
-        self._draw_overview_header(overview, clubs, primary, secondary, overview_tab)
+        transfer_data = view.get("transfer_data", {})
+        transfer_notification_count = (
+            len(transfer_data.get("inbound_offers", [])) +
+            len(transfer_data.get("accepted_offers", []))
+        )
+        self._draw_overview_header(overview, clubs, primary, secondary, overview_tab, transfer_notification_count)
         if overview_tab.startswith("squad_"):
             if overview_tab == "squad_tactics":
                 self._draw_overview_tactics_tab(view, overview, primary, secondary)
             elif overview_tab == "squad_players":
                 self._draw_overview_players_tab(view, overview, clubs, primary, secondary)
+            elif overview_tab == "squad_roles":
+                self._draw_overview_squad_roles_tab(view, overview, primary, secondary)
             else:
                 self._draw_overview_formation_tab(view, overview, clubs, primary, secondary, squad_draft)
             return
@@ -2189,6 +2238,8 @@ class Renderer:
         if overview_tab.startswith("transfers_"):
             if overview_tab == "transfers_listings":
                 self._draw_overview_transfers_listings_tab(view, overview, primary, secondary)
+            elif overview_tab == "transfers_talks":
+                self._draw_overview_transfers_talks_tab(view, overview, primary, secondary)
             else:
                 self._draw_overview_transfers_market_tab(view, overview, primary, secondary)
             return
@@ -2205,6 +2256,7 @@ class Renderer:
         primary: Tuple[int, int, int],
         secondary: Tuple[int, int, int],
         overview_tab: str,
+        transfer_notification_count: int = 0,
     ) -> None:
         top_h = 62
         top = pygame.Rect(0, 0, SCREEN_W, top_h)
@@ -2247,6 +2299,12 @@ class Renderer:
             color = (248, 187, 32) if active else (220, 220, 224)
             rect = pygame.Rect(tab_x - 6, 10, text_width(label, 2) + 12, 28)
             draw_text(self.screen, label, tab_x, 20, color, scale=2)
+            if tab_key == "transfers" and transfer_notification_count > 0:
+                notif_x = tab_x + text_width(label, 2) + 3
+                notif_r = pygame.Rect(notif_x, 14, 14, 14)
+                pygame.draw.circle(self.screen, (206, 96, 84), notif_r.center, 7)
+                nc_str = str(min(transfer_notification_count, 9))
+                draw_text(self.screen, nc_str, notif_r.centerx - text_width(nc_str, 1) // 2, notif_r.y + 3, (245, 245, 245), scale=1)
             if tab_key == "squad":
                 action = "overview_tab:squad_formation"
             elif tab_key == "matches":
@@ -2261,7 +2319,7 @@ class Renderer:
             if tab_key == "squad" and overview_tab.startswith("squad_"):
                 sub_x = submenu_anchor_x
                 sub_y = 44
-                for sub_label, sub_tab in (("TACTICS", "squad_formation"), ("PLAYERS", "squad_players"), ("TRAINING", "squad_tactics")):
+                for sub_label, sub_tab in (("TACTICS", "squad_formation"), ("PLAYERS", "squad_players"), ("TRAINING", "squad_tactics"), ("ROLES", "squad_roles")):
                     sub_color = (248, 187, 32) if overview_tab == sub_tab else (170, 174, 182)
                     sub_rect = pygame.Rect(sub_x - 3, sub_y - 2, text_width(sub_label, 1) + 6, 12)
                     draw_text(self.screen, sub_label, sub_x, sub_y, sub_color, scale=1)
@@ -2279,7 +2337,7 @@ class Renderer:
             if tab_key == "transfers" and overview_tab.startswith("transfers_"):
                 sub_x = submenu_anchor_x
                 sub_y = 44
-                for sub_label, sub_tab in (("MARKET", "transfers_market"), ("LISTINGS", "transfers_listings")):
+                for sub_label, sub_tab in (("MARKET", "transfers_market"), ("LISTINGS", "transfers_listings"), ("TALKS", "transfers_talks")):
                     sub_color = (248, 187, 32) if overview_tab == sub_tab else (170, 174, 182)
                     sub_rect = pygame.Rect(sub_x - 3, sub_y - 2, text_width(sub_label, 1) + 6, 12)
                     draw_text(self.screen, sub_label, sub_x, sub_y, sub_color, scale=1)
@@ -2445,6 +2503,7 @@ class Renderer:
             suspension = int(player.get("suspension_matches_remaining", 0) or 0)
             injury_days = int(player.get("injury_days_remaining", 0) or 0)
             reason = str(player.get("suspension_reason", ""))
+            is_listed = str(player.get("id", "")) in view.get("transfer_listed_ids", [])
             if injury_days > 0:
                 status = "NOK"
                 status_color = (220, 96, 96)
@@ -2477,6 +2536,11 @@ class Renderer:
             stamina_color = (116, 208, 120) if stamina_ratio > 0.55 else (232, 190, 72) if stamina_ratio > 0.3 else (220, 96, 96)
             pygame.draw.rect(self.screen, stamina_color, pygame.Rect(stamina_rect.x, stamina_rect.y, max(2, int(stamina_rect.width * stamina_ratio)), stamina_rect.height), border_radius=3)
             pygame.draw.rect(self.screen, (76, 78, 88), stamina_rect, 1, border_radius=3)
+            if is_listed:
+                mkt_x = status_x - 34
+                mkt_rect = pygame.Rect(mkt_x, y + 1, 22, 12)
+                pygame.draw.rect(self.screen, (60, 120, 60), mkt_rect, border_radius=3)
+                draw_text(self.screen, "$", mkt_x + 7, y, (200, 240, 200), scale=1)
             if icon == "injury":
                 self._draw_injury_icon(pygame.Rect(status_x - 18, y - 3, 14, 16))
             elif icon == "red":
@@ -2698,85 +2762,174 @@ class Renderer:
             pygame.draw.rect(self.screen, color, pygame.Rect(lx, legend_y + 1, 10, 10))
             draw_text(self.screen, label, lx + 16, legend_y, (220, 224, 232), scale=1)
 
-        bench_rect = pygame.Rect(panel.x + 18, legend_y + 24, pitch_rect.width, panel.bottom - legend_y - 52)
+        bench_rect = pygame.Rect(panel.x + 18, legend_y + 24, pitch_rect.width, panel.bottom - legend_y - 36)
         pygame.draw.rect(self.screen, (18, 20, 26), bench_rect, border_radius=8)
         pygame.draw.rect(self.screen, (50, 52, 58), bench_rect, 1, border_radius=8)
-        header = pygame.Rect(bench_rect.x, bench_rect.y, bench_rect.width, 24)
+
+        # Tab header: BENCH | RESERVES | UNAVAILABLE (3rd tab only when unavailable exist)
+        show_reserves = bool(squad_draft.get("show_reserves", False))
+        show_unavailable = bool(squad_draft.get("show_unavailable", False))
+        reserve_ids = [
+            p_id for p_id in [player["id"] for player in players]
+            if p_id not in set(xi_ids) and p_id not in set(bench_ids)
+            and players_by_id.get(p_id) and bool(players_by_id[p_id].get("available", True))
+        ]
+        unavail_tab_ids = self._planner_unavailable_player_ids(players, xi_ids, bench_ids)
+        has_unavail_tab = len(unavail_tab_ids) > 0
+        header = pygame.Rect(bench_rect.x, bench_rect.y, bench_rect.width, 28)
         pygame.draw.rect(self.screen, (24, 26, 32), header, border_top_left_radius=8, border_top_right_radius=8)
-        draw_text(self.screen, "BENCH", header.x + 8, header.y + 7, (248, 187, 32), scale=1)
+        num_tabs = 3 if has_unavail_tab else 2
+        tab_w = header.width // num_tabs
+        bench_tab = pygame.Rect(header.x, header.y, tab_w, header.height)
+        res_tab = pygame.Rect(header.x + tab_w, header.y, tab_w, header.height)
+        unavail_tab = pygame.Rect(header.x + tab_w * 2, header.y, header.width - tab_w * 2, header.height) if has_unavail_tab else None
+        # Active tab highlight
+        active_tab = unavail_tab if (show_unavailable and has_unavail_tab) else (res_tab if show_reserves else bench_tab)
+        if active_tab == bench_tab:
+            pygame.draw.rect(self.screen, (32, 36, 46), bench_tab, border_top_left_radius=8)
+        elif active_tab == res_tab:
+            pygame.draw.rect(self.screen, (32, 36, 46), res_tab)
+        elif active_tab == unavail_tab and unavail_tab:
+            pygame.draw.rect(self.screen, (32, 36, 46), unavail_tab, border_top_right_radius=8)
+        bench_tab_label = f"BENCH ({len(bench_ids)})"
+        res_tab_label = f"RESERVES ({len(reserve_ids)})"
+        unavail_tab_label = f"UNAVAIL ({len(unavail_tab_ids)})"
+        bench_col = (248, 187, 32) if active_tab == bench_tab else (140, 144, 156)
+        res_col = (248, 187, 32) if active_tab == res_tab else (140, 144, 156)
+        unavail_col = (206, 96, 84) if active_tab == unavail_tab else (140, 100, 100)
+        draw_text(self.screen, bench_tab_label, bench_tab.x + (tab_w - text_width(bench_tab_label, 1)) // 2, bench_tab.y + 9, bench_col, scale=1)
+        draw_text(self.screen, res_tab_label, res_tab.x + (tab_w - text_width(res_tab_label, 1)) // 2, res_tab.y + 9, res_col, scale=1)
+        if unavail_tab:
+            draw_text(self.screen, unavail_tab_label, unavail_tab.x + (unavail_tab.width - text_width(unavail_tab_label, 1)) // 2, unavail_tab.y + 9, unavail_col, scale=1)
+        pygame.draw.line(self.screen, (54, 58, 70), (header.x + tab_w, header.y + 4), (header.x + tab_w, header.bottom - 4), 1)
+        if has_unavail_tab:
+            pygame.draw.line(self.screen, (54, 58, 70), (header.x + tab_w * 2, header.y + 4), (header.x + tab_w * 2, header.bottom - 4), 1)
+        self._register_ui("squad:show_bench", bench_tab)
+        self._register_ui("squad:toggle_reserves", res_tab)
+        if unavail_tab:
+            self._register_ui("squad:show_unavailable", unavail_tab)
+
         helper = "DRAG ACROSS THE PITCH TO SWAP XI ROLES OR DRAG BETWEEN PITCH AND BENCH TO CHANGE THE LINEUP."
         helper_y = bench_rect.y - 15
         draw_text(self.screen, helper, cards_x, helper_y, (190, 194, 204), scale=1)
-        row_y = bench_rect.y + 32
+        row_y = bench_rect.y + 36
         row_h = 24
         row_gap = 6
-        visible_bench_ids = [
-            player_id
-            for player_id in bench_ids
-            if players_by_id.get(player_id) and bool(players_by_id[player_id].get("available", True))
-        ][:12]
-        row_index = 0
-        for player_id in visible_bench_ids:
-            player = players_by_id.get(player_id)
-            if not player:
-                continue
-            row_rect = pygame.Rect(bench_rect.x + 8, row_y + row_index * (row_h + row_gap), bench_rect.width - 16, row_h)
-            is_selected = player_id == selected_player_id
-            fill = (24, 26, 32) if hover_target_id != player_id else (76, 128, 84)
-            if is_selected:
-                fill = (50, 58, 84)
-            pygame.draw.rect(self.screen, fill, row_rect, border_radius=6)
-            pygame.draw.rect(self.screen, (84, 88, 98) if is_selected else (58, 60, 68), row_rect, 1, border_radius=6)
-            draw_text(self.screen, player["position"], row_rect.x + 8, row_rect.y + 8, (170, 174, 182), scale=1)
-            player_available = bool(player.get("available", True))
-            name_color = (245, 245, 245) if player_available else (190, 154, 154)
-            draw_text(self.screen, short_display_name(player["name"], 12), row_rect.x + 40, row_rect.y + 8, name_color, scale=1)
-            stamina_ratio = max(0.0, min(1.0, float(player.get("current_stamina", 100.0) or 0.0) / 100.0))
-            stamina_rect = pygame.Rect(row_rect.right - 88, row_rect.y + 8, 30, 6)
-            pygame.draw.rect(self.screen, (34, 36, 42), stamina_rect, border_radius=3)
-            stamina_color = (116, 208, 120) if stamina_ratio > 0.55 else (232, 190, 72) if stamina_ratio > 0.3 else (220, 96, 96)
-            pygame.draw.rect(self.screen, stamina_color, pygame.Rect(stamina_rect.x, stamina_rect.y, max(2, int(stamina_rect.width * stamina_ratio)), stamina_rect.height), border_radius=3)
-            pygame.draw.rect(self.screen, (76, 78, 88), stamina_rect, 1, border_radius=3)
-            status_x = row_rect.right - 54
-            if int(player.get("injury_days_remaining", 0) or 0) > 0:
-                self._draw_injury_icon(pygame.Rect(status_x, row_rect.y + 4, 14, 16))
-                days_text = str(int(player.get("injury_days_remaining", 0) or 0))
-                draw_text(self.screen, days_text, status_x + 18, row_rect.y + 8, (206, 96, 84), scale=1)
-            elif int(player.get("suspension_matches_remaining", 0) or 0) > 0:
-                pygame.draw.rect(self.screen, (206, 54, 54), pygame.Rect(status_x, row_rect.y + 5, 12, 14))
-                draw_text(self.screen, "B", status_x + 2, row_rect.y + 8, (255, 255, 255), scale=1)
-            elif int(player.get("yellow_card_count", 0) or 0) > 0:
-                pygame.draw.rect(self.screen, (236, 202, 56), pygame.Rect(status_x, row_rect.y + 5, 12, 14))
-                draw_text(self.screen, str(min(9, int(player.get("yellow_card_count", 0) or 0))), status_x + 3, row_rect.y + 8, (28, 28, 28), scale=1)
-            ovr = str(player["ovr"])
-            draw_text(self.screen, ovr, row_rect.right - 8 - text_width(ovr, 1), row_rect.y + 8, (245, 245, 245), scale=1)
-            self.squad_targets[f"bench:{player_id}"] = {"player_id": player_id, "group": "bench", "rect": row_rect}
-            row_index += 1
-            if row_rect.bottom + row_h > bench_rect.bottom:
-                break
-        unavailable_ids = self._planner_unavailable_player_ids(players, xi_ids, bench_ids)
-        unavailable_y = row_y + row_index * (row_h + row_gap) + (8 if row_index else 0)
-        if unavailable_ids and unavailable_y + row_h + 18 <= bench_rect.bottom:
-            draw_text(self.screen, "UNAVAILABLE", bench_rect.x + 8, unavailable_y, (206, 96, 84), scale=1)
-            unavailable_y += 18
-            for player_id in unavailable_ids:
+
+        pending_reserve_id = squad_draft.get("pending_reserve_id")
+        if show_unavailable and has_unavail_tab:
+            # UNAVAILABLE TAB
+            unav_y = row_y
+            if not unavail_tab_ids:
+                draw_text(self.screen, "NO UNAVAILABLE PLAYERS", bench_rect.x + 12, unav_y + 8, (140, 144, 156), scale=1)
+            for player_id in unavail_tab_ids:
                 player = players_by_id.get(player_id)
-                if not player or unavailable_y + row_h > bench_rect.bottom:
+                if not player or unav_y + row_h > bench_rect.bottom - 4:
                     break
-                row_rect = pygame.Rect(bench_rect.x + 8, unavailable_y, bench_rect.width - 16, row_h)
+                row_rect = pygame.Rect(bench_rect.x + 8, unav_y, bench_rect.width - 16, row_h)
                 pygame.draw.rect(self.screen, (34, 22, 24), row_rect, border_radius=6)
                 pygame.draw.rect(self.screen, (92, 48, 54), row_rect, 1, border_radius=6)
                 draw_text(self.screen, player["position"], row_rect.x + 8, row_rect.y + 8, (190, 154, 154), scale=1)
                 draw_text(self.screen, short_display_name(player["name"], 12), row_rect.x + 40, row_rect.y + 8, (220, 184, 184), scale=1)
+                ovr_u = str(player.get("ovr", ""))
+                draw_text(self.screen, ovr_u, row_rect.right - 54 - text_width(ovr_u, 1), row_rect.y + 8, (190, 154, 154), scale=1)
+                status_x = row_rect.right - 48
+                inj_days = int(player.get("injury_days_remaining", 0) or 0)
+                ban_matches = int(player.get("suspension_matches_remaining", 0) or 0)
+                if inj_days > 0:
+                    self._draw_injury_icon(pygame.Rect(status_x, row_rect.y + 4, 14, 16))
+                    draw_text(self.screen, f"{inj_days}D", status_x + 18, row_rect.y + 8, (206, 96, 84), scale=1)
+                elif ban_matches > 0:
+                    pygame.draw.rect(self.screen, (206, 54, 54), pygame.Rect(status_x, row_rect.y + 5, 12, 14))
+                    draw_text(self.screen, f"B{ban_matches}", status_x + 16, row_rect.y + 8, (206, 96, 84), scale=1)
+                self._register_ui(f"squad:select_player:{player_id}", row_rect)
+                unav_y += row_h + row_gap
+        elif not show_reserves:
+            available_bench_ids = [
+                player_id
+                for player_id in bench_ids
+                if players_by_id.get(player_id) and bool(players_by_id[player_id].get("available", True))
+            ]
+            visible_bench_ids = available_bench_ids[:9]
+            if pending_reserve_id:
+                res_p = players_by_id.get(pending_reserve_id)
+                res_name = short_display_name(res_p["name"], 12) if res_p else pending_reserve_id
+                banner = pygame.Rect(bench_rect.x + 8, row_y - 24, bench_rect.width - 16, 20)
+                pygame.draw.rect(self.screen, (62, 42, 12), banner, border_radius=4)
+                draw_text(self.screen, f"SELECT BENCH PLAYER TO DROP FOR {res_name.upper()}", banner.x + 8, banner.y + 5, (248, 187, 32), scale=1)
+                cancel_btn = pygame.Rect(bench_rect.right - 72, banner.y + 2, 60, 16)
+                self._draw_ui_button(cancel_btn, "CANCEL", (80, 40, 40), (245, 245, 245), "squad:cancel_reserve_swap", scale=1)
+            row_index = 0
+            for player_id in visible_bench_ids:
+                player = players_by_id.get(player_id)
+                if not player:
+                    continue
+                row_rect = pygame.Rect(bench_rect.x + 8, row_y + row_index * (row_h + row_gap), bench_rect.width - 16, row_h)
+                if row_rect.bottom > bench_rect.bottom - 4:
+                    break
+                is_selected = player_id == selected_player_id
+                if pending_reserve_id:
+                    fill = (48, 28, 12)
+                elif hover_target_id == player_id:
+                    fill = (76, 128, 84)
+                else:
+                    fill = (50, 58, 84) if is_selected else (24, 26, 32)
+                pygame.draw.rect(self.screen, fill, row_rect, border_radius=6)
+                pygame.draw.rect(self.screen, (248, 187, 32) if pending_reserve_id else ((84, 88, 98) if is_selected else (58, 60, 68)), row_rect, 1, border_radius=6)
+                draw_text(self.screen, player["position"], row_rect.x + 8, row_rect.y + 8, (170, 174, 182), scale=1)
+                player_available = bool(player.get("available", True))
+                name_color = (245, 245, 245) if player_available else (190, 154, 154)
+                draw_text(self.screen, short_display_name(player["name"], 12), row_rect.x + 40, row_rect.y + 8, name_color, scale=1)
+                stamina_ratio = max(0.0, min(1.0, float(player.get("current_stamina", 100.0) or 0.0) / 100.0))
+                stamina_rect = pygame.Rect(row_rect.right - 88, row_rect.y + 8, 30, 6)
+                pygame.draw.rect(self.screen, (34, 36, 42), stamina_rect, border_radius=3)
+                stamina_color = (116, 208, 120) if stamina_ratio > 0.55 else (232, 190, 72) if stamina_ratio > 0.3 else (220, 96, 96)
+                pygame.draw.rect(self.screen, stamina_color, pygame.Rect(stamina_rect.x, stamina_rect.y, max(2, int(stamina_rect.width * stamina_ratio)), stamina_rect.height), border_radius=3)
+                pygame.draw.rect(self.screen, (76, 78, 88), stamina_rect, 1, border_radius=3)
                 status_x = row_rect.right - 54
                 if int(player.get("injury_days_remaining", 0) or 0) > 0:
                     self._draw_injury_icon(pygame.Rect(status_x, row_rect.y + 4, 14, 16))
                     days_text = str(int(player.get("injury_days_remaining", 0) or 0))
                     draw_text(self.screen, days_text, status_x + 18, row_rect.y + 8, (206, 96, 84), scale=1)
-                else:
+                elif int(player.get("suspension_matches_remaining", 0) or 0) > 0:
                     pygame.draw.rect(self.screen, (206, 54, 54), pygame.Rect(status_x, row_rect.y + 5, 12, 14))
                     draw_text(self.screen, "B", status_x + 2, row_rect.y + 8, (255, 255, 255), scale=1)
-                unavailable_y += row_h + row_gap
+                elif int(player.get("yellow_card_count", 0) or 0) > 0:
+                    pygame.draw.rect(self.screen, (236, 202, 56), pygame.Rect(status_x, row_rect.y + 5, 12, 14))
+                    draw_text(self.screen, str(min(9, int(player.get("yellow_card_count", 0) or 0))), status_x + 3, row_rect.y + 8, (28, 28, 28), scale=1)
+                ovr = str(player["ovr"])
+                draw_text(self.screen, ovr, row_rect.right - 8 - text_width(ovr, 1), row_rect.y + 8, (245, 245, 245), scale=1)
+                if pending_reserve_id:
+                    self._register_ui(f"squad:swap_with_reserve:{player_id}", row_rect)
+                else:
+                    self.squad_targets[f"bench:{player_id}"] = {"player_id": player_id, "group": "bench", "rect": row_rect}
+                row_index += 1
+        else:
+            # RESERVES VIEW: players not in XI or bench
+            if not reserve_ids:
+                draw_text(self.screen, "NO RESERVE PLAYERS", bench_rect.x + 12, row_y + 8, (140, 144, 156), scale=1)
+            res_y = row_y
+            for res_id in reserve_ids:
+                if res_y + row_h > bench_rect.bottom - 4:
+                    break
+                res_player = players_by_id.get(res_id)
+                if not res_player:
+                    continue
+                rr = pygame.Rect(bench_rect.x + 8, res_y, bench_rect.width - 16, row_h)
+                is_sel = res_id == selected_player_id
+                pygame.draw.rect(self.screen, (34, 38, 48) if is_sel else (22, 24, 30), rr, border_radius=5)
+                pygame.draw.rect(self.screen, (84, 88, 104) if is_sel else (54, 56, 68), rr, 1, border_radius=5)
+                draw_text(self.screen, res_player["position"][:3], rr.x + 8, rr.y + 8, (130, 134, 150), scale=1)
+                draw_text(self.screen, short_display_name(res_player["name"], 12), rr.x + 40, rr.y + 8, (200, 204, 218), scale=1)
+                ovr_str = str(res_player.get("ovr", ""))
+                draw_text(self.screen, ovr_str, rr.right - 82 - text_width(ovr_str, 1), rr.y + 8, (200, 204, 218), scale=1)
+                # +BENCH / SWAP button: direct add if bench < 9, else choose swap target
+                bench_has_room = len(bench_ids) < 9
+                btn_label = "+BENCH" if bench_has_room else "TO BENCH"
+                add_btn = pygame.Rect(rr.right - 76, rr.y + 4, 68, 16)
+                self._draw_ui_button(add_btn, btn_label, (32, 62, 38), (180, 224, 180), f"squad:reserve_to_bench:{res_id}", scale=1)
+                self._register_ui(f"squad:select_player:{res_id}", rr)
+                res_y += row_h + 4
 
         detail_rect = pygame.Rect(cards_x, legend_y + 24, cards_w, panel.bottom - legend_y - 52)
         pygame.draw.rect(self.screen, (18, 20, 26), detail_rect, border_radius=8)
@@ -2958,15 +3111,16 @@ class Renderer:
         draw_text(self.screen, "#", left.x + 14, header_y, (170, 174, 182), scale=1)
         draw_text(self.screen, "POS", left.x + 52, header_y, (170, 174, 182), scale=1)
         draw_text(self.screen, "PLAYER", left.x + 96, header_y, (170, 174, 182), scale=1)
+        draw_text(self.screen, "AGE", left.right - 138, header_y, (170, 174, 182), scale=1)
         draw_text(self.screen, "OVR", left.right - 92, header_y, (170, 174, 182), scale=1)
         draw_text(self.screen, "STM", left.right - 46, header_y, (170, 174, 182), scale=1)
         row_y = header_y + 22
-        row_h = 25
         position_order = {"GK": 0, "LB": 1, "CB": 2, "RB": 3, "DM": 4, "CM": 5, "AM": 6, "LW": 7, "ST": 8, "RW": 9}
         sorted_players = sorted(players, key=lambda player: (position_order.get(str(player.get("position")), 99), str(player.get("name", ""))))
+        available_h = left.bottom - 8 - row_y
+        row_slot = max(20, available_h // max(1, len(sorted_players))) if sorted_players else 25
+        row_h = max(18, row_slot - 3)
         for player in sorted_players:
-            if row_y + row_h > left.bottom - 8:
-                break
             player_id = str(player.get("id"))
             row = pygame.Rect(left.x + 8, row_y, left.width - 16, row_h)
             active = player_id == selected_player_id
@@ -2975,18 +3129,22 @@ class Renderer:
             pygame.draw.rect(self.screen, (248, 187, 32) if active else (58, 60, 68), row, 1, border_radius=5)
             name_color = (245, 245, 245) if bool(player.get("available", True)) else (220, 184, 184)
             number = "".join(ch for ch in player_id if ch.isdigit())[-2:] or "--"
-            draw_text(self.screen, number, row.x + 8, row.y + 8, (170, 174, 182), scale=1)
-            draw_text(self.screen, str(player.get("position", ""))[:3], row.x + 46, row.y + 8, (170, 174, 182), scale=1)
-            draw_text(self.screen, short_display_name(str(player.get("name", "PLAYER")), max(10, (left.width - 230) // 6)), row.x + 90, row.y + 8, name_color, scale=1)
-            draw_text(self.screen, str(player.get("ovr", "")), row.right - 94, row.y + 8, (245, 245, 245), scale=1)
+            text_y = row.y + max(2, (row_h - 10) // 2)
+            draw_text(self.screen, number, row.x + 8, text_y, (170, 174, 182), scale=1)
+            draw_text(self.screen, str(player.get("position", ""))[:3], row.x + 46, text_y, (170, 174, 182), scale=1)
+            draw_text(self.screen, short_display_name(str(player.get("name", "PLAYER")), max(10, (left.width - 230) // 6)), row.x + 90, text_y, name_color, scale=1)
+            p_age = int(player.get("age", 0) or 0)
+            draw_text(self.screen, str(p_age) if p_age else "--", row.right - 138, text_y, (170, 174, 182), scale=1)
+            draw_text(self.screen, str(player.get("ovr", "")), row.right - 94, text_y, (245, 245, 245), scale=1)
             stamina = max(0.0, min(100.0, float(player.get("current_stamina", 100.0) or 0.0)))
-            stamina_rect = pygame.Rect(row.right - 48, row.y + 10, 34, 6)
+            bar_y = row.y + max(3, (row_h - 6) // 2)
+            stamina_rect = pygame.Rect(row.right - 48, bar_y, 34, 6)
             pygame.draw.rect(self.screen, (34, 36, 42), stamina_rect, border_radius=3)
             stamina_color = (116, 208, 120) if stamina >= 55 else (232, 190, 72) if stamina >= 30 else (220, 96, 96)
             pygame.draw.rect(self.screen, stamina_color, pygame.Rect(stamina_rect.x, stamina_rect.y, max(2, int(stamina_rect.width * stamina / 100.0)), stamina_rect.height), border_radius=3)
             pygame.draw.rect(self.screen, (76, 78, 88), stamina_rect, 1, border_radius=3)
             self._register_ui(f"squad:select_player:{player_id}", row)
-            row_y += row_h + 5
+            row_y += row_slot
 
         draw_text(self.screen, "PLAYER PROFILE", right.x + 12, right.y + 12, (248, 187, 32), scale=2)
         if not selected_player:
@@ -2999,7 +3157,9 @@ class Renderer:
         face_rect = pygame.Rect(top.right - 78, top.y + 8, 64, 70)
         text_limit = max(12, (face_rect.x - top.x - 28) // 12)
         draw_text(self.screen, str(selected_player.get("name", "PLAYER")).upper()[:text_limit], top.x + 16, top.y + 14, secondary, scale=2)
-        meta = f"{selected_player.get('position')}  OVR {selected_player.get('ovr')}  FOOT {str(selected_player.get('preferred_foot', 'right')).upper()}"
+        age_val = int(selected_player.get("age", 0) or 0)
+        age_str = f"  AGE {age_val}" if age_val > 0 else ""
+        meta = f"{selected_player.get('position')}  OVR {selected_player.get('ovr')}{age_str}  FOOT {str(selected_player.get('preferred_foot', 'right')).upper()}"
         draw_text(self.screen, meta[:44], top.x + 16, top.y + 42, secondary, scale=1)
         # Status bits row — icons instead of plain text
         ix = top.x + 16
@@ -3159,47 +3319,100 @@ class Renderer:
             next_label = "NEXT WINDOW: JANUARY (WINTER) OR JULY 7 (SUMMER)"
             draw_text(self.screen, next_label, panel.x + 16, status_y + 24, (170, 174, 182), scale=1)
 
-        table_y = status_y + 52
-        col_name = panel.x + 16
-        col_pos = panel.x + 300
-        col_ovr = panel.x + 360
-        col_club = panel.x + 420
-        col_price = panel.x + 680
-        col_btn = panel.right - 160
+        user_club_id = str(overview.get("club_id", ""))
+        pending_offer_pids = set(transfer_data.get("pending_offer_player_ids", []))
+        exhausted_offer_pids = set(transfer_data.get("exhausted_offer_player_ids", []))
+        clubs = overview.get("clubs", [])
+        club_by_id_mkt = {club["id"]: club for club in clubs}
 
-        header_color = (170, 174, 182)
-        draw_text(self.screen, "PLAYER", col_name, table_y, header_color, scale=1)
-        draw_text(self.screen, "POS", col_pos, table_y, header_color, scale=1)
-        draw_text(self.screen, "OVR", col_ovr, table_y, header_color, scale=1)
-        draw_text(self.screen, "CLUB", col_club, table_y, header_color, scale=1)
-        draw_text(self.screen, "ASKING PRICE", col_price, table_y, header_color, scale=1)
-        pygame.draw.line(self.screen, (42, 46, 54), (panel.x + 8, table_y + 18), (panel.right - 8, table_y + 18))
+        ROW_H = 34
+        ROW_GAP = 6
+        row_y = status_y + 44
 
-        row_y = table_y + 26
+        # Column x offsets from row_rect.x
+        CX_BADGE  = 10
+        CX_CLUB   = 34   # club name, scale=1
+        CX_NAME   = 210  # player name, scale=2
+        CX_POS    = 530  # position abbreviation, scale=1
+        CX_OVR    = 582  # "OVR XX", scale=1
+        CX_AGE    = 644  # "AGE XX", scale=1
+        # From row_rect.right:
+        CR_PRICE  = 272  # asking price label, scale=2
+        CR_BTN    = 148  # button right-edge offset (button w=130, margin=8)
+
         if not listings:
-            draw_text(self.screen, "NO PLAYERS CURRENTLY LISTED" if window_open else "WINDOW CLOSED — NO MARKET DATA", panel.x + 16, row_y + 16, (170, 174, 182), scale=1)
+            draw_text(self.screen, "NO PLAYERS CURRENTLY LISTED" if window_open else "WINDOW CLOSED — NO MARKET DATA", panel.x + 16, row_y + 10, (170, 174, 182), scale=1)
         for listing in listings:
-            if row_y + 38 > panel.bottom - 12:
+            if row_y + ROW_H > panel.bottom - 12:
                 break
-            row_rect = pygame.Rect(panel.x + 8, row_y - 4, panel.width - 16, 36)
-            pygame.draw.rect(self.screen, (20, 23, 28), row_rect, border_radius=5)
-            pygame.draw.rect(self.screen, (36, 40, 48), row_rect, 1, border_radius=5)
-            player_name = str(listing.get("player_name", "UNKNOWN")).upper()[:22]
-            draw_text(self.screen, player_name, col_name, row_y + 6, (245, 245, 245), scale=1)
-            draw_text(self.screen, str(listing.get("position", "")).upper()[:3], col_pos, row_y + 6, (210, 214, 224), scale=1)
+            row_rect = pygame.Rect(panel.x + 8, row_y, panel.width - 16, ROW_H)
+            pygame.draw.rect(self.screen, (20, 23, 28), row_rect, border_radius=4)
+            pygame.draw.rect(self.screen, (36, 40, 48), row_rect, 1, border_radius=4)
+
+            ty1 = row_rect.y + (ROW_H - 7) // 2    # scale=1 text vertical center
+            ty2 = row_rect.y + (ROW_H - 14) // 2   # scale=2 text vertical center
+            by  = row_rect.y + (ROW_H - 22) // 2   # badge vertical center (22px tall)
+
+            listed_club_id = str(listing.get("listed_club_id", ""))
+            club_meta = club_by_id_mkt.get(listed_club_id)
+
+            # Badge
+            badge_r = pygame.Rect(row_rect.x + CX_BADGE, by, 18, 22)
+            if club_meta:
+                self._draw_club_badge(
+                    {
+                        "template_id": club_meta.get("badge_template_id", "1"),
+                        "primary": club_meta.get("badge_primary", "#2E3A6A"),
+                        "secondary": club_meta.get("badge_secondary", "#F5F5F5"),
+                        "border": club_meta.get("badge_border", "#F5F5F5"),
+                    },
+                    badge_r,
+                )
+
+            # Club name
+            club_label = str((club_meta or {}).get("name", "UNKNOWN")).upper()[:26]
+            draw_text(self.screen, club_label, row_rect.x + CX_CLUB, ty1, (140, 144, 156), scale=1)
+
+            # Player name
+            name_label = str(listing.get("player_name", "UNKNOWN")).upper()[:24]
+            draw_text(self.screen, name_label, row_rect.x + CX_NAME, ty2, (245, 245, 245), scale=2)
+
+            # Position
+            pos_str = str(listing.get("position", "")).upper()[:3]
+            draw_text(self.screen, pos_str, row_rect.x + CX_POS, ty1, (200, 204, 216), scale=1)
+
+            # OVR
             ovr_val = int(listing.get("ovr", 0))
             ovr_color = self._attribute_value_color(ovr_val)
-            draw_text(self.screen, str(ovr_val), col_ovr, row_y + 6, ovr_color, scale=1)
-            club_name = str(listing.get("club_name", "")).upper()[:18]
-            draw_text(self.screen, club_name, col_club, row_y + 6, (210, 214, 224), scale=1)
+            draw_text(self.screen, "OVR", row_rect.x + CX_OVR, ty1, (130, 134, 142), scale=1)
+            draw_text(self.screen, str(ovr_val), row_rect.x + CX_OVR + text_width("OVR ", 1), ty1, ovr_color, scale=1)
+
+            # AGE
+            age_str = str(listing.get("age", "")) or "--"
+            draw_text(self.screen, "AGE", row_rect.x + CX_AGE, ty1, (130, 134, 142), scale=1)
+            draw_text(self.screen, age_str, row_rect.x + CX_AGE + text_width("AGE ", 1), ty1, (210, 214, 224), scale=1)
+
+            # Asking price
             price = int(listing.get("asking_price", 0))
-            price_label = f"£{price // 1_000_000}M" if price >= 1_000_000 else f"£{price // 1_000}K"
-            draw_text(self.screen, price_label, col_price, row_y + 6, (248, 187, 32), scale=1)
-            if window_open:
-                btn_rect = pygame.Rect(col_btn, row_y + 2, 120, 28)
-                player_id = str(listing.get("player_id", ""))
-                self._draw_ui_button(btn_rect, "MAKE OFFER", (36, 52, 96), (245, 245, 245), f"transfers:make_offer:{player_id}", scale=1)
-            row_y += 42
+            price_label = f"£{price / 1_000_000:.1f}M" if price >= 1_000_000 else f"£{price // 1_000}K"
+            draw_text(self.screen, price_label, row_rect.right - CR_PRICE, ty2, (248, 187, 32), scale=2)
+
+            # Offer button
+            player_id = str(listing.get("player_id", ""))
+            is_own_player = listed_club_id == user_club_id
+            has_pending = player_id in pending_offer_pids
+            is_exhausted = player_id in exhausted_offer_pids
+            btn_rect = pygame.Rect(row_rect.right - CR_BTN, row_rect.y + 4, 130, ROW_H - 8)
+            if window_open and not is_own_player:
+                if has_pending:
+                    draw_text(self.screen, "OFFER SENT", btn_rect.x + 4, ty1, (88, 170, 104), scale=1)
+                elif is_exhausted:
+                    draw_text(self.screen, "MAX OFFERS", btn_rect.x + 4, ty1, (180, 80, 80), scale=1)
+                else:
+                    self._draw_ui_button(btn_rect, "MAKE OFFER", (36, 52, 96), (245, 245, 245), f"transfers:make_offer:{player_id}", scale=1)
+            elif is_own_player:
+                draw_text(self.screen, "YOUR PLAYER", btn_rect.x + 4, ty1, (130, 134, 142), scale=1)
+            row_y += ROW_H + ROW_GAP
 
     def _draw_overview_transfers_listings_tab(
         self,
@@ -3216,7 +3429,6 @@ class Renderer:
         transfer_data = view.get("transfer_data", {})
         window_open = bool(transfer_data.get("window_open", False))
         listings = list(transfer_data.get("user_listings", []))
-        accepted_offers = list(transfer_data.get("accepted_offers", []))
 
         status_y = panel.y + 56
         if window_open:
@@ -3224,60 +3436,270 @@ class Renderer:
         else:
             draw_text(self.screen, "TRANSFER WINDOW CLOSED — LISTINGS HELD FOR NEXT WINDOW", panel.x + 16, status_y, (206, 96, 84), scale=1)
 
-        if accepted_offers:
-            acc_y = status_y + 30
-            draw_text(self.screen, "ACCEPTED OFFERS — NEGOTIATE NOW:", panel.x + 16, acc_y, (248, 187, 32), scale=1)
-            for offer in accepted_offers[:3]:
-                acc_y += 22
-                player_name = str(offer.get("player_name", "PLAYER")).upper()[:20]
-                offer_amt = int(offer.get("offer_amount", 0))
-                amt_label = f"£{offer_amt // 1_000_000}M" if offer_amt >= 1_000_000 else f"£{offer_amt // 1_000}K"
-                row_label = f"{player_name}  {amt_label}"
-                draw_text(self.screen, row_label, panel.x + 16, acc_y, (245, 245, 245), scale=1)
-                neg_btn = pygame.Rect(panel.x + 340, acc_y - 2, 130, 22)
-                offer_id = str(offer.get("id", ""))
-                self._draw_ui_button(neg_btn, "NEGOTIATE", (46, 160, 67), (245, 245, 245), f"transfers:negotiate:{offer_id}", scale=1)
+        clubs_lst = overview.get("clubs", [])
+        club_by_id_lst = {club["id"]: club for club in clubs_lst}
+        user_club_id_lst = str(overview.get("club_id", ""))
+        user_club_meta = club_by_id_lst.get(user_club_id_lst, {})
 
-        table_y = status_y + (30 + len(accepted_offers) * 22 + 16 if accepted_offers else 32)
-        col_name = panel.x + 16
-        col_pos = panel.x + 300
-        col_ovr = panel.x + 360
-        col_price = panel.x + 420
-        col_offers = panel.x + 600
-        col_btn = panel.right - 160
+        ROW_H_L = 34
+        ROW_GAP_L = 6
+        row_y = status_y + 36
 
-        header_color = (170, 174, 182)
-        draw_text(self.screen, "PLAYER", col_name, table_y, header_color, scale=1)
-        draw_text(self.screen, "POS", col_pos, table_y, header_color, scale=1)
-        draw_text(self.screen, "OVR", col_ovr, table_y, header_color, scale=1)
-        draw_text(self.screen, "ASKING", col_price, table_y, header_color, scale=1)
-        draw_text(self.screen, "OFFERS", col_offers, table_y, header_color, scale=1)
-        pygame.draw.line(self.screen, (42, 46, 54), (panel.x + 8, table_y + 18), (panel.right - 8, table_y + 18))
+        CX_BADGE_L = 10
+        CX_CLUB_L  = 34
+        CX_NAME_L  = 210
+        CX_POS_L   = 530
+        CX_OVR_L   = 582
+        CX_AGE_L   = 644
+        CR_OFFERS_L = 310
+        CR_PRICE_L  = 220
+        CR_BTN_L    = 148
 
-        row_y = table_y + 26
         if not listings:
-            draw_text(self.screen, "NO PLAYERS LISTED FOR TRANSFER", panel.x + 16, row_y + 16, (170, 174, 182), scale=1)
+            draw_text(self.screen, "NO PLAYERS LISTED FOR TRANSFER", panel.x + 16, row_y + 10, (170, 174, 182), scale=1)
         for listing in listings:
-            if row_y + 38 > panel.bottom - 12:
+            if row_y + ROW_H_L > panel.bottom - 12:
                 break
-            row_rect = pygame.Rect(panel.x + 8, row_y - 4, panel.width - 16, 36)
-            pygame.draw.rect(self.screen, (20, 23, 28), row_rect, border_radius=5)
-            pygame.draw.rect(self.screen, (36, 40, 48), row_rect, 1, border_radius=5)
-            player_name = str(listing.get("player_name", "UNKNOWN")).upper()[:22]
-            draw_text(self.screen, player_name, col_name, row_y + 6, (245, 245, 245), scale=1)
-            draw_text(self.screen, str(listing.get("position", "")).upper()[:3], col_pos, row_y + 6, (210, 214, 224), scale=1)
+            row_rect = pygame.Rect(panel.x + 8, row_y, panel.width - 16, ROW_H_L)
+            pygame.draw.rect(self.screen, (20, 23, 28), row_rect, border_radius=4)
+            pygame.draw.rect(self.screen, (36, 40, 48), row_rect, 1, border_radius=4)
+
+            ty1 = row_rect.y + (ROW_H_L - 7) // 2
+            ty2 = row_rect.y + (ROW_H_L - 14) // 2
+            by  = row_rect.y + (ROW_H_L - 22) // 2
+
+            # Badge (user club)
+            badge_r = pygame.Rect(row_rect.x + CX_BADGE_L, by, 18, 22)
+            if user_club_meta:
+                self._draw_club_badge(
+                    {
+                        "template_id": user_club_meta.get("badge_template_id", "1"),
+                        "primary": user_club_meta.get("badge_primary", "#2E3A6A"),
+                        "secondary": user_club_meta.get("badge_secondary", "#F5F5F5"),
+                        "border": user_club_meta.get("badge_border", "#F5F5F5"),
+                    },
+                    badge_r,
+                )
+
+            # Club name
+            club_label = str(user_club_meta.get("name", "YOUR CLUB")).upper()[:26] if user_club_meta else "YOUR CLUB"
+            draw_text(self.screen, club_label, row_rect.x + CX_CLUB_L, ty1, (140, 144, 156), scale=1)
+
+            # Player name
+            name_label = str(listing.get("player_name", "UNKNOWN")).upper()[:24]
+            draw_text(self.screen, name_label, row_rect.x + CX_NAME_L, ty2, (245, 245, 245), scale=2)
+
+            # Position
+            pos_str = str(listing.get("position", "")).upper()[:3]
+            draw_text(self.screen, pos_str, row_rect.x + CX_POS_L, ty1, (200, 204, 216), scale=1)
+
+            # OVR
             ovr_val = int(listing.get("ovr", 0))
             ovr_color = self._attribute_value_color(ovr_val)
-            draw_text(self.screen, str(ovr_val), col_ovr, row_y + 6, ovr_color, scale=1)
-            price = int(listing.get("asking_price", 0))
-            price_label = f"£{price // 1_000_000}M" if price >= 1_000_000 else f"£{price // 1_000}K"
-            draw_text(self.screen, price_label, col_price, row_y + 6, (248, 187, 32), scale=1)
+            draw_text(self.screen, "OVR", row_rect.x + CX_OVR_L, ty1, (130, 134, 142), scale=1)
+            draw_text(self.screen, str(ovr_val), row_rect.x + CX_OVR_L + text_width("OVR ", 1), ty1, ovr_color, scale=1)
+
+            # AGE
+            age_str = str(listing.get("age", "")) or "--"
+            draw_text(self.screen, "AGE", row_rect.x + CX_AGE_L, ty1, (130, 134, 142), scale=1)
+            draw_text(self.screen, age_str, row_rect.x + CX_AGE_L + text_width("AGE ", 1), ty1, (210, 214, 224), scale=1)
+
+            # Offers received
             offer_count = int(listing.get("offer_count", 0))
-            draw_text(self.screen, str(offer_count), col_offers, row_y + 6, (210, 214, 224), scale=1)
+            offers_label = f"{offer_count} OFFER{'S' if offer_count != 1 else ''}"
+            draw_text(self.screen, offers_label, row_rect.right - CR_OFFERS_L, ty1, (210, 214, 224), scale=1)
+
+            # Asking price
+            price = int(listing.get("asking_price", 0))
+            price_label = f"£{price / 1_000_000:.1f}M" if price >= 1_000_000 else f"£{price // 1_000}K"
+            draw_text(self.screen, price_label, row_rect.right - CR_PRICE_L, ty2, (248, 187, 32), scale=2)
+
+            # Withdraw button
             listing_id = str(listing.get("id", ""))
-            btn_rect = pygame.Rect(col_btn, row_y + 2, 120, 28)
+            btn_rect = pygame.Rect(row_rect.right - CR_BTN_L, row_rect.y + 4, 130, ROW_H_L - 8)
             self._draw_ui_button(btn_rect, "WITHDRAW", (96, 40, 40), (245, 245, 245), f"transfers:withdraw:{listing_id}", scale=1)
-            row_y += 42
+            row_y += ROW_H_L + ROW_GAP_L
+
+    def _draw_overview_transfers_talks_tab(
+        self,
+        view: dict,
+        overview: dict,
+        primary: Tuple[int, int, int],
+        secondary: Tuple[int, int, int],
+    ) -> None:
+        content_y = 74
+        content_h = SCREEN_H - content_y - 24
+        panel = pygame.Rect(20, content_y, SCREEN_W - 40, content_h)
+        self._draw_panel(panel, "TRANSFER TALKS", (16, 18, 20), (245, 245, 245))
+
+        transfer_data = view.get("transfer_data", {})
+        all_offers = list(transfer_data.get("my_offers", []))
+        inbound_offers = list(transfer_data.get("inbound_offers", []))
+
+        _STATUS_LABEL = {
+            "pending": ("WAITING FOR RESPONSE", (232, 190, 72)),
+            "accepted": ("CLUB ACCEPTED — NEGOTIATE", (88, 170, 104)),
+            "rejected": ("OFFER REJECTED", (206, 96, 84)),
+            "negotiating": ("NEGOTIATING CONTRACT", (100, 140, 220)),
+            "negotiating_failed": ("PLAYER REJECTED — DEAL OFF", (206, 96, 84)),
+            "completed": ("SIGNED", (88, 170, 104)),
+            "expired": ("EXPIRED", (130, 130, 140)),
+        }
+
+        body_y = panel.y + 56
+
+        # ── SECTION 1: INCOMING OFFERS (AI clubs buying your players) ──────
+        draw_text(self.screen, "INCOMING OFFERS", panel.x + 16, body_y, (248, 187, 32), scale=2)
+        pygame.draw.line(self.screen, (54, 58, 70), (panel.x + 8, body_y + 22), (panel.right - 8, body_y + 22))
+        body_y += 30
+
+        if not inbound_offers:
+            draw_text(self.screen, "NO INCOMING OFFERS AT THIS TIME", panel.x + 16, body_y + 10, (130, 134, 142), scale=1)
+            body_y += 30
+        else:
+            ROW_H_IN = 34
+            ROW_GAP_IN = 6
+            for offer in inbound_offers[:4]:
+                if body_y + ROW_H_IN > panel.bottom - 100:
+                    break
+                offer_id = str(offer.get("id", ""))
+                offering_club = str(offer.get("offering_club_name", "UNKNOWN CLUB")).upper()[:26]
+                player_name = str(offer.get("player_name", "PLAYER")).upper()[:24]
+                position = str(offer.get("position", "")).upper()[:3]
+                ovr_val = int(offer.get("ovr", 0))
+                age_val = str(offer.get("age", "")) or "--"
+                offer_amt = int(offer.get("offer_amount", 0))
+                amt_label = f"£{offer_amt / 1_000_000:.1f}M" if offer_amt >= 1_000_000 else f"£{offer_amt // 1_000}K"
+
+                card = pygame.Rect(panel.x + 8, body_y, panel.width - 16, ROW_H_IN)
+                pygame.draw.rect(self.screen, (18, 28, 18), card, border_radius=4)
+                pygame.draw.rect(self.screen, (46, 160, 67), card, 1, border_radius=4)
+
+                ty1_in = card.y + (ROW_H_IN - 7) // 2
+                ty2_in = card.y + (ROW_H_IN - 14) // 2
+                by_in  = card.y + (ROW_H_IN - 22) // 2
+
+                # Badge (offering club)
+                badge_r_in = pygame.Rect(card.x + 10, by_in, 18, 22)
+                self._draw_club_badge({
+                    "template_id": str(offer.get("badge_template_id", "1")),
+                    "primary": str(offer.get("badge_primary", "#2E3A6A")),
+                    "secondary": str(offer.get("badge_secondary", "#F5F5F5")),
+                    "border": str(offer.get("badge_border", "#F5F5F5")),
+                }, badge_r_in)
+
+                draw_text(self.screen, offering_club, card.x + 34, ty1_in, (140, 144, 156), scale=1)
+                draw_text(self.screen, player_name, card.x + 210, ty2_in, (245, 245, 245), scale=2)
+                draw_text(self.screen, position, card.x + 530, ty1_in, (200, 204, 216), scale=1)
+                ovr_color_in = self._attribute_value_color(ovr_val)
+                draw_text(self.screen, "OVR", card.x + 582, ty1_in, (130, 134, 142), scale=1)
+                draw_text(self.screen, str(ovr_val), card.x + 582 + text_width("OVR ", 1), ty1_in, ovr_color_in, scale=1)
+                draw_text(self.screen, "AGE", card.x + 644, ty1_in, (130, 134, 142), scale=1)
+                draw_text(self.screen, age_val, card.x + 644 + text_width("AGE ", 1), ty1_in, (210, 214, 224), scale=1)
+                draw_text(self.screen, amt_label, card.right - 310, ty2_in, (88, 170, 104), scale=2)
+
+                acc_btn = pygame.Rect(card.right - 272, card.y + 4, 120, ROW_H_IN - 8)
+                dec_btn = pygame.Rect(card.right - 144, card.y + 4, 120, ROW_H_IN - 8)
+                self._draw_ui_button(acc_btn, "ACCEPT", (46, 160, 67), (245, 245, 245), f"transfers:accept_inbound:{offer_id}", scale=1)
+                self._draw_ui_button(dec_btn, "DECLINE", (96, 40, 40), (245, 245, 245), f"transfers:decline_inbound:{offer_id}", scale=1)
+
+                body_y += ROW_H_IN + ROW_GAP_IN
+
+        # ── SECTION 2: YOUR OUTGOING NEGOTIATIONS ─────────────────────────
+        body_y += 6
+        draw_text(self.screen, "YOUR NEGOTIATIONS", panel.x + 16, body_y, (248, 187, 32), scale=2)
+        pygame.draw.line(self.screen, (54, 58, 70), (panel.x + 8, body_y + 22), (panel.right - 8, body_y + 22))
+        body_y += 30
+
+        clubs_talks = overview.get("clubs", [])
+        club_by_id_talks = {club["id"]: club for club in clubs_talks}
+
+        ROW_H_T = 34
+        ROW_GAP_T = 6
+
+        CX_BADGE_T = 10
+        CX_CLUB_T  = 34
+        CX_NAME_T  = 210
+        CX_POS_T   = 530
+        CX_OVR_T   = 582
+        CX_AGE_T   = 644
+        CR_STATUS_T = 440
+        CR_OFFER_T  = 310
+        CR_BTN_T    = 188
+
+        if not all_offers:
+            draw_text(self.screen, "NO ACTIVE NEGOTIATIONS — MAKE AN OFFER FROM THE MARKET TAB", panel.x + 16, body_y + 10, (130, 134, 142), scale=1)
+        for offer in all_offers:
+            if body_y + ROW_H_T > panel.bottom - 12:
+                break
+            status_key = str(offer.get("status", "pending"))
+            status_label, status_color = _STATUS_LABEL.get(status_key, (status_key.upper(), (170, 174, 182)))
+            row_rect = pygame.Rect(panel.x + 8, body_y, panel.width - 16, ROW_H_T)
+            row_fill = (18, 28, 18) if status_key == "accepted" else (28, 16, 16) if status_key in {"rejected", "negotiating_failed"} else (20, 23, 28)
+            pygame.draw.rect(self.screen, row_fill, row_rect, border_radius=4)
+            pygame.draw.rect(self.screen, (36, 40, 48), row_rect, 1, border_radius=4)
+
+            ty1 = row_rect.y + (ROW_H_T - 7) // 2
+            ty2 = row_rect.y + (ROW_H_T - 14) // 2
+            by  = row_rect.y + (ROW_H_T - 22) // 2
+
+            sell_cid = str(offer.get("listed_club_id", ""))
+            sell_club = club_by_id_talks.get(sell_cid, {})
+
+            # Badge (selling club)
+            badge_r = pygame.Rect(row_rect.x + CX_BADGE_T, by, 18, 22)
+            if sell_club:
+                self._draw_club_badge(
+                    {
+                        "template_id": sell_club.get("badge_template_id", "1"),
+                        "primary": sell_club.get("badge_primary", "#2E3A6A"),
+                        "secondary": sell_club.get("badge_secondary", "#F5F5F5"),
+                        "border": sell_club.get("badge_border", "#F5F5F5"),
+                    },
+                    badge_r,
+                )
+
+            # Club name
+            club_label = str(sell_club.get("name", "UNKNOWN")).upper()[:26] if sell_club else "UNKNOWN"
+            draw_text(self.screen, club_label, row_rect.x + CX_CLUB_T, ty1, (140, 144, 156), scale=1)
+
+            # Player name
+            name_label = str(offer.get("player_name", "UNKNOWN")).upper()[:24]
+            draw_text(self.screen, name_label, row_rect.x + CX_NAME_T, ty2, (245, 245, 245), scale=2)
+
+            # Position
+            pos_t = str(offer.get("position", "")).upper()[:3]
+            draw_text(self.screen, pos_t, row_rect.x + CX_POS_T, ty1, (200, 204, 216), scale=1)
+
+            # OVR
+            ovr_val = int(offer.get("ovr", 0))
+            ovr_color = self._attribute_value_color(ovr_val)
+            draw_text(self.screen, "OVR", row_rect.x + CX_OVR_T, ty1, (130, 134, 142), scale=1)
+            draw_text(self.screen, str(ovr_val), row_rect.x + CX_OVR_T + text_width("OVR ", 1), ty1, ovr_color, scale=1)
+
+            # AGE
+            age_str_t = str(offer.get("age", "")) or "--"
+            draw_text(self.screen, "AGE", row_rect.x + CX_AGE_T, ty1, (130, 134, 142), scale=1)
+            draw_text(self.screen, age_str_t, row_rect.x + CX_AGE_T + text_width("AGE ", 1), ty1, (210, 214, 224), scale=1)
+
+            # Status
+            draw_text(self.screen, status_label, row_rect.right - CR_STATUS_T, ty1, status_color, scale=1)
+
+            # Offer / asking price
+            amt = int(offer.get("offer_amount", 0))
+            ask = int(offer.get("asking_price", 0))
+            amt_label = f"£{amt / 1_000_000:.1f}M" if amt >= 1_000_000 else f"£{amt // 1_000}K"
+            ask_label = f"£{ask / 1_000_000:.1f}M" if ask >= 1_000_000 else f"£{ask // 1_000}K"
+            offer_str = f"{amt_label} / {ask_label}"
+            draw_text(self.screen, offer_str, row_rect.right - CR_OFFER_T, ty1, (210, 214, 224), scale=1)
+
+            # Negotiate button (when accepted)
+            if status_key == "accepted":
+                attempt = int(offer.get("negotiation_attempt", 1))
+                btn_label = f"NEGOTIATE ({4 - attempt} LEFT)" if attempt > 1 else "NEGOTIATE"
+                neg_btn = pygame.Rect(row_rect.right - CR_BTN_T, row_rect.y + 4, 170, ROW_H_T - 8)
+                self._draw_ui_button(neg_btn, btn_label, (46, 160, 67), (245, 245, 245), f"transfers:negotiate:{offer.get('id', '')}", scale=1)
+            body_y += ROW_H_T + ROW_GAP_T
 
     def _draw_overview_club_finances_tab(
         self,
@@ -3404,8 +3826,61 @@ class Renderer:
         managed_club_id = overview.get("club_id")
         content_y = 74
         content_h = SCREEN_H - content_y - 24
-        panel = pygame.Rect(20, content_y, SCREEN_W - 40, content_h)
+        stats_panel_w = 380
+        panel = pygame.Rect(20, content_y, SCREEN_W - 40 - stats_panel_w - 12, content_h)
+        stats_panel = pygame.Rect(panel.right + 12, content_y, stats_panel_w, content_h)
         self._draw_panel(panel, "STANDINGS", (16, 18, 20), (245, 245, 245))
+        self._draw_panel(stats_panel, "COMPETITION STATS", (16, 18, 20), (245, 245, 245))
+
+        # Competition stats
+        players_by_club = overview.get("players_by_club", {})
+        all_players = [p for pl in players_by_club.values() for p in pl if int(p.get("apps", 0)) > 0]
+        club_by_id = {club["id"]: club for club in clubs}
+        player_club_id: dict[str, str] = {}
+        for cid, pl in players_by_club.items():
+            for p in pl:
+                player_club_id[str(p["id"])] = cid
+        top_scorers = sorted(all_players, key=lambda p: int(p.get("goals", 0)), reverse=True)[:8]
+        top_assists = sorted(all_players, key=lambda p: int(p.get("assists", 0)), reverse=True)[:8]
+        top_rated = sorted(all_players, key=lambda p: float(p.get("avg_rating", 0.0)), reverse=True)[:8]
+        sx = stats_panel.x + 14
+        sy = stats_panel.y + 48
+        def _draw_stats_section(title: str, players: list, stat_key: str, fmt: callable, y_start: int) -> int:
+            draw_text(self.screen, title, sx, y_start, (248, 187, 32), scale=1)
+            pygame.draw.line(self.screen, (54, 58, 70), (sx + text_width(title, 1) + 8, y_start + 7), (stats_panel.right - 14, y_start + 7))
+            y_start += 18
+            for pidx, player in enumerate(players, 1):
+                val = fmt(player.get(stat_key, 0))
+                if val == "0" or val == "0.0":
+                    break
+                name = str(player.get("name", "")).upper()
+                rr = pygame.Rect(sx - 4, y_start - 2, stats_panel.width - 20, 20)
+                pygame.draw.rect(self.screen, (22, 24, 30), rr, border_radius=4)
+                draw_text(self.screen, str(pidx), sx, y_start, (170, 174, 182), scale=1)
+                # Club badge
+                pcid = player_club_id.get(str(player.get("id", "")), "")
+                club_meta = club_by_id.get(pcid)
+                badge_x = sx + 20
+                if club_meta:
+                    badge_rect = pygame.Rect(badge_x, y_start - 1, 14, 16)
+                    self._draw_club_badge(
+                        {
+                            "template_id": club_meta.get("badge_template_id", "1"),
+                            "primary": club_meta.get("badge_primary", "#2E3A6A"),
+                            "secondary": club_meta.get("badge_secondary", "#F5F5F5"),
+                            "border": club_meta.get("badge_border", "#F5F5F5"),
+                        },
+                        badge_rect,
+                    )
+                draw_text(self.screen, name, badge_x + 18, y_start, (245, 245, 245), scale=1)
+                val_label = str(val)
+                draw_text(self.screen, val_label, stats_panel.right - 14 - text_width(val_label, 1), y_start, (248, 187, 32), scale=1)
+                y_start += 22
+            return y_start + 6
+        sy = _draw_stats_section("TOP SCORERS", top_scorers, "goals", str, sy)
+        sy = _draw_stats_section("TOP ASSISTS", top_assists, "assists", str, sy)
+        _draw_stats_section("TOP RATED", top_rated, "avg_rating", lambda v: f"{float(v):.1f}", sy)
+
         table = pygame.Rect(panel.x + 14, panel.y + 48, panel.width - 28, panel.height - 62)
         pygame.draw.rect(self.screen, (18, 20, 26), table, border_radius=8)
         pygame.draw.rect(self.screen, (50, 52, 58), table, 1, border_radius=8)
@@ -3494,6 +3969,116 @@ class Renderer:
             pygame.draw.rect(self.screen, (10, 12, 16), tooltip, border_radius=5)
             pygame.draw.rect(self.screen, (248, 187, 32), tooltip, 1, border_radius=5)
             draw_text(self.screen, text, tooltip.x + 9, tooltip.y + 10, (245, 245, 245), scale=1)
+
+    def _draw_overview_squad_roles_tab(
+        self,
+        view: dict,
+        overview: dict,
+        primary: Tuple[int, int, int],
+        secondary: Tuple[int, int, int],
+    ) -> None:
+        squad_draft = view.get("squad_draft", {})
+        managed_club_id = overview.get("club_id")
+        players = overview.get("players_by_club", {}).get(managed_club_id, [])
+        roles: dict = squad_draft.get("roles", {})
+        selected_role: str | None = squad_draft.get("roles_selected_role")
+
+        ROLES_DEF = [
+            ("captain",           "Captain"),
+            ("penalty_taker",     "Penalty Taker"),
+            ("short_free_kick",   "Short Free-kick Taker"),
+            ("long_free_kick",    "Long Free-kick Taker"),
+            ("left_corner",       "Left Corner Taker"),
+            ("right_corner",      "Right Corner Taker"),
+            ("left_throw_in",     "Left Throw-in Taker"),
+            ("right_throw_in",    "Right Throw-in Taker"),
+        ]
+
+        players_by_id = {str(p["id"]): p for p in players}
+
+        SCREEN_W = self.screen.get_width()
+        SCREEN_H = self.screen.get_height()
+        panel_top = 64
+        panel_bottom = SCREEN_H - 14
+        left_w = 380
+        right_w = SCREEN_W - 40 - left_w - 10
+        left_panel = pygame.Rect(20, panel_top, left_w, panel_bottom - panel_top)
+        right_panel = pygame.Rect(left_panel.right + 10, panel_top, right_w, panel_bottom - panel_top)
+
+        self._draw_panel(left_panel)
+        self._draw_panel(right_panel)
+
+        GOLD = (248, 187, 32)
+        MUTED = (130, 134, 150)
+        BRIGHT = (220, 224, 235)
+        ROW_H = 36
+        row_y = left_panel.y + 12
+        draw_text(self.screen, "SQUAD ROLES", left_panel.x + 14, row_y, GOLD, scale=2)
+        row_y += 28
+        pygame.draw.line(self.screen, (54, 58, 70), (left_panel.x + 10, row_y), (left_panel.right - 10, row_y))
+        row_y += 8
+
+        for role_key, role_label in ROLES_DEF:
+            if row_y + ROW_H > left_panel.bottom - 8:
+                break
+            assigned_id = roles.get(role_key)
+            assigned_player = players_by_id.get(str(assigned_id)) if assigned_id else None
+            is_selected = selected_role == role_key
+            rr = pygame.Rect(left_panel.x + 8, row_y, left_panel.width - 16, ROW_H)
+            bg = (44, 52, 72) if is_selected else (30, 32, 40)
+            pygame.draw.rect(self.screen, bg, rr, border_radius=5)
+            if is_selected:
+                pygame.draw.rect(self.screen, GOLD, rr, 1, border_radius=5)
+            draw_text(self.screen, role_label.upper(), rr.x + 10, rr.y + 6, GOLD if is_selected else MUTED, scale=1)
+            if assigned_player:
+                name_text = short_display_name(assigned_player["name"], 16)
+                draw_text(self.screen, name_text, rr.x + 10, rr.y + 20, BRIGHT, scale=1)
+                # Clear button
+                clear_rect = pygame.Rect(rr.right - 46, rr.y + 10, 38, 16)
+                self._draw_ui_button(clear_rect, "CLEAR", (80, 36, 36), (220, 160, 160), f"squad_roles:clear:{role_key}", scale=1)
+            else:
+                draw_text(self.screen, "— Not set —", rr.x + 10, rr.y + 20, (80, 84, 96), scale=1)
+            self._register_ui(f"squad_roles:select:{role_key}", rr)
+            row_y += ROW_H + 4
+
+        # Right panel: player picker (shown when a role is selected)
+        rx = right_panel.x + 14
+        ry = right_panel.y + 12
+        if selected_role:
+            role_label_text = next((lbl for k, lbl in ROLES_DEF if k == selected_role), selected_role)
+            draw_text(self.screen, f"SELECT — {role_label_text.upper()}", rx, ry, GOLD, scale=2)
+            ry += 28
+            pygame.draw.line(self.screen, (54, 58, 70), (right_panel.x + 10, ry), (right_panel.right - 10, ry))
+            ry += 10
+            P_ROW_H = 28
+            for p in players:
+                if ry + P_ROW_H > right_panel.bottom - 8:
+                    break
+                pid = str(p["id"])
+                is_assigned = roles.get(selected_role) == pid
+                pr = pygame.Rect(right_panel.x + 8, ry, right_panel.width - 16, P_ROW_H)
+                bg2 = (36, 58, 36) if is_assigned else (26, 28, 36)
+                pygame.draw.rect(self.screen, bg2, pr, border_radius=4)
+                if is_assigned:
+                    pygame.draw.rect(self.screen, (80, 180, 80), pr, 1, border_radius=4)
+                pos_col = (140, 144, 160)
+                draw_text(self.screen, p.get("position", "")[:2], pr.x + 8, pr.y + 9, pos_col, scale=1)
+                draw_text(self.screen, short_display_name(p["name"], 18), pr.x + 34, pr.y + 9, BRIGHT, scale=1)
+                ovr_text = f"OVR {p.get('ovr', 0)}"
+                draw_text(self.screen, ovr_text, pr.right - text_width(ovr_text, 1) - 10, pr.y + 9, MUTED, scale=1)
+                self._register_ui(f"squad_roles:assign:{pid}", pr)
+                ry += P_ROW_H + 3
+        else:
+            draw_text(self.screen, "ROLE DETAILS", rx, ry, GOLD, scale=2)
+            ry += 28
+            pygame.draw.line(self.screen, (54, 58, 70), (right_panel.x + 10, ry), (right_panel.right - 10, ry))
+            ry += 16
+            draw_text(self.screen, "Select a role on the left to assign a player.", rx, ry, MUTED, scale=1)
+            ry += 20
+            # Summary of assigned roles
+            assigned_count = sum(1 for k, _ in ROLES_DEF if k in roles)
+            total_count = len(ROLES_DEF)
+            draw_text(self.screen, f"{assigned_count} / {total_count} roles assigned", rx, ry, BRIGHT, scale=1)
 
     def _draw_overview_tactics_tab(
         self,
@@ -3604,8 +4189,9 @@ class Renderer:
         pygame.draw.line(self.screen, (54, 58, 70), (list_rect.x + 10, list_rect.y + 28), (list_rect.right - 10, list_rect.y + 28))
 
         row_y = list_rect.y + 36
-        row_h = 24
-        for player in players[:18]:
+        _avail_h = list_rect.bottom - 4 - row_y
+        row_h = max(18, _avail_h // max(1, len(players))) if players else 24
+        for player in players:
             player_id = str(player["id"])
             row = pygame.Rect(list_rect.x + 8, row_y, list_rect.width - 16, row_h)
             active = player_id == selected_player_id
@@ -3614,21 +4200,25 @@ class Renderer:
             if active:
                 pygame.draw.rect(self.screen, (84, 88, 98), row, 1, border_radius=6)
             name_color = (245, 245, 245) if bool(player.get("available", True)) else (190, 154, 154)
-            draw_text(self.screen, player["position"][:2], row.x + 8, row.y + 7, (170, 174, 182), scale=1)
-            draw_text(self.screen, short_display_name(player["name"], 14), row.x + 38, row.y + 7, name_color, scale=1)
+            text_y = row.y + max(2, (row_h - 10) // 2)
+            draw_text(self.screen, player["position"][:2], row.x + 8, text_y, (170, 174, 182), scale=1)
+            draw_text(self.screen, short_display_name(player["name"], 14), row.x + 38, text_y, name_color, scale=1)
+            t_age = int(player.get("age", 0) or 0)
+            if t_age:
+                draw_text(self.screen, str(t_age), row.right - 46 - text_width(str(t_age), 1), text_y, (120, 124, 140), scale=1)
             stm_val = int(player.get("current_stamina", 100) or 100)
             stm_color = (88, 170, 104) if stm_val >= 80 else (232, 190, 72) if stm_val >= 60 else (206, 96, 84)
             stm_text = str(stm_val)
-            draw_text(self.screen, stm_text, row.right - 8 - text_width(stm_text, 1), row.y + 7, stm_color, scale=1)
+            draw_text(self.screen, stm_text, row.right - 8 - text_width(stm_text, 1), text_y, stm_color, scale=1)
             self._register_ui(f"squad:select_player:{player_id}", row)
-            row_y += row_h + 4
-            if row_y + row_h > list_rect.bottom - 8:
-                break
+            row_y += row_h
 
         if selected_player:
             player_id = str(selected_player["id"])
             draw_text(self.screen, selected_player["name"].upper()[:28], detail_rect.x + 14, detail_rect.y + 14, (248, 187, 32), scale=2)
-            meta = f"{selected_player['position']}  OVR {selected_player['ovr']}  STM {int(selected_player.get('current_stamina', 100))}"
+            _tr_age = int(selected_player.get("age", 0) or 0)
+            _age_part = f"  AGE {_tr_age}" if _tr_age else ""
+            meta = f"{selected_player['position']}  OVR {selected_player['ovr']}{_age_part}  STM {int(selected_player.get('current_stamina', 100))}"
             draw_text(self.screen, meta, detail_rect.x + 14, detail_rect.y + 42, (210, 214, 224), scale=1)
             pygame.draw.line(self.screen, (54, 58, 70), (detail_rect.x + 10, detail_rect.y + 58), (detail_rect.right - 10, detail_rect.y + 58))
 
@@ -3852,9 +4442,6 @@ class Renderer:
         block(2, 12, 9, 3, shirt_color)
         block(1, 13, 2, 2, trim)
         block(10, 13, 2, 2, trim)
-        number = "".join(ch for ch in seed_text if ch.isdigit())[-2:] or str(int(player.get("ovr", 0) or 0))[-2:]
-        text_color = self._shirt_number_color(shirt_color)
-        draw_text(self.screen, number, rect.centerx - text_width(number, 1) // 2, origin_y + 12 * px + 3, text_color, scale=1)
 
     def _draw_slider_control(
         self,
@@ -4313,7 +4900,6 @@ class Renderer:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 170))
         self.screen.blit(overlay, (0, 0))
-        # clicking outside the panel closes it — register the overlay area as the backdrop
         severity_colors = {
             "success": (88, 170, 104),
             "warning": (232, 190, 72),
@@ -4322,6 +4908,10 @@ class Renderer:
         }
         severity = str(modal.get("severity", "info"))
         accent = severity_colors.get(severity, severity_colors["info"])
+        totw_data = modal.get("totw_data")
+        if totw_data:
+            self._draw_totw_modal(modal, totw_data, accent)
+            return
         panel = pygame.Rect((SCREEN_W - 640) // 2, (SCREEN_H - 380) // 2, 640, 380)
         self._draw_panel(panel, None)
         header_rect = pygame.Rect(panel.x, panel.y, panel.width, 48)
@@ -4339,7 +4929,7 @@ class Renderer:
         words = body_text.split()
         lines: list[str] = []
         current = ""
-        char_limit = (panel.width - 32) // 6  # scale=1: each char = 6px
+        char_limit = (panel.width - 32) // 6
         for word in words:
             test = (current + " " + word).strip()
             if len(test) <= char_limit:
@@ -4354,6 +4944,125 @@ class Renderer:
         for line in lines[:14]:
             draw_text(self.screen, line.upper(), panel.x + 16, body_y, (220, 224, 232), scale=1)
             body_y += 16
+        close_rect2 = pygame.Rect(panel.x + (panel.width - 120) // 2, panel.bottom - 44, 120, 32)
+        self._draw_ui_button(close_rect2, "CLOSE", (36, 52, 96), (245, 245, 245), "modal:close", scale=1)
+
+    def _draw_totw_modal(self, modal: dict, totw_data: dict, accent: Tuple[int, int, int]) -> None:
+        panel_w = min(SCREEN_W - 80, 920)
+        panel_h = min(SCREEN_H - 80, 660)
+        panel = pygame.Rect((SCREEN_W - panel_w) // 2, (SCREEN_H - panel_h) // 2, panel_w, panel_h)
+        self._draw_panel(panel, None)
+        header_rect = pygame.Rect(panel.x, panel.y, panel.width, 48)
+        pygame.draw.rect(self.screen, (248, 187, 32), header_rect, border_top_left_radius=8, border_top_right_radius=8)
+        title = str(modal.get("title", "TEAM OF THE WEEK")).upper()
+        draw_text(self.screen, title, panel.x + 16, panel.y + 14, (12, 12, 14), scale=2)
+        close_rect = pygame.Rect(panel.right - 42, panel.y + 10, 28, 28)
+        pygame.draw.rect(self.screen, (20, 23, 28), close_rect, border_radius=4)
+        draw_text(self.screen, "X", close_rect.x + 9, close_rect.y + 7, (245, 245, 245), scale=2)
+        self._register_ui("modal:close", close_rect)
+
+        players = list(totw_data.get("players", []))
+
+        # Separate players into display groups using actual position field
+        gk_players = [p for p in players if p.get("slot") == "GK"]
+        lb_players = [p for p in players if p.get("slot") == "FB" and str(p.get("position", "")).upper() in ("LB",)]
+        rb_players = [p for p in players if p.get("slot") == "FB" and str(p.get("position", "")).upper() in ("RB",)]
+        # FB fallback: if position unrecognised, split by order
+        fb_all = [p for p in players if p.get("slot") == "FB"]
+        if not lb_players and not rb_players:
+            lb_players = fb_all[:1]
+            rb_players = fb_all[1:]
+        cb_players = [p for p in players if p.get("slot") == "CB"]
+        dm_players = [p for p in players if p.get("slot") == "DM"]
+        # WG: split left (LW/LM) and right (RW/RM)
+        wg_all = [p for p in players if p.get("slot") == "WG"]
+        lw_players = [p for p in wg_all if str(p.get("position", "")).upper() in ("LW", "LM")]
+        rw_players = [p for p in wg_all if str(p.get("position", "")).upper() in ("RW", "RM")]
+        if not lw_players and not rw_players:
+            lw_players = wg_all[:1]
+            rw_players = wg_all[1:]
+        # AM: players in CM slot with actual position AM
+        am_players = [p for p in players if p.get("slot") == "CM" and str(p.get("position", "")).upper() == "AM"]
+        cm_players = [p for p in players if p.get("slot") == "CM" and str(p.get("position", "")).upper() != "AM"]
+        # If no explicit AM, pull one CM to act as AM in the WG row
+        if not am_players and cm_players:
+            am_players = cm_players[:1]
+            cm_players = cm_players[1:]
+        st_players = [p for p in players if p.get("slot") == "ST"]
+
+        # 6 rows top-to-bottom: ST | LW-AM-RW | CM | DM | LB-CB-CB-RB | GK
+        row_groups = [
+            st_players,
+            lw_players + am_players + rw_players,
+            cm_players,
+            dm_players,
+            lb_players + cb_players + rb_players,
+            gk_players,
+        ]
+
+        pitch_x = panel.x + 16
+        pitch_y = panel.y + 58
+        pitch_w = panel_w - 32
+        pitch_h = panel_h - 88
+        card_w = 110
+        card_h = 92
+        row_count = len(row_groups)
+        row_h_total = pitch_h // row_count
+
+        for row_idx, row_players in enumerate(row_groups):
+            if not row_players:
+                continue
+            count = len(row_players)
+            spacing = pitch_w // (count + 1)
+            cy = pitch_y + row_idx * row_h_total + (row_h_total - card_h) // 2
+            for col_idx, p in enumerate(row_players):
+                cx = pitch_x + spacing * (col_idx + 1) - card_w // 2
+                is_managed = bool(p.get("is_managed", False))
+                border_col = (248, 187, 32) if is_managed else (54, 58, 70)
+                fill_col = (28, 36, 52) if is_managed else (22, 25, 32)
+                card_rect = pygame.Rect(cx, cy, card_w, card_h)
+                pygame.draw.rect(self.screen, fill_col, card_rect, border_radius=8)
+                pygame.draw.rect(self.screen, border_col, card_rect, 2 if is_managed else 1, border_radius=8)
+                # Position badge (top-left)
+                pos_badge = pygame.Rect(cx + 5, cy + 5, 28, 14)
+                pygame.draw.rect(self.screen, border_col, pos_badge, border_radius=3)
+                pos_text = str(p.get("position", ""))[:3]
+                draw_text(self.screen, pos_text, pos_badge.x + (pos_badge.width - text_width(pos_text, 1)) // 2, pos_badge.y + 2, (12, 12, 14) if is_managed else (245, 245, 245), scale=1)
+                # Rating badge (top-right)
+                rating_val = float(p.get("rating", 0.0))
+                rating_text = f"{rating_val:.1f}"
+                rating_bg = (58, 120, 84) if rating_val >= 8.0 else (46, 90, 150) if rating_val >= 7.0 else (80, 60, 30)
+                rb = pygame.Rect(cx + card_w - 34, cy + 5, 29, 14)
+                pygame.draw.rect(self.screen, rating_bg, rb, border_radius=3)
+                draw_text(self.screen, rating_text, rb.x + (rb.width - text_width(rating_text, 1)) // 2, rb.y + 2, (245, 245, 245), scale=1)
+                # Pixel player face (centered, rows 2–5 of card)
+                face_rect = pygame.Rect(cx + (card_w - 44) // 2, cy + 22, 44, 44)
+                shirt_col = hex_to_rgb(str(p.get("badge_primary", "#2E3A6A")), (46, 58, 106))
+                self._draw_pixel_player_face(face_rect, p, shirt_col)
+                # Player surname
+                name = str(p.get("name", ""))
+                name_parts = name.split()
+                display_name = name_parts[-1].upper() if name_parts else name.upper()
+                display_name = display_name[:11]
+                name_col = (248, 187, 32) if is_managed else (240, 240, 245)
+                draw_text(self.screen, display_name, cx + (card_w - text_width(display_name, 1)) // 2, cy + 68, name_col, scale=1)
+                # Club badge (small, bottom-left) + club abbreviation
+                badge_rect = pygame.Rect(cx + 5, cy + 76, 14, 14)
+                self._draw_club_badge({
+                    "template_id": str(p.get("badge_template_id", "1")),
+                    "primary": str(p.get("badge_primary", "#2E3A6A")),
+                    "secondary": str(p.get("badge_secondary", "#F5F5F5")),
+                    "border": str(p.get("badge_border", "#F5F5F5")),
+                }, badge_rect)
+                raw_club = str(p.get("club", ""))
+                _generic = {"united", "hotspur", "city"}
+                _parts = raw_club.split()
+                _filtered = [w for w in _parts if w.lower() not in _generic] or _parts
+                club_abbr = " ".join(_filtered[:2])[:12].upper()
+                draw_text(self.screen, club_abbr, badge_rect.right + 4, cy + 78, (160, 164, 174), scale=1)
+
+        close_btn = pygame.Rect(panel.x + (panel_w - 120) // 2, panel.bottom - 40, 120, 28)
+        self._draw_ui_button(close_btn, "CLOSE", (36, 52, 96), (245, 245, 245), "modal:close", scale=1)
 
     def draw_modal(self, modal: dict) -> None:
         self.ui_click_targets = {}

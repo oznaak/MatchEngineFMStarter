@@ -410,6 +410,7 @@ def load_league(path: Path) -> Dict[str, Club]:
                     suspension_matches_remaining=max(0, int(p.get("suspension_matches_remaining", 0))),
                     injury_days_remaining=max(0, int(p.get("injury_days_remaining", 0))),
                     injury_count=max(0, int(p.get("injury_count", 0))),
+                    age=max(0, int(p.get("age", 0))),
                 )
             )
         clubs[club_data["id"].upper()] = Club(
@@ -435,7 +436,7 @@ def _lineup_from_saved_ids(club: Club, formation_name: str) -> Tuple[List[Player
     used_ids = set(club.lineup_xi)
 
     bench_ids = [player_id for player_id in club.lineup_bench if player_id in players_by_id and player_id not in used_ids]
-    remaining_ids = [player.id for player in club.players if player.id not in used_ids and player.id not in bench_ids]
+    remaining_ids = [player.id for player in club.players if player.id not in used_ids and player.id not in bench_ids and player.id in players_by_id]
     bench = [players_by_id[player_id] for player_id in bench_ids + remaining_ids]
     if len(xi) != len(formation_slots(formation_name)):
         return None

@@ -33,6 +33,9 @@ from engine.db import (
     withdraw_transfer_listing,
     get_accepted_offers,
     complete_transfer,
+    submit_player_negotiation,
+    accept_inbound_offer,
+    decline_inbound_offer,
     apply_matchday_revenue,
     get_finance_transactions,
     save_fixture_result,
@@ -41,6 +44,7 @@ from engine.db import (
     save_save_club_setup,
     save_training_settings,
     set_active_save_id,
+    trigger_totw_for_match_day,
 )
 from engine.loader import available_formations, pick_best_xi
 from engine.match_engine import MatchEngine
@@ -215,6 +219,7 @@ class ManagerGameApp:
         self.match_sub_draft_xi_ids: list[str] = []
         self.match_sub_draft_bench_ids: list[str] = []
         self.match_pending_substitutions: list[tuple[str, str]] = []
+        self.match_pending_position_swaps: list[tuple[str, str]] = []
         self.match_sub_animation: dict | None = None
         self.match_instruction_mode: str | None = None
         self.match_instruction_restore_paused = False
@@ -246,6 +251,11 @@ class ManagerGameApp:
         self.squad_draft_instructions = dict(DEFAULT_TEAM_INSTRUCTIONS)
         self.squad_draft_player_instructions: dict[str, dict[str, int]] = {}
         self.fixtures_page: int = 1
+        self.squad_show_reserves: bool = False
+        self.squad_show_unavailable: bool = False
+        self.squad_pending_reserve_id: str | None = None
+        self.squad_roles: dict[str, str] = {}
+        self.squad_roles_selected_role: str | None = None
         self.transfer_data: dict = {}
         self.transfer_negotiate_offer_id: str | None = None
         self._reload_state(apply_display=True)
@@ -434,7 +444,7 @@ class ManagerGameApp:
         setup = setups.get(club_id or "", {})
         self.squad_draft_formation = str(setup.get("formation", "4-3-3"))
         self.squad_draft_xi_ids = list(setup.get("xi_ids", []))
-        self.squad_draft_bench_ids = list(setup.get("bench_ids", []))
+        self.squad_draft_bench_ids = list(setup.get("bench_ids", []))[:9]
         self.squad_draft_instructions = normalize_team_instructions(setup.get("instructions"))
         self.squad_draft_player_instructions = {
             str(player_id): {
@@ -460,7 +470,14 @@ class ManagerGameApp:
         if self.active_save_id is None or not self.overview:
             return
         availability = self._squad_player_availability()
-        if not availability or all(availability.get(player_id, True) for player_id in self.squad_draft_xi_ids):
+        if not availability:
+            return
+        club_player_ids = set(availability.keys())
+        # Regenerate if any XI/bench player no longer belongs to the club (sold/transferred)
+        # or if any XI player is unavailable (injured/suspended).
+        has_missing = any(pid not in club_player_ids for pid in self.squad_draft_xi_ids + self.squad_draft_bench_ids if pid)
+        has_unavailable_xi = any(not availability.get(pid, True) for pid in self.squad_draft_xi_ids)
+        if not has_missing and not has_unavailable_xi:
             return
         club_id = self._managed_club_id()
         if not club_id:
@@ -471,8 +488,9 @@ class ManagerGameApp:
         if not club:
             return
         xi, bench = pick_best_xi(club, formation_name=self.squad_draft_formation)
+        xi_id_set = {player.id for player in xi}
         self.squad_draft_xi_ids = [player.id for player in xi]
-        self.squad_draft_bench_ids = [player.id for player in bench]
+        self.squad_draft_bench_ids = [player.id for player in bench if player.id not in xi_id_set][:9]
 
     def _ensure_squad_selected_player(self) -> None:
         active_ids = [player_id for player_id in self.squad_draft_xi_ids + self.squad_draft_bench_ids if player_id]
@@ -521,13 +539,16 @@ class ManagerGameApp:
         club = clubs.get(club_id)
         if not club:
             return
-        club.formation = formation
-        club.lineup_xi = []
-        club.lineup_bench = []
-        xi, bench = pick_best_xi(club, formation_name=formation)
         self.squad_draft_formation = formation
-        self.squad_draft_xi_ids = [player.id for player in xi]
-        self.squad_draft_bench_ids = [player.id for player in bench]
+        # Preserve the user's existing lineup — only regenerate if no XI is set yet
+        if not self.squad_draft_xi_ids:
+            club.formation = formation
+            club.lineup_xi = []
+            club.lineup_bench = []
+            xi, bench = pick_best_xi(club, formation_name=formation)
+            xi_id_set = {player.id for player in xi}
+            self.squad_draft_xi_ids = [player.id for player in xi]
+            self.squad_draft_bench_ids = [player.id for player in bench if player.id not in xi_id_set][:9]
         self._ensure_squad_selected_player()
         self._persist_squad_draft()
 
@@ -864,6 +885,34 @@ class ManagerGameApp:
         state = self.match_engine.state
         return state.awaiting_start or state.restart_timer > 0.0 or state.restart_mode == "kickoff_setup"
 
+    def _apply_pending_position_swaps(self) -> None:
+        side = self._managed_match_side()
+        if not self.match_engine or not side or not self.match_pending_position_swaps:
+            return
+        match_team = self.match_engine.home if side == "home" else self.match_engine.away
+        seen: set[frozenset[str]] = set()
+        for id_a, id_b in self.match_pending_position_swaps:
+            pair = frozenset([id_a, id_b])
+            if pair in seen:
+                continue
+            seen.add(pair)
+            idx_a = next((i for i, p in enumerate(match_team.xi) if p.profile.id == id_a), None)
+            idx_b = next((i for i, p in enumerate(match_team.xi) if p.profile.id == id_b), None)
+            if idx_a is not None and idx_b is not None:
+                match_team.xi[idx_a], match_team.xi[idx_b] = match_team.xi[idx_b], match_team.xi[idx_a]
+                # Swap slot label and home position so the engine places them correctly
+                pa = match_team.xi[idx_a]
+                pb = match_team.xi[idx_b]
+                pa.slot, pb.slot = pb.slot, pa.slot
+                pa.home_x, pb.home_x = pb.home_x, pa.home_x
+                pa.home_y, pb.home_y = pb.home_y, pa.home_y
+        self.match_pending_position_swaps = []
+        self.match_instruction_animation = {
+            "message": "INSTRUCTIONS CHANGED!",
+            "duration": 1.2,
+            "elapsed": 0.0,
+        }
+
     def _start_match_sub_animation(self) -> None:
         side = self._managed_match_side()
         if not self.match_engine or not side or not self.match_pending_substitutions:
@@ -925,6 +974,15 @@ class ManagerGameApp:
             return
         if target_id in team.subbed_out_ids:
             return
+        if source_id in self.match_sub_draft_xi_ids and target_id in self.match_sub_draft_xi_ids:
+            # Position swap between two starters — update draft only, apply on Confirm + ball stoppage
+            si = self.match_sub_draft_xi_ids.index(source_id)
+            ti = self.match_sub_draft_xi_ids.index(target_id)
+            self.match_sub_draft_xi_ids[si], self.match_sub_draft_xi_ids[ti] = (
+                self.match_sub_draft_xi_ids[ti],
+                self.match_sub_draft_xi_ids[si],
+            )
+            return
         if source_id in self.match_sub_draft_xi_ids and target_id in self.match_sub_draft_bench_ids:
             xi_index = self.match_sub_draft_xi_ids.index(source_id)
             bench_index = self.match_sub_draft_bench_ids.index(target_id)
@@ -950,13 +1008,24 @@ class ManagerGameApp:
         side = self._managed_match_side()
         if not self.match_engine or not team or not side or not self.match_sub_mode:
             return
-        changes = [
-            (player.profile.id, draft_id)
-            for player, draft_id in zip(team.xi, self.match_sub_draft_xi_ids)
-            if player.profile.id != draft_id
-        ]
-        if changes:
-            self.match_pending_substitutions = changes
+        current_xi_ids = {player.profile.id for player in team.xi}
+        subs: list[tuple[str, str]] = []
+        pos_swap_pairs: set[frozenset[str]] = set()
+        pos_swaps: list[tuple[str, str]] = []
+        for player, draft_id in zip(team.xi, self.match_sub_draft_xi_ids):
+            if player.profile.id == draft_id:
+                continue
+            if draft_id in current_xi_ids:
+                pair = frozenset([player.profile.id, draft_id])
+                if pair not in pos_swap_pairs:
+                    pos_swap_pairs.add(pair)
+                    pos_swaps.append((player.profile.id, draft_id))
+            else:
+                subs.append((player.profile.id, draft_id))
+        if subs:
+            self.match_pending_substitutions = subs
+        if pos_swaps:
+            self.match_pending_position_swaps = pos_swaps
         self._reset_match_sub_state(restore_pause=True)
 
     def _start_next_match(self) -> None:
@@ -965,6 +1034,24 @@ class ManagerGameApp:
         fixture = self.overview.get("today_fixture")
         if not fixture:
             return
+        # Validate XI and bench sizes before starting
+        managed_id = self._managed_club_id()
+        if managed_id and (fixture.get("home_club_id") == managed_id or fixture.get("away_club_id") == managed_id):
+            availability = self._squad_player_availability()
+            valid_xi = [pid for pid in self.squad_draft_xi_ids if pid and pid in availability]
+            valid_bench = [pid for pid in self.squad_draft_bench_ids if pid and pid in availability]
+            errors = []
+            if len(valid_xi) < 11:
+                errors.append(f"Starting XI needs 11 players ({len(valid_xi)} selected).")
+            if len(valid_bench) < 9:
+                errors.append(f"Bench needs 9 players ({len(valid_bench)} selected).")
+            if errors:
+                self.modal = {
+                    "title": "SQUAD INCOMPLETE",
+                    "message": " ".join(errors) + " Go to Squad/Tactics to fix your lineup.",
+                    "buttons": [{"label": "GO TO TACTICS", "action": "match_preview:plan"}, {"label": "CLOSE", "action": "modal:close"}],
+                }
+                return
         with db_session(self.db_path) as conn:
             bootstrap_database(conn)
             clubs = load_clubs_from_db(conn, save_id=self.active_save_id)
@@ -1172,6 +1259,12 @@ class ManagerGameApp:
                     report=self._build_match_report(engine, other),
                 )
             save_condition_state_to_conn(conn, season_clubs, self.match_current_day, save_id=self.active_save_id)
+            # Generate TOTW immediately so it appears on the next overview load
+            # (uses virtual date = fixture_date + 2 to satisfy the 2-day check)
+            fixture_date_str = str(fixture.get("fixture_date", ""))
+            if fixture_date_str and self.overview:
+                managed_id_str = str(self.overview.get("club_id", ""))
+                trigger_totw_for_match_day(conn, self.active_save_id, fixture_date_str, managed_id_str or None)
             conn.commit()
         self.match_condition_saved = True
         self.match_engine = None
@@ -1182,6 +1275,7 @@ class ManagerGameApp:
         self._reset_match_sub_state(restore_pause=False)
         self._reset_match_instruction_state(restore_pause=False)
         self.match_pending_substitutions = []
+        self.match_pending_position_swaps = []
         self.match_sub_animation = None
         self.match_pending_instruction_update = None
         self.match_instruction_animation = None
@@ -1189,6 +1283,7 @@ class ManagerGameApp:
         self.fixture_report = None
         self.fixture_report_selected_player_id = None
         self.screen = "overview"
+        self.overview_tab = "overview"
         self._reload_state()
 
     def _forfeit_current_match(self) -> None:
@@ -1453,8 +1548,13 @@ class ManagerGameApp:
                 else:
                     self.overview_tab = "matches_standings"
                 return
-            if tab in {"transfers", "transfers_market", "transfers_listings"}:
-                self.overview_tab = "transfers_market" if tab in {"transfers", "transfers_market"} else "transfers_listings"
+            if tab in {"transfers", "transfers_market", "transfers_listings", "transfers_talks"}:
+                if tab in {"transfers", "transfers_market"}:
+                    self.overview_tab = "transfers_market"
+                elif tab == "transfers_listings":
+                    self.overview_tab = "transfers_listings"
+                else:
+                    self.overview_tab = "transfers_talks"
                 self._reload_transfer_data()
                 return
             if tab in {"club", "club_finances"}:
@@ -1491,6 +1591,57 @@ class ManagerGameApp:
         if action.startswith("squad:instruction:"):
             _, _, key, value = action.split(":", 3)
             self._change_squad_instruction(key, value)
+            return
+        if action.startswith("squad_roles:select:"):
+            role_key = action.split(":", 2)[2]
+            self.squad_roles_selected_role = role_key if self.squad_roles_selected_role != role_key else None
+            return
+        if action.startswith("squad_roles:assign:"):
+            player_id = action.split(":", 2)[2]
+            if self.squad_roles_selected_role:
+                self.squad_roles[self.squad_roles_selected_role] = player_id
+                self.squad_roles_selected_role = None
+            return
+        if action.startswith("squad_roles:clear:"):
+            role_key = action.split(":", 2)[2]
+            self.squad_roles.pop(role_key, None)
+            return
+        if action == "squad:show_bench":
+            self.squad_show_reserves = False
+            self.squad_show_unavailable = False
+            return
+        if action == "squad:toggle_reserves":
+            self.squad_show_reserves = not self.squad_show_reserves
+            self.squad_show_unavailable = False
+            return
+        if action == "squad:show_unavailable":
+            self.squad_show_unavailable = True
+            self.squad_show_reserves = False
+            return
+        if action.startswith("squad:reserve_to_bench:"):
+            reserve_id = action.split(":", 2)[2]
+            if reserve_id not in self.squad_draft_bench_ids:
+                bench_len = len(self.squad_draft_bench_ids)
+                if bench_len < 9:
+                    self.squad_draft_bench_ids.append(reserve_id)
+                    self._persist_squad_draft()
+                else:
+                    # Bench full — prompt user to choose who to drop
+                    self.squad_pending_reserve_id = reserve_id
+                    self.squad_show_reserves = False
+                    self.squad_show_unavailable = False  # switch to bench view to pick
+            return
+        if action.startswith("squad:swap_with_reserve:"):
+            bench_player_id = action.split(":", 2)[2]
+            reserve_id = self.squad_pending_reserve_id
+            if reserve_id and bench_player_id in self.squad_draft_bench_ids:
+                idx = self.squad_draft_bench_ids.index(bench_player_id)
+                self.squad_draft_bench_ids[idx] = reserve_id
+                self.squad_pending_reserve_id = None
+                self._persist_squad_draft()
+            return
+        if action == "squad:cancel_reserve_swap":
+            self.squad_pending_reserve_id = None
             return
         if action.startswith("squad:select_player:"):
             self.squad_selected_player_id = action.split(":", 2)[2]
@@ -1577,10 +1728,19 @@ class ManagerGameApp:
                 return
             msg = next((m for m in (self.overview or {}).get("messages", []) if m.get("id") == msg_id), None)
             if msg:
+                body_str = str(msg.get("body", ""))
+                totw_data = None
+                try:
+                    parsed = json.loads(body_str)
+                    if isinstance(parsed, dict) and parsed.get("type") == "totw":
+                        totw_data = parsed
+                except (ValueError, TypeError):
+                    pass
                 self.modal = {
                     "type": "news_detail",
                     "title": str(msg.get("title", "MESSAGE")).upper(),
-                    "body": str(msg.get("body", "")),
+                    "body": body_str,
+                    "totw_data": totw_data,
                     "category": str(msg.get("category", "")),
                     "severity": str(msg.get("severity", "info")),
                     "date": str(msg.get("date_text", "")),
@@ -1601,12 +1761,50 @@ class ManagerGameApp:
                     "buttons": [{"label": "OK", "action": "modal:close"}],
                 }
                 return
+            club_id = str(self.overview.get("club_id", ""))
+            all_players = self.overview.get("players_by_club", {}).get(club_id, [])
+            player = next((p for p in all_players if str(p.get("id", "")) == player_id), None)
+            if player is None:
+                return
+            from engine.db import _compute_asking_price
+            ovr = int(player.get("ovr", 70))
+            market_price = _compute_asking_price(ovr)
+            def _fmtp(v: int) -> str:
+                return f"£{v // 1_000_000}M" if v >= 1_000_000 else f"£{v // 1_000}K"
+            low_price = max(500_000, round(market_price * 0.70 / 500_000) * 500_000)
+            high_price = round(market_price * 1.50 / 500_000) * 500_000
+            self.modal = {
+                "type": "confirm",
+                "title": "LIST ON MARKET",
+                "message": f"{str(player.get('name', '')).upper()}\nMARKET VALUE: {_fmtp(market_price)}\nSET YOUR ASKING PRICE:",
+                "buttons": [
+                    {"label": f"{_fmtp(low_price)} (QUICK SALE)", "action": f"squad:confirm_list:{player_id}:{low_price}"},
+                    {"label": f"{_fmtp(market_price)} (MARKET)", "action": f"squad:confirm_list:{player_id}:{market_price}", "fill": (46, 160, 67), "text_color": (245, 245, 245)},
+                    {"label": f"{_fmtp(high_price)} (PREMIUM)", "action": f"squad:confirm_list:{player_id}:{high_price}"},
+                    {"label": "CANCEL", "action": "modal:close"},
+                ],
+            }
+            return
+        if action.startswith("squad:confirm_list:"):
+            parts = action.split(":", 3)
+            if len(parts) < 4:
+                return
+            player_id, price_str = parts[2], parts[3]
+            try:
+                custom_price = int(price_str)
+            except ValueError:
+                return
+            if not self.active_save_id or not self.overview:
+                return
+            current_date = str(self.overview.get("current_date", ""))
+            _, window_type = get_transfer_window_status(current_date) if current_date else (False, "")
             season_year = int(self.overview.get("season_year", 0))
             club_id = str(self.overview.get("club_id", ""))
             with db_session(self.db_path) as conn:
-                list_player_for_transfer(conn, self.active_save_id, player_id, club_id, current_date, season_year, window_type)
+                list_player_for_transfer(conn, self.active_save_id, player_id, club_id, current_date, season_year, window_type, custom_price=custom_price)
                 conn.commit()
             self._reload_transfer_data()
+            self.modal = None
             return
         if action.startswith("transfers:make_offer:"):
             player_id = action.split(":", 2)[2]
@@ -1616,12 +1814,21 @@ class ManagerGameApp:
             if not listing:
                 return
             asking = int(listing.get("asking_price", 0))
+            player_name = str(listing.get("player_name", "PLAYER")).upper()
+            low = max(500_000, round(asking * 0.60 / 500_000) * 500_000)
+            mid_low = max(500_000, round(asking * 0.80 / 500_000) * 500_000)
+            high = round(asking * 1.10 / 500_000) * 500_000
+            def _fmt(v: int) -> str:
+                return f"£{v // 1_000_000}M" if v >= 1_000_000 else f"£{v // 1_000}K"
             self.modal = {
                 "type": "confirm",
                 "title": "MAKE OFFER",
-                "message": f"ASKING: £{asking // 1_000_000}M\nOFFER AT ASKING PRICE?",
+                "message": f"{player_name}\nASKING: {_fmt(asking)}\nSELECT OFFER AMOUNT:",
                 "buttons": [
-                    {"label": "CONFIRM", "action": f"transfers:confirm_offer:{player_id}:{asking}", "fill": (46, 160, 67), "text_color": (245, 245, 245)},
+                    {"label": f"{_fmt(low)} (LOW)", "action": f"transfers:confirm_offer:{player_id}:{low}"},
+                    {"label": f"{_fmt(mid_low)} (BELOW)", "action": f"transfers:confirm_offer:{player_id}:{mid_low}"},
+                    {"label": f"{_fmt(asking)} (ASKING)", "action": f"transfers:confirm_offer:{player_id}:{asking}", "fill": (46, 160, 67), "text_color": (245, 245, 245)},
+                    {"label": f"{_fmt(high)} (ABOVE)", "action": f"transfers:confirm_offer:{player_id}:{high}"},
                     {"label": "CANCEL", "action": "modal:close"},
                 ],
             }
@@ -1637,17 +1844,58 @@ class ManagerGameApp:
                 return
             if not self.active_save_id or not self.overview:
                 return
+            # Finance check
+            finances = self.overview.get("finances", {})
+            budget = int(finances.get("transfer_budget", 0))
+            balance = int(finances.get("balance", 0))
+            affordable = min(budget, balance)
+            if amount > affordable:
+                def _fmt(v: int) -> str:
+                    return f"£{v // 1_000_000}M" if v >= 1_000_000 else f"£{v // 1_000}K"
+                self.modal = {
+                    "type": "confirm",
+                    "title": "INSUFFICIENT FUNDS",
+                    "message": f"OFFER: {_fmt(amount)}\nTRANSFER BUDGET: {_fmt(budget)}\nBALANCE: {_fmt(balance)}\n\nYou cannot afford this offer.",
+                    "buttons": [{"label": "OK", "action": "modal:close"}],
+                }
+                return
             current_date = str(self.overview.get("current_date", ""))
-            _, window_type = get_transfer_window_status(current_date) if current_date else (False, "summer")
+            window_open, window_type = get_transfer_window_status(current_date) if current_date else (False, "")
+            if not window_open:
+                self.modal = {
+                    "type": "confirm",
+                    "title": "WINDOW CLOSED",
+                    "message": "The transfer window is not open.",
+                    "buttons": [{"label": "OK", "action": "modal:close"}],
+                }
+                return
             season_year = int(self.overview.get("season_year", 0))
             listing = next((l for l in self.transfer_data.get("market", []) if str(l.get("player_id", "")) == player_id), None)
             w_type = str((listing or {}).get("window_type", window_type))
             s_year = int((listing or {}).get("season_year", season_year))
             with db_session(self.db_path) as conn:
-                make_transfer_offer(conn, self.active_save_id, player_id, amount, w_type, s_year, current_date)
+                result = make_transfer_offer(conn, self.active_save_id, player_id, amount, w_type, s_year, current_date)
                 conn.commit()
             self._reload_transfer_data()
-            self.modal = None
+            if result.get("ok"):
+                self.modal = {
+                    "type": "confirm",
+                    "title": "OFFER SUBMITTED",
+                    "message": "Offer sent to club board.\nYou will receive a response within 2-4 days.",
+                    "buttons": [{"label": "OK", "action": "modal:close"}],
+                }
+            else:
+                err = str(result.get("error", "unknown"))
+                err_msg = {
+                    "max_offers_reached": "You have already made the maximum number of offers for this player this window.",
+                    "not_listed": "This player is no longer available for transfer.",
+                }.get(err, f"Could not submit offer: {err}")
+                self.modal = {
+                    "type": "confirm",
+                    "title": "OFFER FAILED",
+                    "message": err_msg,
+                    "buttons": [{"label": "OK", "action": "modal:close"}],
+                }
             return
         if action.startswith("transfers:withdraw:"):
             listing_id_str = action.split(":", 2)[2]
@@ -1664,6 +1912,44 @@ class ManagerGameApp:
                 conn.commit()
             self._reload_transfer_data()
             return
+        if action.startswith("transfers:accept_inbound:"):
+            offer_id_str = action.split(":", 2)[2]
+            try:
+                offer_id_int = int(offer_id_str)
+            except ValueError:
+                return
+            if not self.active_save_id or not self.overview:
+                return
+            club_id = str(self.overview.get("club_id", ""))
+            current_date = str(self.overview.get("current_date", ""))
+            with db_session(self.db_path) as conn:
+                result = accept_inbound_offer(conn, self.active_save_id, offer_id_int, current_date, club_id)
+                conn.commit()
+            self._reload_state()
+            if result.get("ok"):
+                amt = int(result.get("amount", 0))
+                def _fmtm(v: int) -> str:
+                    return f"£{v // 1_000_000}M" if v >= 1_000_000 else f"£{v // 1_000}K"
+                self.modal = {
+                    "type": "confirm",
+                    "title": "PLAYER SOLD",
+                    "message": f"{str(result.get('player_name', '')).upper()} has been sold for {_fmtm(amt)}.\nFunds added to your transfer budget.",
+                    "buttons": [{"label": "OK", "action": "modal:close"}],
+                }
+            return
+        if action.startswith("transfers:decline_inbound:"):
+            offer_id_str = action.split(":", 2)[2]
+            try:
+                offer_id_int = int(offer_id_str)
+            except ValueError:
+                return
+            if not self.active_save_id:
+                return
+            with db_session(self.db_path) as conn:
+                decline_inbound_offer(conn, self.active_save_id, offer_id_int)
+                conn.commit()
+            self._reload_transfer_data()
+            return
         if action.startswith("transfers:negotiate:"):
             offer_id = action.split(":", 2)[2]
             self.transfer_negotiate_offer_id = offer_id
@@ -1672,20 +1958,30 @@ class ManagerGameApp:
             with db_session(self.db_path) as conn:
                 offers = get_accepted_offers(conn, self.active_save_id)
             offer = next((o for o in offers if str(o.get("id", "")) == offer_id), None)
-            ovr = int((offer or {}).get("ovr", 75))
-            market_rate = ovr * 600
-            player_name = str((offer or {}).get("player_name", "PLAYER")).upper()[:20]
+            if not offer:
+                return
+            ovr = int(offer.get("ovr", 75))
+            market_rate = max(1_000, ovr * 600)
+            player_name = str(offer.get("player_name", "PLAYER")).upper()[:20]
+            def _fw(v: int) -> str:
+                return f"£{v:,}/WK"
+            low_w = max(500, round(market_rate * 0.80 / 500) * 500)
+            high_w = round(market_rate * 1.30 / 500) * 500
+            top_w = round(market_rate * 1.80 / 500) * 500
             self.modal = {
                 "type": "confirm",
                 "title": "PLAYER NEGOTIATION",
-                "message": f"{player_name}\nOFFER: £{market_rate:,}/WK  3 YEARS",
+                "message": f"{player_name}\nMARKET RATE: {_fw(market_rate)}\n\nCHOOSE CONTRACT TERMS (3 YEARS):\nPlayer will respond within 2-3 days.",
                 "buttons": [
-                    {"label": "OFFER TERMS", "action": f"transfers:complete_negotiation:{offer_id}:{market_rate}:3", "fill": (46, 160, 67), "text_color": (245, 245, 245)},
+                    {"label": f"{_fw(low_w)} — BELOW MARKET", "action": f"transfers:submit_negotiation:{offer_id}:{low_w}:3"},
+                    {"label": f"{_fw(market_rate)} — MARKET RATE", "action": f"transfers:submit_negotiation:{offer_id}:{market_rate}:3", "fill": (46, 160, 67), "text_color": (245, 245, 245)},
+                    {"label": f"{_fw(high_w)} — ABOVE MARKET", "action": f"transfers:submit_negotiation:{offer_id}:{high_w}:3"},
+                    {"label": f"{_fw(top_w)} — TOP WAGES", "action": f"transfers:submit_negotiation:{offer_id}:{top_w}:3"},
                     {"label": "CANCEL", "action": "modal:close"},
                 ],
             }
             return
-        if action.startswith("transfers:complete_negotiation:"):
+        if action.startswith("transfers:submit_negotiation:"):
             parts = action.split(":", 4)
             if len(parts) < 5:
                 return
@@ -1698,21 +1994,18 @@ class ManagerGameApp:
                 return
             if not self.active_save_id or not self.overview:
                 return
+            current_date = str(self.overview.get("current_date", ""))
             with db_session(self.db_path) as conn:
-                offers = get_accepted_offers(conn, self.active_save_id)
-                offer = next((o for o in offers if o.get("id") == offer_id_int), None)
-                if offer:
-                    player_id = str(offer.get("player_id", ""))
-                    to_club_id = str(self.overview.get("club_id", ""))
-                    to_club_name = str(self.overview.get("club_name", ""))
-                    current_date = str(self.overview.get("current_date", ""))
-                    player_ovr = int(offer.get("ovr", 75))
-                    standings = self.overview.get("standings", [])
-                    league_pos = next((int(s.get("position", 4)) for s in standings if str(s.get("club_id", "")) == to_club_id), 4)
-                    complete_transfer(conn, self.active_save_id, offer_id_int, player_id, to_club_id, to_club_name, wage, years, current_date, player_ovr, league_pos)
+                result = submit_player_negotiation(conn, self.active_save_id, offer_id_int, wage, years, current_date)
                 conn.commit()
-            self._reload_state()
-            self.modal = None
+            self._reload_transfer_data()
+            resp_date = str(result.get("player_response_date", ""))
+            self.modal = {
+                "type": "confirm",
+                "title": "TERMS SUBMITTED",
+                "message": f"Contract terms sent to player.\nYou will receive a response by {resp_date}.\n\nCheck Transfer Talks for updates.",
+                "buttons": [{"label": "OK", "action": "modal:close"}],
+            }
             return
 
     def _handle_keydown(self, event: pygame.event.Event) -> None:
@@ -1775,6 +2068,12 @@ class ManagerGameApp:
         if self.screen == "match_report":
             if self._is_bound(event, "bind_menu", "escape"):
                 self._handle_action("back:match_report")
+            return
+        if self.screen == "overview" and not self.modal and event.key == pygame.K_SPACE:
+            if self.overview and self.overview.get("today_fixture"):
+                self._handle_action("overview:play_next_match")
+            elif self.overview:
+                self._handle_action("overview:advance_day")
             return
         if self.screen != "new_game_name":
             if self.screen == "options" and self._is_bound(event, "bind_menu", "escape"):
@@ -1847,6 +2146,11 @@ class ManagerGameApp:
                     "hover_target_id": self.squad_hover_target_id,
                     "hover_player_id": self.squad_hover_player_id,
                     "selected_player_id": self.squad_selected_player_id,
+                    "show_reserves": self.squad_show_reserves,
+                    "show_unavailable": self.squad_show_unavailable,
+                    "pending_reserve_id": self.squad_pending_reserve_id,
+                    "roles": self.squad_roles,
+                    "roles_selected_role": self.squad_roles_selected_role,
                 },
             }
         return {"screen": "menu", "footer_text": footer_text}
@@ -1871,6 +2175,7 @@ class ManagerGameApp:
                                 and not bool(hit.get("unavailable"))
                                 and (
                                     (dragging_from_xi and target_id in self.match_sub_draft_bench_ids)
+                                    or (dragging_from_xi and target_id in self.match_sub_draft_xi_ids)
                                     or ((not dragging_from_xi) and target_id in self.match_sub_draft_xi_ids)
                                 )
                             )
@@ -2000,6 +2305,8 @@ class ManagerGameApp:
                     self._start_match_instruction_animation()
                 if self.match_pending_substitutions and not self.match_sub_animation and not self.match_paused and self._match_has_natural_stoppage():
                     self._start_match_sub_animation()
+                if self.match_pending_position_swaps and not self.match_instruction_animation and not self.match_sub_animation and not self.match_paused and self._match_has_natural_stoppage():
+                    self._apply_pending_position_swaps()
                 if self.match_sub_animation:
                     self._update_match_sub_animation(dt)
                 if self.match_instruction_animation:
@@ -2046,7 +2353,7 @@ class ManagerGameApp:
                     selected_player_id_for_instructions=self.match_selected_player_id,
                     instruction_animation=self.match_instruction_animation,
                     instructions_pending=bool(self.match_pending_instruction_update),
-                    subs_pending=bool(self.match_pending_substitutions),
+                    subs_pending=bool(self.match_pending_substitutions) or bool(self.match_pending_position_swaps),
                     present=not self.modal,
                 )
                 if self.modal:

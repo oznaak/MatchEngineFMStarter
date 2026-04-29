@@ -19,26 +19,190 @@
         "counter": 44
       },
       "players": [
-        {"id":"A01","name":"David Raya","position":"GK","ovr":82},
-        {"id":"A02","name":"Oleks Zinchenko","position":"LB","ovr":80},
-        {"id":"A03","name":"William Saliba","position":"CB","ovr":83},
-        {"id":"A04","name":"Gabriel Magalhaes","position":"CB","ovr":82},
-        {"id":"A05","name":"Ben White","position":"RB","ovr":79},
-        {"id":"A06","name":"Declan Rice","position":"DM","ovr":84,"attributes":{"passing":86,"short_passing":88,"long_passing":79,"vision":84,"decisions":85,"anticipation":84,"positioning":86}},
-        {"id":"A07","name":"Thomas Partey","position":"CM","ovr":83},
-        {"id":"A08","name":"Martin Odegaard","position":"AM","ovr":82},
-        {"id":"A09","name":"Gabriel Martinelli","position":"LW","ovr":84},
-        {"id":"A10","name":"Gabriel Jesus","position":"ST","ovr":85,"attributes":{"finishing":89,"composure":86,"off_ball":88,"acceleration":84,"pace":82,"first_touch":83,"passing":72,"vision":70}},
-        {"id":"A11","name":"Bukayo Saka","position":"RW","ovr":83,"attributes":{"pace":87,"acceleration":88,"dribbling":86,"crossing":84,"off_ball":82,"decisions":74,"stamina":80}},
-        {"id":"A12","name":"Aaron Ramsdale","position":"GK","ovr":76},
-        {"id":"A13","name":"Jakub Kiwior","position":"CB","ovr":77},
-        {"id":"A14","name":"Jorginho","position":"CM","ovr":78},
-        {"id":"A15","name":"Leandro Trossard","position":"ST","ovr":77},
-        {"id":"A16","name":"Myles Lewis-Skelly","position":"LB","ovr":68},
-        {"id":"A17","name":"Riccardo Calafiori","position":"CB","ovr":75},
-        {"id":"A18","name":"Mikel Arteta","position":"CM","ovr":69},
-        {"id":"A19","name":"Raheem Sterling","position":"LW","ovr":76},
-        {"id":"A20","name":"Ethan Nwaneri","position":"RW","ovr":73}
+        {
+          "id": "A01",
+          "name": "David Raya",
+          "position": "GK",
+          "ovr": 82
+        },
+        {
+          "id": "A02",
+          "name": "Oleks Zinchenko",
+          "position": "LB",
+          "ovr": 80
+        },
+        {
+          "id": "A03",
+          "name": "William Saliba",
+          "position": "CB",
+          "ovr": 83
+        },
+        {
+          "id": "A04",
+          "name": "Gabriel Magalhaes",
+          "position": "CB",
+          "ovr": 82
+        },
+        {
+          "id": "A05",
+          "name": "Ben White",
+          "position": "RB",
+          "ovr": 79
+        },
+        {
+          "id": "A06",
+          "name": "Declan Rice",
+          "position": "DM",
+          "ovr": 84,
+          "attributes": {
+            "passing": 86,
+            "short_passing": 88,
+            "long_passing": 79,
+            "vision": 84,
+            "decisions": 85,
+            "anticipation": 84,
+            "positioning": 86
+          }
+        },
+        {
+          "id": "A07",
+          "name": "Thomas Partey",
+          "position": "CM",
+          "ovr": 83
+        },
+        {
+          "id": "A08",
+          "name": "Martin Odegaard",
+          "position": "AM",
+          "ovr": 82
+        },
+        {
+          "id": "A09",
+          "name": "Gabriel Martinelli",
+          "position": "LW",
+          "ovr": 84
+        },
+        {
+          "id": "A10",
+          "name": "Gabriel Jesus",
+          "position": "ST",
+          "ovr": 85,
+          "attributes": {
+            "finishing": 89,
+            "composure": 86,
+            "off_ball": 88,
+            "acceleration": 84,
+            "pace": 82,
+            "first_touch": 83,
+            "passing": 72,
+            "vision": 70
+          }
+        },
+        {
+          "id": "A11",
+          "name": "Bukayo Saka",
+          "position": "RW",
+          "ovr": 83,
+          "attributes": {
+            "pace": 87,
+            "acceleration": 88,
+            "dribbling": 86,
+            "crossing": 84,
+            "off_ball": 82,
+            "decisions": 74,
+            "stamina": 80
+          }
+        },
+        {
+          "id": "A12",
+          "name": "Aaron Ramsdale",
+          "position": "GK",
+          "ovr": 76
+        },
+        {
+          "id": "A13",
+          "name": "Jakub Kiwior",
+          "position": "CB",
+          "ovr": 77
+        },
+        {
+          "id": "A14",
+          "name": "Jorginho",
+          "position": "CM",
+          "ovr": 78
+        },
+        {
+          "id": "A15",
+          "name": "Leandro Trossard",
+          "position": "ST",
+          "ovr": 77
+        },
+        {
+          "id": "A16",
+          "name": "Myles Lewis-Skelly",
+          "position": "LB",
+          "ovr": 68
+        },
+        {
+          "id": "A17",
+          "name": "Riccardo Calafiori",
+          "position": "CB",
+          "ovr": 75
+        },
+        {
+          "id": "A18",
+          "name": "Mikel Arteta",
+          "position": "CM",
+          "ovr": 69
+        },
+        {
+          "id": "A19",
+          "name": "Raheem Sterling",
+          "position": "LW",
+          "ovr": 76
+        },
+        {
+          "id": "A20",
+          "name": "Ethan Nwaneri",
+          "position": "RW",
+          "ovr": 73
+        },
+        {
+          "id": "A21",
+          "name": "Karl Hein",
+          "position": "GK",
+          "ovr": 70
+        },
+        {
+          "id": "A22",
+          "name": "Jurrien Timber",
+          "position": "CB",
+          "ovr": 76
+        },
+        {
+          "id": "A23",
+          "name": "Nuno Tavares",
+          "position": "LB",
+          "ovr": 72
+        },
+        {
+          "id": "A24",
+          "name": "Mohamed Elneny",
+          "position": "DM",
+          "ovr": 70
+        },
+        {
+          "id": "A25",
+          "name": "Reiss Nelson",
+          "position": "RW",
+          "ovr": 73
+        },
+        {
+          "id": "A26",
+          "name": "Folarin Balogun",
+          "position": "ST",
+          "ovr": 74
+        }
       ]
     },
     {
@@ -59,26 +223,177 @@
         "counter": 63
       },
       "players": [
-        {"id":"B01","name":"Andre Onana","position":"GK","ovr":78},
-        {"id":"B02","name":"Luke Shaw","position":"LB","ovr":77},
-        {"id":"B03","name":"Lisandro Martinez","position":"CB","ovr":79},
-        {"id":"B04","name":"Raphael Varane","position":"CB","ovr":78},
-        {"id":"B05","name":"Diogo Dalot","position":"RB","ovr":76},
-        {"id":"B06","name":"Casemiro","position":"DM","ovr":79},
-        {"id":"B07","name":"Bruno Fernandes","position":"CM","ovr":78,"attributes":{"passing":81,"short_passing":83,"long_passing":77,"vision":80,"decisions":79,"stamina":81}},
-        {"id":"B08","name":"Mason Mount","position":"AM","ovr":77},
-        {"id":"B09","name":"Marcus Rashford","position":"LW","ovr":79,"attributes":{"pace":83,"acceleration":84,"dribbling":82,"crossing":78,"off_ball":79}},
-        {"id":"B10","name":"Rasmus Hojlund","position":"ST","ovr":80},
-        {"id":"B11","name":"Antony","position":"RW","ovr":78},
-        {"id":"B12","name":"Altay Bayindir","position":"GK","ovr":73},
-        {"id":"B13","name":"Victor Lindelof","position":"CB","ovr":74},
-        {"id":"B14","name":"Scott McTominay","position":"CM","ovr":75},
-        {"id":"B15","name":"Alejandro Garnacho","position":"ST","ovr":74},
-        {"id":"B16","name":"Leny Yoro","position":"CB","ovr":75},
-        {"id":"B17","name":"Kobbie Mainoo","position":"CM","ovr":73},
-        {"id":"B18","name":"Amad Diallo","position":"RW","ovr":72},
-        {"id":"B19","name":"Tyrell Malacia","position":"LB","ovr":70},
-        {"id":"B20","name":"Manuel Ugarte","position":"DM","ovr":75}
+        {
+          "id": "B01",
+          "name": "Andre Onana",
+          "position": "GK",
+          "ovr": 78
+        },
+        {
+          "id": "B02",
+          "name": "Luke Shaw",
+          "position": "LB",
+          "ovr": 77
+        },
+        {
+          "id": "B03",
+          "name": "Lisandro Martinez",
+          "position": "CB",
+          "ovr": 79
+        },
+        {
+          "id": "B04",
+          "name": "Raphael Varane",
+          "position": "CB",
+          "ovr": 78
+        },
+        {
+          "id": "B05",
+          "name": "Diogo Dalot",
+          "position": "RB",
+          "ovr": 76
+        },
+        {
+          "id": "B06",
+          "name": "Casemiro",
+          "position": "DM",
+          "ovr": 79
+        },
+        {
+          "id": "B07",
+          "name": "Bruno Fernandes",
+          "position": "CM",
+          "ovr": 78,
+          "attributes": {
+            "passing": 81,
+            "short_passing": 83,
+            "long_passing": 77,
+            "vision": 80,
+            "decisions": 79,
+            "stamina": 81
+          }
+        },
+        {
+          "id": "B08",
+          "name": "Mason Mount",
+          "position": "AM",
+          "ovr": 77
+        },
+        {
+          "id": "B09",
+          "name": "Marcus Rashford",
+          "position": "LW",
+          "ovr": 79,
+          "attributes": {
+            "pace": 83,
+            "acceleration": 84,
+            "dribbling": 82,
+            "crossing": 78,
+            "off_ball": 79
+          }
+        },
+        {
+          "id": "B10",
+          "name": "Rasmus Hojlund",
+          "position": "ST",
+          "ovr": 80
+        },
+        {
+          "id": "B11",
+          "name": "Antony",
+          "position": "RW",
+          "ovr": 78
+        },
+        {
+          "id": "B12",
+          "name": "Altay Bayindir",
+          "position": "GK",
+          "ovr": 73
+        },
+        {
+          "id": "B13",
+          "name": "Victor Lindelof",
+          "position": "CB",
+          "ovr": 74
+        },
+        {
+          "id": "B14",
+          "name": "Scott McTominay",
+          "position": "CM",
+          "ovr": 75
+        },
+        {
+          "id": "B15",
+          "name": "Alejandro Garnacho",
+          "position": "ST",
+          "ovr": 74
+        },
+        {
+          "id": "B16",
+          "name": "Leny Yoro",
+          "position": "CB",
+          "ovr": 75
+        },
+        {
+          "id": "B17",
+          "name": "Kobbie Mainoo",
+          "position": "CM",
+          "ovr": 73
+        },
+        {
+          "id": "B18",
+          "name": "Amad Diallo",
+          "position": "RW",
+          "ovr": 72
+        },
+        {
+          "id": "B19",
+          "name": "Tyrell Malacia",
+          "position": "LB",
+          "ovr": 70
+        },
+        {
+          "id": "B20",
+          "name": "Manuel Ugarte",
+          "position": "DM",
+          "ovr": 75
+        },
+        {
+          "id": "B21",
+          "name": "Nathan Bishop",
+          "position": "GK",
+          "ovr": 66
+        },
+        {
+          "id": "B22",
+          "name": "Harry Maguire",
+          "position": "CB",
+          "ovr": 75
+        },
+        {
+          "id": "B23",
+          "name": "Aaron Wan-Bissaka",
+          "position": "RB",
+          "ovr": 73
+        },
+        {
+          "id": "B24",
+          "name": "Jonny Evans",
+          "position": "CB",
+          "ovr": 72
+        },
+        {
+          "id": "B25",
+          "name": "Facundo Pellistri",
+          "position": "RW",
+          "ovr": 71
+        },
+        {
+          "id": "B26",
+          "name": "Wout Weghorst",
+          "position": "ST",
+          "ovr": 70
+        }
       ]
     },
     {
@@ -90,26 +405,162 @@
         "secondary": "#F5F5F5"
       },
       "players": [
-        {"id":"C01","name":"Robert Sanchez","position":"GK","ovr":73},
-        {"id":"C02","name":"Ben Chilwell","position":"LB","ovr":71},
-        {"id":"C03","name":"Levi Colwill","position":"CB","ovr":73},
-        {"id":"C04","name":"Thiago Silva","position":"CB","ovr":72},
-        {"id":"C05","name":"Reece James","position":"RB","ovr":70},
-        {"id":"C06","name":"Moises Caicedo","position":"DM","ovr":74},
-        {"id":"C07","name":"Enzo Fernandez","position":"CM","ovr":72},
-        {"id":"C08","name":"Cole Palmer","position":"AM","ovr":71},
-        {"id":"C09","name":"Mykhailo Mudryk","position":"LW","ovr":73},
-        {"id":"C10","name":"Nicolas Jackson","position":"ST","ovr":74},
-        {"id":"C11","name":"Noni Madueke","position":"RW","ovr":72},
-        {"id":"C12","name":"Djordje Petrovic","position":"GK","ovr":68},
-        {"id":"C13","name":"Axel Disasi","position":"CB","ovr":69},
-        {"id":"C14","name":"Conor Gallagher","position":"CM","ovr":70},
-        {"id":"C15","name":"Christopher Nkunku","position":"ST","ovr":69},
-        {"id":"C16","name":"Marc Cucurella","position":"LB","ovr":74},
-        {"id":"C17","name":"Romeo Lavia","position":"DM","ovr":71},
-        {"id":"C18","name":"Lesley Ugochukwu","position":"CM","ovr":68},
-        {"id":"C19","name":"Deivid Washington","position":"ST","ovr":70},
-        {"id":"C20","name":"Omari Kellyman","position":"CM","ovr":66}
+        {
+          "id": "C01",
+          "name": "Robert Sanchez",
+          "position": "GK",
+          "ovr": 73
+        },
+        {
+          "id": "C02",
+          "name": "Ben Chilwell",
+          "position": "LB",
+          "ovr": 71
+        },
+        {
+          "id": "C03",
+          "name": "Levi Colwill",
+          "position": "CB",
+          "ovr": 73
+        },
+        {
+          "id": "C04",
+          "name": "Thiago Silva",
+          "position": "CB",
+          "ovr": 72
+        },
+        {
+          "id": "C05",
+          "name": "Reece James",
+          "position": "RB",
+          "ovr": 70
+        },
+        {
+          "id": "C06",
+          "name": "Moises Caicedo",
+          "position": "DM",
+          "ovr": 74
+        },
+        {
+          "id": "C07",
+          "name": "Enzo Fernandez",
+          "position": "CM",
+          "ovr": 72
+        },
+        {
+          "id": "C08",
+          "name": "Cole Palmer",
+          "position": "AM",
+          "ovr": 71
+        },
+        {
+          "id": "C09",
+          "name": "Mykhailo Mudryk",
+          "position": "LW",
+          "ovr": 73
+        },
+        {
+          "id": "C10",
+          "name": "Nicolas Jackson",
+          "position": "ST",
+          "ovr": 74
+        },
+        {
+          "id": "C11",
+          "name": "Noni Madueke",
+          "position": "RW",
+          "ovr": 72
+        },
+        {
+          "id": "C12",
+          "name": "Djordje Petrovic",
+          "position": "GK",
+          "ovr": 68
+        },
+        {
+          "id": "C13",
+          "name": "Axel Disasi",
+          "position": "CB",
+          "ovr": 69
+        },
+        {
+          "id": "C14",
+          "name": "Conor Gallagher",
+          "position": "CM",
+          "ovr": 70
+        },
+        {
+          "id": "C15",
+          "name": "Christopher Nkunku",
+          "position": "ST",
+          "ovr": 69
+        },
+        {
+          "id": "C16",
+          "name": "Marc Cucurella",
+          "position": "LB",
+          "ovr": 74
+        },
+        {
+          "id": "C17",
+          "name": "Romeo Lavia",
+          "position": "DM",
+          "ovr": 71
+        },
+        {
+          "id": "C18",
+          "name": "Lesley Ugochukwu",
+          "position": "CM",
+          "ovr": 68
+        },
+        {
+          "id": "C19",
+          "name": "Deivid Washington",
+          "position": "ST",
+          "ovr": 70
+        },
+        {
+          "id": "C20",
+          "name": "Omari Kellyman",
+          "position": "CM",
+          "ovr": 66
+        },
+        {
+          "id": "C21",
+          "name": "Marcus Bettinelli",
+          "position": "GK",
+          "ovr": 66
+        },
+        {
+          "id": "C22",
+          "name": "Trevoh Chalobah",
+          "position": "CB",
+          "ovr": 75
+        },
+        {
+          "id": "C23",
+          "name": "Ian Maatsen",
+          "position": "LB",
+          "ovr": 72
+        },
+        {
+          "id": "C24",
+          "name": "Carney Chukwuemeka",
+          "position": "CM",
+          "ovr": 72
+        },
+        {
+          "id": "C25",
+          "name": "Hakim Ziyech",
+          "position": "RW",
+          "ovr": 76
+        },
+        {
+          "id": "C26",
+          "name": "David Datro Fofana",
+          "position": "ST",
+          "ovr": 70
+        }
       ]
     },
     {
@@ -121,26 +572,162 @@
         "secondary": "#F5F5F5"
       },
       "players": [
-        {"id":"D01","name":"Ederson","position":"GK","ovr":67},
-        {"id":"D02","name":"Josko Gvardiol","position":"LB","ovr":65},
-        {"id":"D03","name":"Ruben Dias","position":"CB","ovr":66},
-        {"id":"D04","name":"John Stones","position":"CB","ovr":65},
-        {"id":"D05","name":"Kyle Walker","position":"RB","ovr":64},
-        {"id":"D06","name":"Rodri","position":"DM","ovr":67},
-        {"id":"D07","name":"Kevin De Bruyne","position":"CM","ovr":66},
-        {"id":"D08","name":"Bernardo Silva","position":"AM","ovr":65},
-        {"id":"D09","name":"Jeremy Doku","position":"LW","ovr":67},
-        {"id":"D10","name":"Erling Haaland","position":"ST","ovr":68},
-        {"id":"D11","name":"Phil Foden","position":"RW","ovr":66},
-        {"id":"D12","name":"Stefan Ortega","position":"GK","ovr":62},
-        {"id":"D13","name":"Manuel Akanji","position":"CB","ovr":63},
-        {"id":"D14","name":"Mateo Kovacic","position":"CM","ovr":64},
-        {"id":"D15","name":"Julian Alvarez","position":"ST","ovr":63},
-        {"id":"D16","name":"Nathan Ake","position":"CB","ovr":71},
-        {"id":"D17","name":"Rico Lewis","position":"RB","ovr":69},
-        {"id":"D18","name":"Jack Grealish","position":"LW","ovr":75},
-        {"id":"D19","name":"Matheus Nunes","position":"CM","ovr":73},
-        {"id":"D20","name":"Oscar Bobb","position":"RW","ovr":70}
+        {
+          "id": "D01",
+          "name": "Ederson",
+          "position": "GK",
+          "ovr": 67
+        },
+        {
+          "id": "D02",
+          "name": "Josko Gvardiol",
+          "position": "LB",
+          "ovr": 65
+        },
+        {
+          "id": "D03",
+          "name": "Ruben Dias",
+          "position": "CB",
+          "ovr": 66
+        },
+        {
+          "id": "D04",
+          "name": "John Stones",
+          "position": "CB",
+          "ovr": 65
+        },
+        {
+          "id": "D05",
+          "name": "Kyle Walker",
+          "position": "RB",
+          "ovr": 64
+        },
+        {
+          "id": "D06",
+          "name": "Rodri",
+          "position": "DM",
+          "ovr": 67
+        },
+        {
+          "id": "D07",
+          "name": "Kevin De Bruyne",
+          "position": "CM",
+          "ovr": 66
+        },
+        {
+          "id": "D08",
+          "name": "Bernardo Silva",
+          "position": "AM",
+          "ovr": 65
+        },
+        {
+          "id": "D09",
+          "name": "Jeremy Doku",
+          "position": "LW",
+          "ovr": 67
+        },
+        {
+          "id": "D10",
+          "name": "Erling Haaland",
+          "position": "ST",
+          "ovr": 68
+        },
+        {
+          "id": "D11",
+          "name": "Phil Foden",
+          "position": "RW",
+          "ovr": 66
+        },
+        {
+          "id": "D12",
+          "name": "Stefan Ortega",
+          "position": "GK",
+          "ovr": 62
+        },
+        {
+          "id": "D13",
+          "name": "Manuel Akanji",
+          "position": "CB",
+          "ovr": 63
+        },
+        {
+          "id": "D14",
+          "name": "Mateo Kovacic",
+          "position": "CM",
+          "ovr": 64
+        },
+        {
+          "id": "D15",
+          "name": "Julian Alvarez",
+          "position": "ST",
+          "ovr": 63
+        },
+        {
+          "id": "D16",
+          "name": "Nathan Ake",
+          "position": "CB",
+          "ovr": 71
+        },
+        {
+          "id": "D17",
+          "name": "Rico Lewis",
+          "position": "RB",
+          "ovr": 69
+        },
+        {
+          "id": "D18",
+          "name": "Jack Grealish",
+          "position": "LW",
+          "ovr": 75
+        },
+        {
+          "id": "D19",
+          "name": "Matheus Nunes",
+          "position": "CM",
+          "ovr": 73
+        },
+        {
+          "id": "D20",
+          "name": "Oscar Bobb",
+          "position": "RW",
+          "ovr": 70
+        },
+        {
+          "id": "D21",
+          "name": "Scott Carson",
+          "position": "GK",
+          "ovr": 65
+        },
+        {
+          "id": "D22",
+          "name": "Maximo Perrone",
+          "position": "DM",
+          "ovr": 69
+        },
+        {
+          "id": "D23",
+          "name": "Sergio Gomez",
+          "position": "LB",
+          "ovr": 71
+        },
+        {
+          "id": "D24",
+          "name": "Shea Charles",
+          "position": "CM",
+          "ovr": 68
+        },
+        {
+          "id": "D25",
+          "name": "James McAtee",
+          "position": "AM",
+          "ovr": 71
+        },
+        {
+          "id": "D26",
+          "name": "Yan Couto",
+          "position": "RB",
+          "ovr": 69
+        }
       ]
     },
     {
@@ -161,26 +748,162 @@
         "counter": 68
       },
       "players": [
-        {"id":"E01","name":"Alisson Becker","position":"GK","ovr":82},
-        {"id":"E02","name":"Andrew Robertson","position":"LB","ovr":80},
-        {"id":"E03","name":"Virgil van Dijk","position":"CB","ovr":84},
-        {"id":"E04","name":"Ibrahima Konate","position":"CB","ovr":81},
-        {"id":"E05","name":"Trent Alexander-Arnold","position":"RB","ovr":82},
-        {"id":"E06","name":"Alexis Mac Allister","position":"DM","ovr":81},
-        {"id":"E07","name":"Ryan Gravenberch","position":"CM","ovr":78},
-        {"id":"E08","name":"Mohamed Salah","position":"AM","ovr":83},
-        {"id":"E09","name":"Luis Diaz","position":"LW","ovr":81},
-        {"id":"E10","name":"Darwin Nunez","position":"ST","ovr":79},
-        {"id":"E11","name":"Cody Gakpo","position":"RW","ovr":78},
-        {"id":"E12","name":"Caoimhin Kelleher","position":"GK","ovr":75},
-        {"id":"E13","name":"Jarell Quansah","position":"CB","ovr":73},
-        {"id":"E14","name":"Harvey Elliott","position":"CM","ovr":74},
-        {"id":"E15","name":"Conor Bradley","position":"RB","ovr":72},
-        {"id":"E16","name":"Wataru Endo","position":"DM","ovr":71},
-        {"id":"E17","name":"Joe Gomez","position":"LB","ovr":70},
-        {"id":"E18","name":"Dominik Szoboszlai","position":"AM","ovr":76},
-        {"id":"E19","name":"Diogo Jota","position":"LW","ovr":77},
-        {"id":"E20","name":"Curtis Jones","position":"CM","ovr":75}
+        {
+          "id": "E01",
+          "name": "Alisson Becker",
+          "position": "GK",
+          "ovr": 82
+        },
+        {
+          "id": "E02",
+          "name": "Andrew Robertson",
+          "position": "LB",
+          "ovr": 80
+        },
+        {
+          "id": "E03",
+          "name": "Virgil van Dijk",
+          "position": "CB",
+          "ovr": 84
+        },
+        {
+          "id": "E04",
+          "name": "Ibrahima Konate",
+          "position": "CB",
+          "ovr": 81
+        },
+        {
+          "id": "E05",
+          "name": "Trent Alexander-Arnold",
+          "position": "RB",
+          "ovr": 82
+        },
+        {
+          "id": "E06",
+          "name": "Alexis Mac Allister",
+          "position": "DM",
+          "ovr": 81
+        },
+        {
+          "id": "E07",
+          "name": "Ryan Gravenberch",
+          "position": "CM",
+          "ovr": 78
+        },
+        {
+          "id": "E08",
+          "name": "Mohamed Salah",
+          "position": "AM",
+          "ovr": 83
+        },
+        {
+          "id": "E09",
+          "name": "Luis Diaz",
+          "position": "LW",
+          "ovr": 81
+        },
+        {
+          "id": "E10",
+          "name": "Darwin Nunez",
+          "position": "ST",
+          "ovr": 79
+        },
+        {
+          "id": "E11",
+          "name": "Cody Gakpo",
+          "position": "RW",
+          "ovr": 78
+        },
+        {
+          "id": "E12",
+          "name": "Caoimhin Kelleher",
+          "position": "GK",
+          "ovr": 75
+        },
+        {
+          "id": "E13",
+          "name": "Jarell Quansah",
+          "position": "CB",
+          "ovr": 73
+        },
+        {
+          "id": "E14",
+          "name": "Harvey Elliott",
+          "position": "CM",
+          "ovr": 74
+        },
+        {
+          "id": "E15",
+          "name": "Conor Bradley",
+          "position": "RB",
+          "ovr": 72
+        },
+        {
+          "id": "E16",
+          "name": "Wataru Endo",
+          "position": "DM",
+          "ovr": 71
+        },
+        {
+          "id": "E17",
+          "name": "Joe Gomez",
+          "position": "LB",
+          "ovr": 70
+        },
+        {
+          "id": "E18",
+          "name": "Dominik Szoboszlai",
+          "position": "AM",
+          "ovr": 76
+        },
+        {
+          "id": "E19",
+          "name": "Diogo Jota",
+          "position": "LW",
+          "ovr": 77
+        },
+        {
+          "id": "E20",
+          "name": "Curtis Jones",
+          "position": "CM",
+          "ovr": 75
+        },
+        {
+          "id": "E21",
+          "name": "Adrian",
+          "position": "GK",
+          "ovr": 68
+        },
+        {
+          "id": "E22",
+          "name": "Joel Matip",
+          "position": "CB",
+          "ovr": 74
+        },
+        {
+          "id": "E23",
+          "name": "Konstantinos Tsimikas",
+          "position": "LB",
+          "ovr": 73
+        },
+        {
+          "id": "E24",
+          "name": "Stefan Bajcetic",
+          "position": "DM",
+          "ovr": 70
+        },
+        {
+          "id": "E25",
+          "name": "Ben Doak",
+          "position": "RW",
+          "ovr": 69
+        },
+        {
+          "id": "E26",
+          "name": "Fabio Carvalho",
+          "position": "AM",
+          "ovr": 72
+        }
       ]
     },
     {
@@ -201,26 +924,162 @@
         "counter": 72
       },
       "players": [
-        {"id":"F01","name":"Guglielmo Vicario","position":"GK","ovr":78},
-        {"id":"F02","name":"Pedro Porro","position":"LB","ovr":77},
-        {"id":"F03","name":"Cristian Romero","position":"CB","ovr":80},
-        {"id":"F04","name":"Mickey van de Ven","position":"CB","ovr":79},
-        {"id":"F05","name":"Destiny Udogie","position":"RB","ovr":76},
-        {"id":"F06","name":"Rodrigo Bentancur","position":"DM","ovr":78},
-        {"id":"F07","name":"James Maddison","position":"CM","ovr":79},
-        {"id":"F08","name":"Son Heung-min","position":"AM","ovr":80},
-        {"id":"F09","name":"Brennan Johnson","position":"LW","ovr":75},
-        {"id":"F10","name":"Dominic Solanke","position":"ST","ovr":78},
-        {"id":"F11","name":"Dejan Kulusevski","position":"RW","ovr":77},
-        {"id":"F12","name":"Fraser Forster","position":"GK","ovr":72},
-        {"id":"F13","name":"Radu Dragusin","position":"CB","ovr":74},
-        {"id":"F14","name":"Yves Bissouma","position":"CM","ovr":75},
-        {"id":"F15","name":"Lucas Bergvall","position":"CM","ovr":73},
-        {"id":"F16","name":"Archie Gray","position":"DM","ovr":71},
-        {"id":"F17","name":"Sergio Reguilon","position":"LB","ovr":70},
-        {"id":"F18","name":"Timo Werner","position":"LW","ovr":72},
-        {"id":"F19","name":"Wilson Odobert","position":"RW","ovr":73},
-        {"id":"F20","name":"Richarlison","position":"ST","ovr":76}
+        {
+          "id": "F01",
+          "name": "Guglielmo Vicario",
+          "position": "GK",
+          "ovr": 78
+        },
+        {
+          "id": "F02",
+          "name": "Pedro Porro",
+          "position": "LB",
+          "ovr": 77
+        },
+        {
+          "id": "F03",
+          "name": "Cristian Romero",
+          "position": "CB",
+          "ovr": 80
+        },
+        {
+          "id": "F04",
+          "name": "Mickey van de Ven",
+          "position": "CB",
+          "ovr": 79
+        },
+        {
+          "id": "F05",
+          "name": "Destiny Udogie",
+          "position": "RB",
+          "ovr": 76
+        },
+        {
+          "id": "F06",
+          "name": "Rodrigo Bentancur",
+          "position": "DM",
+          "ovr": 78
+        },
+        {
+          "id": "F07",
+          "name": "James Maddison",
+          "position": "CM",
+          "ovr": 79
+        },
+        {
+          "id": "F08",
+          "name": "Son Heung-min",
+          "position": "AM",
+          "ovr": 80
+        },
+        {
+          "id": "F09",
+          "name": "Brennan Johnson",
+          "position": "LW",
+          "ovr": 75
+        },
+        {
+          "id": "F10",
+          "name": "Dominic Solanke",
+          "position": "ST",
+          "ovr": 78
+        },
+        {
+          "id": "F11",
+          "name": "Dejan Kulusevski",
+          "position": "RW",
+          "ovr": 77
+        },
+        {
+          "id": "F12",
+          "name": "Fraser Forster",
+          "position": "GK",
+          "ovr": 72
+        },
+        {
+          "id": "F13",
+          "name": "Radu Dragusin",
+          "position": "CB",
+          "ovr": 74
+        },
+        {
+          "id": "F14",
+          "name": "Yves Bissouma",
+          "position": "CM",
+          "ovr": 75
+        },
+        {
+          "id": "F15",
+          "name": "Lucas Bergvall",
+          "position": "CM",
+          "ovr": 73
+        },
+        {
+          "id": "F16",
+          "name": "Archie Gray",
+          "position": "DM",
+          "ovr": 71
+        },
+        {
+          "id": "F17",
+          "name": "Sergio Reguilon",
+          "position": "LB",
+          "ovr": 70
+        },
+        {
+          "id": "F18",
+          "name": "Timo Werner",
+          "position": "LW",
+          "ovr": 72
+        },
+        {
+          "id": "F19",
+          "name": "Wilson Odobert",
+          "position": "RW",
+          "ovr": 73
+        },
+        {
+          "id": "F20",
+          "name": "Richarlison",
+          "position": "ST",
+          "ovr": 76
+        },
+        {
+          "id": "F21",
+          "name": "Brandon Austin",
+          "position": "GK",
+          "ovr": 65
+        },
+        {
+          "id": "F22",
+          "name": "Emerson Royal",
+          "position": "RB",
+          "ovr": 75
+        },
+        {
+          "id": "F23",
+          "name": "Japhet Tanganga",
+          "position": "CB",
+          "ovr": 70
+        },
+        {
+          "id": "F24",
+          "name": "Oliver Skipp",
+          "position": "DM",
+          "ovr": 73
+        },
+        {
+          "id": "F25",
+          "name": "Manor Solomon",
+          "position": "LW",
+          "ovr": 71
+        },
+        {
+          "id": "F26",
+          "name": "Alejo Veliz",
+          "position": "ST",
+          "ovr": 68
+        }
       ]
     },
     {
@@ -241,26 +1100,162 @@
         "counter": 60
       },
       "players": [
-        {"id":"G01","name":"Alphonse Areola","position":"GK","ovr":76},
-        {"id":"G02","name":"Emerson Palmieri","position":"LB","ovr":74},
-        {"id":"G03","name":"Konstantinos Mavropanos","position":"CB","ovr":76},
-        {"id":"G04","name":"Thilo Kehrer","position":"CB","ovr":73},
-        {"id":"G05","name":"Vladimir Coufal","position":"RB","ovr":74},
-        {"id":"G06","name":"Tomas Soucek","position":"DM","ovr":77},
-        {"id":"G07","name":"Edmond Alvarez","position":"CM","ovr":72},
-        {"id":"G08","name":"Lucas Paqueta","position":"AM","ovr":78},
-        {"id":"G09","name":"Jarrod Bowen","position":"LW","ovr":78},
-        {"id":"G10","name":"Michail Antonio","position":"ST","ovr":75},
-        {"id":"G11","name":"Mohammed Kudus","position":"RW","ovr":76},
-        {"id":"G12","name":"Lukasz Fabianski","position":"GK","ovr":72},
-        {"id":"G13","name":"Nayef Aguerd","position":"CB","ovr":74},
-        {"id":"G14","name":"James Ward-Prowse","position":"CM","ovr":75},
-        {"id":"G15","name":"Carlos Soler","position":"CM","ovr":73},
-        {"id":"G16","name":"Aaron Cresswell","position":"LB","ovr":70},
-        {"id":"G17","name":"Flynn Cornet","position":"LW","ovr":71},
-        {"id":"G18","name":"Danny Ings","position":"ST","ovr":72},
-        {"id":"G19","name":"Ben Johnson","position":"RB","ovr":68},
-        {"id":"G20","name":"Kalvin Phillips","position":"DM","ovr":74}
+        {
+          "id": "G01",
+          "name": "Alphonse Areola",
+          "position": "GK",
+          "ovr": 76
+        },
+        {
+          "id": "G02",
+          "name": "Emerson Palmieri",
+          "position": "LB",
+          "ovr": 74
+        },
+        {
+          "id": "G03",
+          "name": "Konstantinos Mavropanos",
+          "position": "CB",
+          "ovr": 76
+        },
+        {
+          "id": "G04",
+          "name": "Thilo Kehrer",
+          "position": "CB",
+          "ovr": 73
+        },
+        {
+          "id": "G05",
+          "name": "Vladimir Coufal",
+          "position": "RB",
+          "ovr": 74
+        },
+        {
+          "id": "G06",
+          "name": "Tomas Soucek",
+          "position": "DM",
+          "ovr": 77
+        },
+        {
+          "id": "G07",
+          "name": "Edmond Alvarez",
+          "position": "CM",
+          "ovr": 72
+        },
+        {
+          "id": "G08",
+          "name": "Lucas Paqueta",
+          "position": "AM",
+          "ovr": 78
+        },
+        {
+          "id": "G09",
+          "name": "Jarrod Bowen",
+          "position": "LW",
+          "ovr": 78
+        },
+        {
+          "id": "G10",
+          "name": "Michail Antonio",
+          "position": "ST",
+          "ovr": 75
+        },
+        {
+          "id": "G11",
+          "name": "Mohammed Kudus",
+          "position": "RW",
+          "ovr": 76
+        },
+        {
+          "id": "G12",
+          "name": "Lukasz Fabianski",
+          "position": "GK",
+          "ovr": 72
+        },
+        {
+          "id": "G13",
+          "name": "Nayef Aguerd",
+          "position": "CB",
+          "ovr": 74
+        },
+        {
+          "id": "G14",
+          "name": "James Ward-Prowse",
+          "position": "CM",
+          "ovr": 75
+        },
+        {
+          "id": "G15",
+          "name": "Carlos Soler",
+          "position": "CM",
+          "ovr": 73
+        },
+        {
+          "id": "G16",
+          "name": "Aaron Cresswell",
+          "position": "LB",
+          "ovr": 70
+        },
+        {
+          "id": "G17",
+          "name": "Flynn Cornet",
+          "position": "LW",
+          "ovr": 71
+        },
+        {
+          "id": "G18",
+          "name": "Danny Ings",
+          "position": "ST",
+          "ovr": 72
+        },
+        {
+          "id": "G19",
+          "name": "Ben Johnson",
+          "position": "RB",
+          "ovr": 68
+        },
+        {
+          "id": "G20",
+          "name": "Kalvin Phillips",
+          "position": "DM",
+          "ovr": 74
+        },
+        {
+          "id": "G21",
+          "name": "Wes Foderingham",
+          "position": "GK",
+          "ovr": 69
+        },
+        {
+          "id": "G22",
+          "name": "Craig Dawson",
+          "position": "CB",
+          "ovr": 72
+        },
+        {
+          "id": "G23",
+          "name": "Divin Mubama",
+          "position": "ST",
+          "ovr": 68
+        },
+        {
+          "id": "G24",
+          "name": "Guido Rodriguez",
+          "position": "DM",
+          "ovr": 73
+        },
+        {
+          "id": "G25",
+          "name": "Said Benrahma",
+          "position": "LW",
+          "ovr": 75
+        },
+        {
+          "id": "G26",
+          "name": "Flynn Downes",
+          "position": "CM",
+          "ovr": 70
+        }
       ]
     },
     {
@@ -281,26 +1276,162 @@
         "counter": 65
       },
       "players": [
-        {"id":"H01","name":"Nick Pope","position":"GK","ovr":77},
-        {"id":"H02","name":"Lewis Hall","position":"LB","ovr":74},
-        {"id":"H03","name":"Fabian Schar","position":"CB","ovr":78},
-        {"id":"H04","name":"Sverre Ingels Nash","position":"CB","ovr":75},
-        {"id":"H05","name":"Kieran Trippier","position":"RB","ovr":76},
-        {"id":"H06","name":"Bruno Guimaraes","position":"DM","ovr":81},
-        {"id":"H07","name":"Joe Willock","position":"CM","ovr":76},
-        {"id":"H08","name":"Anthony Gordon","position":"AM","ovr":77},
-        {"id":"H09","name":"Harvey Barnes","position":"LW","ovr":77},
-        {"id":"H10","name":"Alexander Isak","position":"ST","ovr":80},
-        {"id":"H11","name":"Jacob Murphy","position":"RW","ovr":75},
-        {"id":"H12","name":"Martin Dubravka","position":"GK","ovr":72},
-        {"id":"H13","name":"Jamal Lewis","position":"LB","ovr":70},
-        {"id":"H14","name":"Sandro Tonali","position":"CM","ovr":78},
-        {"id":"H15","name":"Sean Longstaff","position":"CM","ovr":73},
-        {"id":"H16","name":"Matt Ritchie","position":"LM","ovr":68},
-        {"id":"H17","name":"Miguel Almiron","position":"RW","ovr":74},
-        {"id":"H18","name":"Callum Wilson","position":"ST","ovr":75},
-        {"id":"H19","name":"Lewis Miley","position":"CM","ovr":72},
-        {"id":"H20","name":"Dan Burn","position":"CB","ovr":72}
+        {
+          "id": "H01",
+          "name": "Nick Pope",
+          "position": "GK",
+          "ovr": 77
+        },
+        {
+          "id": "H02",
+          "name": "Lewis Hall",
+          "position": "LB",
+          "ovr": 74
+        },
+        {
+          "id": "H03",
+          "name": "Fabian Schar",
+          "position": "CB",
+          "ovr": 78
+        },
+        {
+          "id": "H04",
+          "name": "Sverre Ingels Nash",
+          "position": "CB",
+          "ovr": 75
+        },
+        {
+          "id": "H05",
+          "name": "Kieran Trippier",
+          "position": "RB",
+          "ovr": 76
+        },
+        {
+          "id": "H06",
+          "name": "Bruno Guimaraes",
+          "position": "DM",
+          "ovr": 81
+        },
+        {
+          "id": "H07",
+          "name": "Joe Willock",
+          "position": "CM",
+          "ovr": 76
+        },
+        {
+          "id": "H08",
+          "name": "Anthony Gordon",
+          "position": "AM",
+          "ovr": 77
+        },
+        {
+          "id": "H09",
+          "name": "Harvey Barnes",
+          "position": "LW",
+          "ovr": 77
+        },
+        {
+          "id": "H10",
+          "name": "Alexander Isak",
+          "position": "ST",
+          "ovr": 80
+        },
+        {
+          "id": "H11",
+          "name": "Jacob Murphy",
+          "position": "RW",
+          "ovr": 75
+        },
+        {
+          "id": "H12",
+          "name": "Martin Dubravka",
+          "position": "GK",
+          "ovr": 72
+        },
+        {
+          "id": "H13",
+          "name": "Jamal Lewis",
+          "position": "LB",
+          "ovr": 70
+        },
+        {
+          "id": "H14",
+          "name": "Sandro Tonali",
+          "position": "CM",
+          "ovr": 78
+        },
+        {
+          "id": "H15",
+          "name": "Sean Longstaff",
+          "position": "CM",
+          "ovr": 73
+        },
+        {
+          "id": "H16",
+          "name": "Matt Ritchie",
+          "position": "LM",
+          "ovr": 68
+        },
+        {
+          "id": "H17",
+          "name": "Miguel Almiron",
+          "position": "RW",
+          "ovr": 74
+        },
+        {
+          "id": "H18",
+          "name": "Callum Wilson",
+          "position": "ST",
+          "ovr": 75
+        },
+        {
+          "id": "H19",
+          "name": "Lewis Miley",
+          "position": "CM",
+          "ovr": 72
+        },
+        {
+          "id": "H20",
+          "name": "Dan Burn",
+          "position": "CB",
+          "ovr": 72
+        },
+        {
+          "id": "H21",
+          "name": "Mark Gillespie",
+          "position": "GK",
+          "ovr": 67
+        },
+        {
+          "id": "H22",
+          "name": "Tino Livramento",
+          "position": "RB",
+          "ovr": 72
+        },
+        {
+          "id": "H23",
+          "name": "Jamaal Lascelles",
+          "position": "CB",
+          "ovr": 72
+        },
+        {
+          "id": "H24",
+          "name": "Elliot Anderson",
+          "position": "CM",
+          "ovr": 71
+        },
+        {
+          "id": "H25",
+          "name": "Joelinton",
+          "position": "LW",
+          "ovr": 75
+        },
+        {
+          "id": "H26",
+          "name": "Chris Wood",
+          "position": "ST",
+          "ovr": 74
+        }
       ]
     }
   ]
