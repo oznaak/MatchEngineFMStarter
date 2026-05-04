@@ -2396,6 +2396,25 @@ def advance_save_one_day(conn: sqlite3.Connection, save_id: int, managed_club_id
     ).fetchone()
     current_date_str = str(updated["current_date"])
     season_year_val = int(updated["season_year"])
+
+    # Simulate all non-user AI fixtures scheduled for today
+    from .simulation import simulate_ai_fixture, simulate_ai_transfers
+    managed_id_str = str(managed_club_id or "")
+    ai_fixture_rows = conn.execute(
+        """
+        SELECT id FROM fixtures
+        WHERE save_id = ? AND played = 0 AND fixture_date = ?
+          AND home_club_id != ? AND away_club_id != ?
+        """,
+        (save_id, current_date_str, managed_id_str, managed_id_str),
+    ).fetchall()
+    for f_row in ai_fixture_rows:
+        simulate_ai_fixture(conn, save_id, int(f_row["id"]))
+
+    # Weekly AI transfers every 7 days
+    if next_day % 7 == 0:
+        simulate_ai_transfers(conn, save_id)
+
     _create_daily_save_messages(conn, save_id, str(managed_club_id or ""), current_date_str, training_result)
     _maybe_generate_team_of_the_week(conn, save_id, current_date_str, managed_club_id)
     completed = complete_season_if_due(conn, save_id)
