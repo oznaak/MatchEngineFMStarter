@@ -93,7 +93,7 @@ def apply_promotion_relegation(conn: sqlite3.Connection, save_id: int, season_ye
             action = move["action"]
             from_league = move["from_league"]
             to_league = move["to_league"]
-            if action in ("relegate", "promote_auto"):
+            if action in ("relegate", "promote_auto", "relegate_playoff", "promote_playoff"):
                 conn.execute(
                     "DELETE FROM save_league_clubs WHERE save_id=? AND league_id=? AND club_id=? AND season=?",
                     (save_id, from_league, club_id, next_season),
