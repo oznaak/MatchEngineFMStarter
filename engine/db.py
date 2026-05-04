@@ -2140,7 +2140,7 @@ def complete_season_if_due(conn: sqlite3.Connection, save_id: int) -> bool:
     champion = standings[0]
     title = f"{str(champion['club_name']).upper()} CHAMPIONS"
     body = (
-        f"{champion['club_name']} win England Division I with {champion['points']} points, "
+        f"{champion['club_name']} win the league with {champion['points']} points, "
         f"{champion['wins']} wins and a {champion['goal_difference']:+d} goal difference."
     )
     add_save_message(
@@ -2153,6 +2153,8 @@ def complete_season_if_due(conn: sqlite3.Connection, save_id: int) -> bool:
         "success",
         f"season_complete:{save_row['season_year']}",
     )
+    from .promotion import apply_promotion_relegation
+    apply_promotion_relegation(conn, save_id, int(save_row["season_year"]))
     conn.execute("UPDATE saves SET season_completed = 1 WHERE id = ?", (int(save_id),))
     return True
 
