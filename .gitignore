@@ -15,3 +15,4 @@ populate_from_api.py
 add_missing_teams.py
 add_pl_teams.py
 add_remaining_pl_teams.py
+populate_leagues.py
