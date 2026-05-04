@@ -1924,6 +1924,121 @@ class Renderer:
                 pygame.draw.line(self.screen, (60, 60, 66), (option_rect.x + 8, option_rect.y), (option_rect.right - 8, option_rect.y), 1)
             draw_text(self.screen, label, option_rect.x + 16, option_rect.y + 8, (245, 245, 245), scale=2)
 
+    def draw_competitions_screen(self, view: dict) -> None:
+        self.screen.fill((18, 20, 26))
+        competitions = list(view.get("competitions", []))
+        leagues = [c for c in competitions if c.get("type") == "league"]
+        cups = [c for c in competitions if c.get("type") == "cup"]
+
+        header_rect = pygame.Rect(0, 0, SCREEN_W, 48)
+        pygame.draw.rect(self.screen, (12, 12, 16), header_rect)
+        draw_text(self.screen, "WORLD  /  COMPETITIONS", 24, 14, (220, 220, 224), scale=2)
+
+        back_rect = pygame.Rect(SCREEN_W - 110, 12, 90, 26)
+        pygame.draw.rect(self.screen, (40, 44, 56), back_rect, border_radius=3)
+        draw_text(self.screen, "BACK", back_rect.x + 28, back_rect.y + 7, (180, 184, 192), scale=1)
+        self._register_ui("back", back_rect)
+
+        panel_top = 60
+        panel_h = SCREEN_H - panel_top - 8
+        left_w = SCREEN_W // 2 - 4
+
+        left_rect = pygame.Rect(4, panel_top, left_w, panel_h)
+        pygame.draw.rect(self.screen, (24, 26, 34), left_rect, border_radius=4)
+        draw_text(self.screen, "LEAGUES", left_rect.x + 12, left_rect.y + 10, (248, 187, 32), scale=1)
+
+        card_y = left_rect.y + 30
+        for comp in leagues:
+            card_h = 72
+            if card_y + card_h > left_rect.bottom - 4:
+                break
+            card_rect = pygame.Rect(left_rect.x + 6, card_y, left_rect.w - 12, card_h)
+            pygame.draw.rect(self.screen, (32, 36, 46), card_rect, border_radius=3)
+            draw_text(self.screen, str(comp.get("name", "")).upper(), card_rect.x + 10, card_rect.y + 8, (220, 220, 224), scale=1)
+            draw_text(self.screen, str(comp.get("country", "")), card_rect.x + 10, card_rect.y + 22, (130, 134, 142), scale=1)
+            top3 = comp.get("top3", [])
+            for i, entry in enumerate(top3[:3]):
+                row_y = card_rect.y + 38 + i * 10
+                name_str = f"{i+1}. {str(entry.get('name',''))[:18]}"
+                pts_str = f"{entry.get('points', 0)}pts"
+                draw_text(self.screen, name_str, card_rect.x + 10, row_y, (180, 184, 192), scale=1)
+                draw_text(self.screen, pts_str, card_rect.right - text_width(pts_str, 1) - 10, row_y, (140, 144, 152), scale=1)
+            comp_id = str(comp.get("id", ""))
+            self._register_ui(f"open_league_standings:{comp_id}", card_rect)
+            card_y += card_h + 4
+
+        right_w = SCREEN_W - left_w - 8
+        right_rect = pygame.Rect(left_w + 8, panel_top, right_w, panel_h)
+        pygame.draw.rect(self.screen, (24, 26, 34), right_rect, border_radius=4)
+        draw_text(self.screen, "DOMESTIC CUPS", right_rect.x + 12, right_rect.y + 10, (248, 187, 32), scale=1)
+
+        card_y = right_rect.y + 30
+        for comp in cups:
+            card_h = 90
+            if card_y + card_h > right_rect.bottom - 4:
+                break
+            card_rect = pygame.Rect(right_rect.x + 6, card_y, right_rect.w - 12, card_h)
+            pygame.draw.rect(self.screen, (32, 36, 46), card_rect, border_radius=3)
+            draw_text(self.screen, str(comp.get("name", "")).upper(), card_rect.x + 10, card_rect.y + 8, (220, 220, 224), scale=1)
+            draw_text(self.screen, f"Round: {comp.get('current_round', '?')}", card_rect.x + 10, card_rect.y + 22, (130, 134, 142), scale=1)
+            recent = comp.get("recent_results", [])
+            for i, res in enumerate(recent[:4]):
+                row_y = card_rect.y + 38 + i * 12
+                home = str(res.get("home_name", ""))[:12]
+                away = str(res.get("away_name", ""))[:12]
+                score_str = f"{home} {res.get('home_goals',0)}-{res.get('away_goals',0)} {away}"
+                draw_text(self.screen, score_str, card_rect.x + 10, row_y, (160, 164, 172), scale=1)
+            comp_id = str(comp.get("id", ""))
+            self._register_ui(f"open_cup_bracket:{comp_id}", card_rect)
+            card_y += card_h + 4
+
+    def draw_cup_bracket(self, view: dict) -> None:
+        self.screen.fill((18, 20, 26))
+        bracket = dict(view.get("bracket", {}))
+        comp_id = str(view.get("competition_id", ""))
+
+        header_rect = pygame.Rect(0, 0, SCREEN_W, 48)
+        pygame.draw.rect(self.screen, (12, 12, 16), header_rect)
+        draw_text(self.screen, f"CUP BRACKET  /  {comp_id}", 24, 14, (220, 220, 224), scale=2)
+
+        back_rect = pygame.Rect(SCREEN_W - 110, 12, 90, 26)
+        pygame.draw.rect(self.screen, (40, 44, 56), back_rect, border_radius=3)
+        draw_text(self.screen, "BACK", back_rect.x + 28, back_rect.y + 7, (180, 184, 192), scale=1)
+        self._register_ui("back:world_competitions", back_rect)
+
+        if not bracket:
+            draw_text(self.screen, "NO BRACKET DATA YET", SCREEN_W // 2 - 80, SCREEN_H // 2, (130, 134, 142), scale=2)
+            return
+
+        rounds = list(bracket.keys())
+        num_cols = max(len(rounds), 1)
+        col_w = max(180, (SCREEN_W - 16) // num_cols)
+        top = 68
+
+        for col_idx, rnd in enumerate(rounds):
+            col_x = col_idx * col_w + 8
+            col_color = (248, 187, 32)
+            draw_text(self.screen, rnd, col_x + 4, top, col_color, scale=1)
+            matchups = bracket[rnd]
+            row_h = max(44, (SCREEN_H - top - 24) // max(len(matchups), 1))
+            for m_idx, match in enumerate(matchups):
+                cell_y = top + 18 + m_idx * row_h
+                cell_rect = pygame.Rect(col_x, cell_y, col_w - 6, row_h - 4)
+                winner = str(match.get("winner", ""))
+                bg = (28, 30, 38) if not winner else (22, 40, 28)
+                pygame.draw.rect(self.screen, bg, cell_rect, border_radius=2)
+                name_a = str(match.get("name_a", "TBD"))[:16]
+                name_b = str(match.get("name_b", "TBD"))[:16]
+                s1a = match.get("score_a_leg1")
+                s1b = match.get("score_b_leg1")
+                score_str = f"{s1a}-{s1b}" if s1a is not None else "vs"
+                a_color = (220, 240, 210) if winner == str(match.get("club_a", "")) else (210, 214, 222)
+                b_color = (220, 240, 210) if winner == str(match.get("club_b", "")) else (210, 214, 222)
+                draw_text(self.screen, name_a, cell_rect.x + 4, cell_rect.y + 4, a_color, scale=1)
+                draw_text(self.screen, name_b, cell_rect.x + 4, cell_rect.y + 18, b_color, scale=1)
+                score_x = cell_rect.right - text_width(score_str, 1) - 4
+                draw_text(self.screen, score_str, score_x, cell_rect.y + 10, (180, 220, 160) if winner else (160, 164, 172), scale=1)
+
     def draw_app_view(self, view: dict, present: bool = True) -> None:
         self.ui_click_targets = {}
         self.squad_targets = {}
@@ -1953,6 +2068,16 @@ class Renderer:
             self._draw_club_detail_screen(view)
         elif screen == "player_detail":
             self._draw_player_detail_screen(view)
+        elif screen == "world_competitions":
+            self.draw_competitions_screen(view)
+            if present:
+                pygame.display.flip()
+            return
+        elif screen == "cup_bracket":
+            self.draw_cup_bracket(view)
+            if present:
+                pygame.display.flip()
+            return
         if present:
             pygame.display.flip()
 
@@ -2325,6 +2450,7 @@ class Renderer:
             ("TRANSFERS", "transfers"),
             ("CLUB", "club"),
             ("CAREER", "career"),
+            ("WORLD", "world"),
         ]
         x = brand.right + 20
         submenu_anchor_x = x
@@ -2336,6 +2462,7 @@ class Renderer:
                 or (tab_key == "matches" and overview_tab.startswith("matches_"))
                 or (tab_key == "transfers" and overview_tab.startswith("transfers_"))
                 or (tab_key == "club" and overview_tab.startswith("club_"))
+                or (tab_key == "world" and overview_tab in ("world_competitions", "cup_bracket"))
             )
             color = (248, 187, 32) if active else (220, 220, 224)
             rect = pygame.Rect(tab_x - 6, 10, text_width(label, 2) + 12, 28)
@@ -2361,6 +2488,8 @@ class Renderer:
                 action = "overview_tab:transfers_market"
             elif tab_key == "club":
                 action = "overview_tab:club_finances"
+            elif tab_key == "world":
+                action = "nav:world_competitions"
             else:
                 action = f"overview_tab:{tab_key}"
             self._register_ui(action, rect)
