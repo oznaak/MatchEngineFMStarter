@@ -493,6 +493,62 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             pct_min INTEGER NOT NULL,
             pct_max INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS competitions (
+            id          TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            country     TEXT NOT NULL,
+            type        TEXT NOT NULL,
+            season      INTEGER NOT NULL,
+            save_id     INTEGER NOT NULL,
+            PRIMARY KEY (id, save_id),
+            FOREIGN KEY (save_id) REFERENCES saves(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS cup_brackets (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            save_id         INTEGER NOT NULL,
+            competition_id  TEXT NOT NULL,
+            round           TEXT NOT NULL,
+            slot            INTEGER NOT NULL,
+            club_a          TEXT,
+            club_b          TEXT,
+            score_a_leg1    INTEGER,
+            score_b_leg1    INTEGER,
+            score_a_leg2    INTEGER,
+            score_b_leg2    INTEGER,
+            winner          TEXT,
+            FOREIGN KEY (save_id) REFERENCES saves(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS save_league_clubs (
+            save_id     INTEGER NOT NULL,
+            league_id   TEXT NOT NULL,
+            club_id     TEXT NOT NULL,
+            season      INTEGER NOT NULL,
+            PRIMARY KEY (save_id, league_id, club_id, season),
+            FOREIGN KEY (save_id) REFERENCES saves(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS standings (
+            save_id         INTEGER NOT NULL,
+            competition_id  TEXT NOT NULL,
+            club_id         TEXT NOT NULL,
+            season          INTEGER NOT NULL,
+            played          INTEGER DEFAULT 0,
+            won             INTEGER DEFAULT 0,
+            drawn           INTEGER DEFAULT 0,
+            lost            INTEGER DEFAULT 0,
+            gf              INTEGER DEFAULT 0,
+            ga              INTEGER DEFAULT 0,
+            points          INTEGER DEFAULT 0,
+            PRIMARY KEY (save_id, competition_id, club_id, season),
+            FOREIGN KEY (save_id) REFERENCES saves(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_standings_save_comp ON standings(save_id, competition_id);
+        CREATE INDEX IF NOT EXISTS idx_cup_brackets_save_comp ON cup_brackets(save_id, competition_id);
+        CREATE INDEX IF NOT EXISTS idx_save_league_clubs_save ON save_league_clubs(save_id, league_id);
         """
     )
     _ensure_column(conn, "saves", "season_year", "INTEGER")
@@ -512,6 +568,9 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "transfer_offers", "offering_club_id", "TEXT")
     _ensure_column(conn, "transfer_offers", "negotiation_attempt", "INTEGER NOT NULL DEFAULT 1")
     _ensure_column(conn, "save_messages", "is_read", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "fixtures", "competition_id", "TEXT")
+    _ensure_column(conn, "fixtures", "leg", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(conn, "fixtures", "is_neutral", "INTEGER NOT NULL DEFAULT 0")
     _backfill_player_feet(conn)
     _backfill_player_attributes(conn)
     _backfill_club_managers(conn)
@@ -2478,6 +2537,10 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
     conn.execute("DELETE FROM save_player_training WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_club_setups WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_messages WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM competitions WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM cup_brackets WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM save_league_clubs WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM standings WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM saves WHERE id = ?", (int(save_id),))
     remaining = conn.execute(
         "SELECT COUNT(*) AS count FROM saves WHERE manager_id = ?",
