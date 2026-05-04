@@ -2997,6 +2997,156 @@ def load_save_standings(conn: sqlite3.Connection, save_id: int, competition_id: 
     return standings
 
 
+def load_all_competitions(conn: sqlite3.Connection, save_id: int) -> List[dict]:
+    save_row = conn.execute(
+        "SELECT season_year, league_id FROM saves WHERE id=?", (save_id,)
+    ).fetchone()
+    if save_row is None:
+        return []
+    season_year = int(save_row["season_year"])
+
+    comp_rows = conn.execute(
+        "SELECT id, name, country, type, season FROM competitions WHERE save_id=? ORDER BY type, country, name",
+        (save_id,),
+    ).fetchall()
+    existing_ids = {str(r["id"]) for r in comp_rows}
+
+    result: List[dict] = []
+
+    # Cup competitions
+    for row in comp_rows:
+        comp_id = str(row["id"])
+        entry = {
+            "id": comp_id,
+            "name": str(row["name"]),
+            "country": str(row["country"]),
+            "type": str(row["type"]),
+            "season": int(row["season"]),
+        }
+        if str(row["type"]) == "cup":
+            round_row = conn.execute(
+                """
+                SELECT cb.round FROM cup_brackets cb
+                JOIN fixtures f ON f.save_id=cb.save_id AND f.competition_id=cb.competition_id
+                  AND (f.home_club_id=cb.club_a OR f.home_club_id=cb.club_b)
+                WHERE cb.save_id=? AND cb.competition_id=? AND f.played=0
+                ORDER BY f.fixture_date LIMIT 1
+                """,
+                (save_id, comp_id),
+            ).fetchone()
+            entry["current_round"] = str(round_row["round"]) if round_row else "F"
+            recent = conn.execute(
+                """
+                SELECT hc.name AS home_name, ac.name AS away_name, f.home_goals, f.away_goals
+                FROM fixtures f
+                JOIN clubs hc ON hc.id=f.home_club_id
+                JOIN clubs ac ON ac.id=f.away_club_id
+                WHERE f.save_id=? AND f.competition_id=? AND f.played=1
+                ORDER BY f.fixture_date DESC LIMIT 4
+                """,
+                (save_id, comp_id),
+            ).fetchall()
+            entry["recent_results"] = [
+                {
+                    "home_name": str(r["home_name"]),
+                    "away_name": str(r["away_name"]),
+                    "home_goals": int(r["home_goals"] or 0),
+                    "away_goals": int(r["away_goals"] or 0),
+                }
+                for r in recent
+            ]
+        result.append(entry)
+
+    # League competitions (derived from fixtures, no competitions table row)
+    league_rows = conn.execute("SELECT id, name FROM leagues ORDER BY id").fetchall()
+    for lg in league_rows:
+        lid = str(lg["id"])
+        comp_id = f"{lid}_{season_year}"
+        if comp_id in existing_ids:
+            continue
+        fix_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM fixtures WHERE save_id=? AND competition_id=?",
+            (save_id, comp_id),
+        ).fetchone()
+        if not fix_count or int(fix_count["c"]) == 0:
+            continue
+        played = conn.execute(
+            "SELECT COUNT(*) AS c FROM fixtures WHERE save_id=? AND competition_id=? AND played=1",
+            (save_id, comp_id),
+        ).fetchone()
+        entry = {
+            "id": comp_id,
+            "name": str(lg["name"]),
+            "country": lid[:3],
+            "type": "league",
+            "season": season_year,
+            "matchday_played": int(played["c"]) if played else 0,
+            "matchday_total": int(fix_count["c"]),
+        }
+        top3 = conn.execute(
+            """
+            SELECT c.name, s.points
+            FROM standings s JOIN clubs c ON c.id=s.club_id
+            WHERE s.save_id=? AND s.competition_id=?
+            ORDER BY s.points DESC, (s.gf - s.ga) DESC LIMIT 3
+            """,
+            (save_id, comp_id),
+        ).fetchall()
+        entry["top3"] = [{"name": str(r["name"]), "points": int(r["points"])} for r in top3]
+        result.append(entry)
+
+    # Enrich cups with top3 from standings if available
+    for entry in result:
+        if entry["type"] == "league" and "top3" not in entry:
+            comp_id = entry["id"]
+            top3 = conn.execute(
+                """
+                SELECT c.name, s.points
+                FROM standings s JOIN clubs c ON c.id=s.club_id
+                WHERE s.save_id=? AND s.competition_id=?
+                ORDER BY s.points DESC, (s.gf - s.ga) DESC LIMIT 3
+                """,
+                (save_id, comp_id),
+            ).fetchall()
+            entry["top3"] = [{"name": str(r["name"]), "points": int(r["points"])} for r in top3]
+
+    return result
+
+
+def load_cup_bracket(conn: sqlite3.Connection, save_id: int, competition_id: str) -> dict:
+    rows = conn.execute(
+        """
+        SELECT cb.round, cb.slot, cb.club_a, cb.club_b, cb.winner,
+               cb.score_a_leg1, cb.score_b_leg1, cb.score_a_leg2, cb.score_b_leg2,
+               ca.name AS name_a, cb2.name AS name_b
+        FROM cup_brackets cb
+        LEFT JOIN clubs ca ON ca.id=cb.club_a
+        LEFT JOIN clubs cb2 ON cb2.id=cb.club_b
+        WHERE cb.save_id=? AND cb.competition_id=?
+        ORDER BY cb.round, cb.slot
+        """,
+        (save_id, competition_id),
+    ).fetchall()
+    bracket: dict = {}
+    for row in rows:
+        rnd = str(row["round"])
+        if rnd not in bracket:
+            bracket[rnd] = []
+        bracket[rnd].append({
+            "slot": int(row["slot"]),
+            "club_a": str(row["club_a"] or ""),
+            "club_b": str(row["club_b"] or ""),
+            "name_a": str(row["name_a"] or row["club_a"] or "TBD"),
+            "name_b": str(row["name_b"] or row["club_b"] or "TBD"),
+            "winner": str(row["winner"] or ""),
+            "score_a_leg1": row["score_a_leg1"],
+            "score_b_leg1": row["score_b_leg1"],
+            "score_a_leg2": row["score_a_leg2"],
+            "score_b_leg2": row["score_b_leg2"],
+        })
+    return bracket
+
+
 def _seed_save_league_clubs(conn: sqlite3.Connection, save_id: int, season_year: int) -> None:
     rows = conn.execute("SELECT league_id, club_id FROM league_clubs").fetchall()
     conn.executemany(
