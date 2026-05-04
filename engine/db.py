@@ -2184,7 +2184,10 @@ def start_next_season_if_ready(conn: sqlite3.Connection, save_id: int) -> bool:
         """,
         (int(save_id),),
     )
-    _seed_fixtures_for_save(conn, save_id, str(row["league_id"]), next_year)
+    _seed_save_league_clubs(conn, save_id, next_year)
+    all_leagues = conn.execute("SELECT id FROM leagues").fetchall()
+    for league_row in all_leagues:
+        _seed_fixtures_for_save(conn, save_id, str(league_row["id"]), next_year)
     add_save_message(
         conn,
         save_id,
