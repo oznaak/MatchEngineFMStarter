@@ -2537,10 +2537,13 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
     conn.execute("DELETE FROM save_player_training WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_club_setups WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_messages WHERE save_id = ?", (int(save_id),))
-    conn.execute("DELETE FROM competitions WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM cup_brackets WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM competitions WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM save_league_clubs WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM standings WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM club_staff WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM player_scouting WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM pending_scout_tasks WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM saves WHERE id = ?", (int(save_id),))
     remaining = conn.execute(
         "SELECT COUNT(*) AS count FROM saves WHERE manager_id = ?",
