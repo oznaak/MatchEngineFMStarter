@@ -113,16 +113,18 @@ def available_formations() -> List[str]:
     return list(FORMATIONS.keys())
 
 
-def position_fit_level(player_position: str, slot: str) -> int:
+def position_fit_level(player_position: str, slot: str, alt_positions: List[str] | None = None) -> int:
     if player_position == slot:
         return 2
+    if alt_positions and slot in alt_positions:
+        return 1
     if player_position in FALLBACKS.get(slot, []):
         return 1
     return 0
 
 
-def position_fit_label(player_position: str, slot: str) -> str:
-    fit = position_fit_level(player_position, slot)
+def position_fit_label(player_position: str, slot: str, alt_positions: List[str] | None = None) -> str:
+    fit = position_fit_level(player_position, slot, alt_positions)
     if fit >= 2:
         return "natural"
     if fit == 1:

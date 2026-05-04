@@ -206,6 +206,19 @@ class MatchEngine:
             slot_counts[slot] = slot_counts.get(slot, 0) + 1
             named_slot = f"{slot}{slot_counts[slot]}" if formation_counts[slot] > 1 else slot
             coords = layout[named_slot]
+            fit = position_fit_level(profile.position, slot, profile.alt_positions)
+            pos_penalty = 0.65 if fit == 0 else 1.0
+            if pos_penalty < 1.0:
+                degraded = {k: v * pos_penalty for k, v in profile.attributes.items()}
+                profile = PlayerProfile(
+                    id=profile.id, name=profile.name, position=profile.position, ovr=profile.ovr,
+                    attributes=degraded, preferred_foot=profile.preferred_foot,
+                    current_stamina=profile.current_stamina, yellow_card_count=profile.yellow_card_count,
+                    suspension_matches_remaining=profile.suspension_matches_remaining,
+                    injury_days_remaining=profile.injury_days_remaining,
+                    injury_count=profile.injury_count, age=profile.age,
+                    alt_positions=profile.alt_positions,
+                )
             pace = profile.attributes["pace"]
             acceleration = profile.attributes.get("acceleration", pace)
             speed_rating = pace * 0.65 + acceleration * 0.35
@@ -226,6 +239,7 @@ class MatchEngine:
                     base_speed=speed,
                     fatigue=fatigue_from_current_stamina(profile.current_stamina),
                     facing_x=facing_x,
+                    pos_penalty=pos_penalty,
                 )
             )
         avg = round(sum(p.profile.ovr for p in xi_states) / len(xi_states), 2)
@@ -419,7 +433,7 @@ class MatchEngine:
         return rating - stamina_penalty
 
     def _bench_sub_score(self, profile: PlayerProfile, slot: str, stamina_override: float | None = None) -> float:
-        fit = position_fit_level(profile.position, slot)
+        fit = position_fit_level(profile.position, slot, profile.alt_positions)
         fit_bonus = 20.0 if fit == 2 else 10.0 if fit == 1 else -18.0
         stamina_bonus = (profile.current_stamina if stamina_override is None else stamina_override) * 0.12
         role_bonus = 0.0

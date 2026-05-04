@@ -456,6 +456,43 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             transaction_date TEXT NOT NULL,
             FOREIGN KEY (save_id) REFERENCES saves(id)
         );
+
+        CREATE INDEX IF NOT EXISTS idx_fixtures_save_id ON fixtures(save_id);
+        CREATE INDEX IF NOT EXISTS idx_fixtures_save_date ON fixtures(save_id, fixture_date);
+        CREATE INDEX IF NOT EXISTS idx_save_messages_save_id ON save_messages(save_id);
+        CREATE INDEX IF NOT EXISTS idx_transfer_market_save_id ON transfer_market(save_id);
+        CREATE INDEX IF NOT EXISTS idx_transfer_offers_save_id ON transfer_offers(save_id);
+        CREATE INDEX IF NOT EXISTS idx_finance_transactions_save_id ON finance_transactions(save_id);
+        CREATE INDEX IF NOT EXISTS idx_players_club_id ON players(club_id);
+        CREATE INDEX IF NOT EXISTS idx_save_player_club_save_id ON save_player_club(save_id);
+
+        CREATE TABLE IF NOT EXISTS club_staff (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            save_id INTEGER NOT NULL,
+            staff_type TEXT NOT NULL,
+            quality TEXT NOT NULL,
+            UNIQUE(save_id, staff_type)
+        );
+
+        CREATE TABLE IF NOT EXISTS player_scouting (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            save_id INTEGER NOT NULL,
+            player_id TEXT NOT NULL,
+            season_year INTEGER NOT NULL,
+            revealed_pct INTEGER NOT NULL DEFAULT 50,
+            UNIQUE(save_id, player_id, season_year)
+        );
+
+        CREATE TABLE IF NOT EXISTS pending_scout_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            save_id INTEGER NOT NULL,
+            player_id TEXT NOT NULL,
+            player_name TEXT NOT NULL,
+            due_date TEXT NOT NULL,
+            scout_quality TEXT NOT NULL,
+            pct_min INTEGER NOT NULL,
+            pct_max INTEGER NOT NULL
+        );
         """
     )
     _ensure_column(conn, "saves", "season_year", "INTEGER")
@@ -474,6 +511,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "transfer_offers", "player_response_date", "TEXT")
     _ensure_column(conn, "transfer_offers", "offering_club_id", "TEXT")
     _ensure_column(conn, "transfer_offers", "negotiation_attempt", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(conn, "save_messages", "is_read", "INTEGER NOT NULL DEFAULT 0")
     _backfill_player_feet(conn)
     _backfill_player_attributes(conn)
     _backfill_club_managers(conn)
@@ -782,6 +820,10 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
             """,
             (int(save_id),),
         ).fetchall()
+    alt_pos_rows = conn.execute("SELECT player_id, position FROM player_alt_positions").fetchall()
+    alt_positions_by_player: Dict[str, List[str]] = {}
+    for row in alt_pos_rows:
+        alt_positions_by_player.setdefault(str(row["player_id"]), []).append(str(row["position"]))
     setup_rows = conn.execute(
         """
         SELECT save_id, club_id, formation, xi_json, bench_json, instructions_json, player_instructions_json
@@ -872,6 +914,7 @@ def load_clubs_from_db(conn: sqlite3.Connection, save_id: int | None = None) -> 
                 injury_days_remaining=int(row["injury_days_remaining"] or 0) if "injury_days_remaining" in row.keys() else 0,
                 injury_count=int(row["injury_count"] or 0) if "injury_count" in row.keys() else 0,
                 age=int(row["age"] or 0) if "age" in row.keys() else 0,
+                alt_positions=list(alt_positions_by_player.get(player_id, [])),
             )
         )
 
@@ -1133,6 +1176,14 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
             """,
             (int(save_id), int(save_id), int(save_id), club_id),
         ).fetchall()
+    alt_pos_rows = conn.execute(
+        "SELECT player_id, position FROM player_alt_positions WHERE player_id IN "
+        f"(SELECT id FROM players WHERE club_id = ?)",
+        (club_id,),
+    ).fetchall()
+    alt_positions_by_player: Dict[str, List[str]] = {}
+    for ap_row in alt_pos_rows:
+        alt_positions_by_player.setdefault(str(ap_row["player_id"]), []).append(str(ap_row["position"]))
     return [
         {
             "id": str(row["id"]),
@@ -1158,6 +1209,7 @@ def list_club_players(conn: sqlite3.Connection, club_id: str, save_id: int | Non
                 player_id=str(row["id"]),
                 name=str(row["name"]),
             ),
+            "alt_positions": list(alt_positions_by_player.get(str(row["id"]), [])),
         }
         for row in rows
     ]
@@ -1603,6 +1655,8 @@ def apply_training_day(conn: sqlite3.Connection, save_id: int, club_id: str, cur
     attributes_changed = 0
     stamina_cost = 0.0
     notable_gains: List[dict] = []
+    pending_attr_writes: list[tuple] = []
+    pending_stamina_writes: list[tuple] = []
     for player in club.players:
         if not player.is_available:
             continue
@@ -1621,7 +1675,7 @@ def apply_training_day(conn: sqlite3.Connection, save_id: int, club_id: str, cur
             if gain <= 0.0:
                 continue
             updated = min(99.0, current + gain)
-            _save_training_attribute(conn, save_id, player.id, attr, updated)
+            pending_attr_writes.append((int(save_id), str(player.id), str(attr), round(float(updated), 3)))
             if int(updated) > int(current) and int(updated) % 5 == 0:
                 notable_gains.append({
                     "player_name": player.name,
@@ -1636,8 +1690,28 @@ def apply_training_day(conn: sqlite3.Connection, save_id: int, club_id: str, cur
             next_stamina = max(35.0, player.current_stamina + delta)
             stamina_cost += max(0.0, player.current_stamina - next_stamina)
             player.current_stamina = next_stamina
-            save_save_player_condition(conn, save_id, player.id, next_stamina, current_day)
+            pending_stamina_writes.append((int(save_id), player.id, round(next_stamina, 2), int(current_day)))
         players_trained += 1
+    if pending_attr_writes:
+        conn.executemany(
+            """
+            INSERT INTO save_player_attributes (save_id, player_id, key, value)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(save_id, player_id, key) DO UPDATE SET value=excluded.value
+            """,
+            pending_attr_writes,
+        )
+    if pending_stamina_writes:
+        conn.executemany(
+            """
+            INSERT INTO save_player_condition (save_id, player_id, current_stamina, updated_day)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(save_id, player_id) DO UPDATE SET
+                current_stamina=excluded.current_stamina,
+                updated_day=excluded.updated_day
+            """,
+            pending_stamina_writes,
+        )
     return {
         "players_trained": players_trained,
         "attributes_changed": attributes_changed,
@@ -1828,16 +1902,16 @@ def add_save_message(
     return int(cursor.lastrowid)
 
 
-def list_save_messages(conn: sqlite3.Connection, save_id: int, limit: int = 8) -> List[dict]:
+def list_save_messages(conn: sqlite3.Connection, save_id: int, limit: int = 10, offset: int = 0) -> List[dict]:
     rows = conn.execute(
         """
-        SELECT id, category, title, body, date_text, severity, created_at
+        SELECT id, category, title, body, date_text, severity, created_at, is_read
         FROM save_messages
         WHERE save_id = ?
         ORDER BY id DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
         """,
-        (int(save_id), int(limit)),
+        (int(save_id), int(limit), int(offset)),
     ).fetchall()
     return [
         {
@@ -1849,9 +1923,27 @@ def list_save_messages(conn: sqlite3.Connection, save_id: int, limit: int = 8) -
             "date_label": format_game_date(str(row["date_text"])) if row["date_text"] else "",
             "severity": str(row["severity"]),
             "created_at": str(row["created_at"]),
+            "is_read": bool(row["is_read"]),
         }
         for row in rows
     ]
+
+
+def count_save_messages(conn: sqlite3.Connection, save_id: int) -> int:
+    row = conn.execute("SELECT COUNT(*) AS c FROM save_messages WHERE save_id = ?", (int(save_id),)).fetchone()
+    return int(row["c"]) if row else 0
+
+
+def count_unread_messages(conn: sqlite3.Connection, save_id: int) -> int:
+    row = conn.execute("SELECT COUNT(*) AS c FROM save_messages WHERE save_id = ? AND is_read = 0", (int(save_id),)).fetchone()
+    return int(row["c"]) if row else 0
+
+
+def mark_message_read(conn: sqlite3.Connection, save_id: int, message_id: int) -> None:
+    conn.execute(
+        "UPDATE save_messages SET is_read = 1 WHERE id = ? AND save_id = ?",
+        (int(message_id), int(save_id)),
+    )
 
 
 def _daily_recovery_for_profile(profile: PlayerProfile) -> float:
@@ -1871,9 +1963,20 @@ def _advance_club_condition_one_day(clubs: Dict[str, Club]) -> None:
 
 
 def _save_condition_for_clubs(conn: sqlite3.Connection, save_id: int, clubs: Dict[str, Club], current_day: int) -> None:
-    for club in clubs.values():
-        for player in club.players:
-            save_save_player_condition(conn, save_id, player.id, round(player.current_stamina, 2), current_day)
+    conn.executemany(
+        """
+        INSERT INTO save_player_condition (save_id, player_id, current_stamina, updated_day)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(save_id, player_id) DO UPDATE SET
+            current_stamina=excluded.current_stamina,
+            updated_day=excluded.updated_day
+        """,
+        [
+            (int(save_id), player.id, round(player.current_stamina, 2), int(current_day))
+            for club in clubs.values()
+            for player in club.players
+        ],
+    )
 
 
 def _create_daily_save_messages(
@@ -2234,6 +2337,18 @@ def advance_save_one_day(conn: sqlite3.Connection, save_id: int, managed_club_id
     _create_daily_save_messages(conn, save_id, str(managed_club_id or ""), current_date_str, training_result)
     _maybe_generate_team_of_the_week(conn, save_id, current_date_str, managed_club_id)
     completed = complete_season_if_due(conn, save_id)
+    for scout_result in check_and_complete_scout_tasks(conn, save_id, current_date_str):
+        pname = str(scout_result["player_name"]).upper()
+        gain = int(scout_result["gain"])
+        new_pct = int(scout_result["new_pct"])
+        add_save_message(
+            conn, save_id, "scouting",
+            f"SCOUT REPORT: {pname}",
+            f"Your scout returned with new info on {pname}. Attribute knowledge +{gain}% (now {new_pct}% known).",
+            current_date_str,
+            severity="info",
+            dedupe_key=f"scout:{save_id}:{scout_result['player_id']}:{current_date_str}",
+        )
 
     if managed_club_id:
         window_open, window_type = get_transfer_window_status(current_date_str)
@@ -2375,7 +2490,7 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
         clear_active_save_id(conn)
 
 
-def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
+def load_save_overview(conn: sqlite3.Connection, save_id: int, news_page: int = 0) -> dict | None:
     seed_save_player_condition_defaults(conn, save_id)
     seed_save_player_status_defaults(conn, save_id)
     seed_save_club_setups(conn, save_id)
@@ -2443,7 +2558,10 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int) -> dict | None:
         "next_fixture": next_fixture,
         "today_fixture": today_fixture,
         "training": load_save_training(conn, save_id, club_id),
-        "messages": list_save_messages(conn, save_id, limit=8),
+        "messages": list_save_messages(conn, save_id, limit=10, offset=max(0, int(news_page)) * 10),
+        "messages_total": count_save_messages(conn, save_id),
+        "messages_unread": count_unread_messages(conn, save_id),
+        "messages_page": max(0, int(news_page)),
         "finances": get_save_finances(conn, save_id),
     }
 
@@ -2987,7 +3105,7 @@ def get_user_transfer_listings(conn: sqlite3.Connection, save_id: int, managed_c
         """
         SELECT tm.id, tm.player_id, tm.asking_price, tm.listed_date,
                tm.window_type, tm.season_year, tm.status,
-               p.name AS player_name, p.position, p.ovr,
+               p.name AS player_name, p.position, p.ovr, p.age,
                (SELECT COUNT(*) FROM transfer_offers to2
                 WHERE to2.save_id = tm.save_id AND to2.player_id = tm.player_id
                   AND to2.window_type = tm.window_type AND to2.season_year = tm.season_year) AS offer_count
@@ -3165,9 +3283,13 @@ def get_all_user_offers(conn: sqlite3.Connection, save_id: int) -> List[dict]:
         SELECT to2.id, to2.player_id, to2.offer_amount, to2.offer_number,
                to2.status, to2.created_date, to2.response_date,
                to2.window_type, to2.season_year,
-               p.name AS player_name, p.ovr, p.position,
-               tm.asking_price,
-               c.name AS club_name
+               p.name AS player_name, p.ovr, p.position, p.age,
+               tm.asking_price, tm.listed_club_id,
+               c.name AS club_name,
+               cb.template_id AS badge_template_id,
+               cb.primary_color AS badge_primary,
+               cb.secondary_color AS badge_secondary,
+               cb.border_color AS badge_border
         FROM transfer_offers to2
         JOIN players p ON p.id = to2.player_id
         LEFT JOIN transfer_market tm ON tm.save_id = to2.save_id
@@ -3175,6 +3297,7 @@ def get_all_user_offers(conn: sqlite3.Connection, save_id: int) -> List[dict]:
             AND tm.season_year = to2.season_year
             AND tm.window_type = to2.window_type
         LEFT JOIN clubs c ON c.id = tm.listed_club_id
+        LEFT JOIN club_badges cb ON cb.club_id = tm.listed_club_id
         WHERE to2.save_id = ?
           AND to2.status NOT IN ('completed', 'expired')
         ORDER BY to2.id DESC
@@ -3188,7 +3311,7 @@ def get_accepted_offers(conn: sqlite3.Connection, save_id: int) -> List[dict]:
     rows = conn.execute(
         """
         SELECT to2.id, to2.player_id, to2.offer_amount, to2.window_type, to2.season_year,
-               p.name AS player_name, p.ovr, p.position,
+               p.name AS player_name, p.ovr, p.position, p.age,
                tm.listed_club_id,
                c.name AS club_name
         FROM transfer_offers to2
@@ -3365,7 +3488,7 @@ def get_inbound_transfer_offers(conn: sqlite3.Connection, save_id: int, managed_
         """
         SELECT to2.id, to2.player_id, to2.offer_amount, to2.created_date,
                to2.window_type, to2.season_year, to2.offering_club_id,
-               p.name AS player_name, p.position, p.ovr,
+               p.name AS player_name, p.position, p.ovr, p.age,
                oc.name AS offering_club_name,
                cb.template_id AS badge_template_id,
                cb.primary_color AS badge_primary,
@@ -3609,3 +3732,164 @@ def get_finance_transactions(conn: sqlite3.Connection, save_id: int, limit: int 
         (int(save_id), int(limit)),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+STAFF_WEEKLY_SALARIES: dict[str, dict[str, int]] = {
+    "scout": {"average": 500, "good": 1500, "best": 3500},
+    "physio": {"average": 500, "good": 1500, "best": 3500},
+    "academy_coach": {"average": 600, "good": 1800, "best": 4000},
+    "assistant_coach": {"average": 700, "good": 2000, "best": 5000},
+}
+
+SCOUT_DAYS: dict[str, int] = {"average": 10, "good": 8, "best": 7}
+SCOUT_PCT_RANGE: dict[str, tuple[int, int]] = {
+    "average": (15, 25),
+    "good": (19, 35),
+    "best": (25, 50),
+}
+
+
+def get_club_staff(conn: sqlite3.Connection, save_id: int) -> dict[str, str]:
+    rows = conn.execute(
+        "SELECT staff_type, quality FROM club_staff WHERE save_id = ?",
+        (int(save_id),),
+    ).fetchall()
+    return {str(r["staff_type"]): str(r["quality"]) for r in rows}
+
+
+def set_club_staff(conn: sqlite3.Connection, save_id: int, staff_type: str, quality: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO club_staff (save_id, staff_type, quality)
+        VALUES (?, ?, ?)
+        ON CONFLICT(save_id, staff_type) DO UPDATE SET quality=excluded.quality
+        """,
+        (int(save_id), str(staff_type), str(quality)),
+    )
+
+
+def get_player_scouting_pct(conn: sqlite3.Connection, save_id: int, player_id: str, season_year: int) -> int:
+    row = conn.execute(
+        "SELECT revealed_pct FROM player_scouting WHERE save_id=? AND player_id=? AND season_year=?",
+        (int(save_id), str(player_id), int(season_year)),
+    ).fetchone()
+    return int(row["revealed_pct"]) if row else 50
+
+
+def submit_scout_task(
+    conn: sqlite3.Connection,
+    save_id: int,
+    player_id: str,
+    player_name: str,
+    due_date: str,
+    scout_quality: str,
+    pct_min: int,
+    pct_max: int,
+) -> bool:
+    save_row = conn.execute("SELECT season_year FROM saves WHERE id=?", (int(save_id),)).fetchone()
+    season_year = int(save_row["season_year"]) if save_row else 0
+    if get_player_scouting_pct(conn, save_id, player_id, season_year) >= 100:
+        return False
+    conn.execute(
+        """
+        INSERT INTO pending_scout_tasks (save_id, player_id, player_name, due_date, scout_quality, pct_min, pct_max)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (int(save_id), str(player_id), str(player_name), str(due_date), str(scout_quality), int(pct_min), int(pct_max)),
+    )
+    return True
+
+
+def check_and_complete_scout_tasks(conn: sqlite3.Connection, save_id: int, current_date: str) -> list[dict]:
+    import random as _random
+    rows = conn.execute(
+        "SELECT * FROM pending_scout_tasks WHERE save_id=? AND due_date <= ?",
+        (int(save_id), str(current_date)),
+    ).fetchall()
+    completed = []
+    for row in rows:
+        player_id = str(row["player_id"])
+        player_name = str(row["player_name"])
+        pct_min = int(row["pct_min"])
+        pct_max = int(row["pct_max"])
+        save_row = conn.execute("SELECT season_year FROM saves WHERE id=?", (int(save_id),)).fetchone()
+        season_year = int(save_row["season_year"]) if save_row else 0
+        current_pct = get_player_scouting_pct(conn, save_id, player_id, season_year)
+        if current_pct < 100:
+            gain = _random.randint(pct_min, pct_max)
+            new_pct = min(100, current_pct + gain)
+            conn.execute(
+                """
+                INSERT INTO player_scouting (save_id, player_id, season_year, revealed_pct)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(save_id, player_id, season_year) DO UPDATE SET revealed_pct=excluded.revealed_pct
+                """,
+                (int(save_id), str(player_id), int(season_year), int(new_pct)),
+            )
+            completed.append({
+                "player_id": player_id,
+                "player_name": player_name,
+                "old_pct": current_pct,
+                "new_pct": new_pct,
+                "gain": new_pct - current_pct,
+            })
+        conn.execute("DELETE FROM pending_scout_tasks WHERE id=?", (int(row["id"]),))
+    return completed
+
+
+def has_pending_scout_task(conn: sqlite3.Connection, save_id: int, player_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM pending_scout_tasks WHERE save_id=? AND player_id=? LIMIT 1",
+        (save_id, player_id),
+    ).fetchone()
+    return row is not None
+
+
+def get_all_scouting_data(conn: sqlite3.Connection, save_id: int, season_year: int) -> list[dict]:
+    """Return combined list of all scouted/active-scout entries for a save."""
+    rows = conn.execute(
+        "SELECT player_id, revealed_pct FROM player_scouting WHERE save_id=? AND season_year=?",
+        (save_id, season_year),
+    ).fetchall()
+    pct_map: dict[str, int] = {str(r["player_id"]): int(r["revealed_pct"]) for r in rows}
+
+    pending_rows = conn.execute(
+        "SELECT player_id, player_name, due_date, scout_quality FROM pending_scout_tasks WHERE save_id=?",
+        (save_id,),
+    ).fetchall()
+    pending_map: dict[str, dict] = {
+        str(r["player_id"]): {
+            "player_name": str(r["player_name"]),
+            "due_date": str(r["due_date"]),
+            "scout_quality": str(r["scout_quality"]),
+        }
+        for r in pending_rows
+    }
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+
+    for pid, info in pending_map.items():
+        seen.add(pid)
+        entries.append({
+            "player_id": pid,
+            "player_name": info["player_name"],
+            "revealed_pct": pct_map.get(pid, 50),
+            "is_pending": True,
+            "due_date": info["due_date"],
+            "scout_quality": info["scout_quality"],
+        })
+
+    for pid, pct in pct_map.items():
+        if pid in seen:
+            continue
+        entries.append({
+            "player_id": pid,
+            "player_name": pid,
+            "revealed_pct": pct,
+            "is_pending": False,
+            "due_date": None,
+            "scout_quality": None,
+        })
+
+    return entries

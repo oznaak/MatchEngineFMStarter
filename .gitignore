@@ -7,3 +7,11 @@ __pycache__
 docs.md
 data/game.db
 CLAUDE.md
+data/league.json
+data/game.db-shm
+data/game.db-wal
+.claude/settings.local.json
+populate_from_api.py
+add_missing_teams.py
+add_pl_teams.py
+add_remaining_pl_teams.py

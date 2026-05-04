@@ -209,6 +209,7 @@ class PlayerProfile:
     injury_days_remaining: int = 0
     injury_count: int = 0
     age: int = 0
+    alt_positions: List[str] = field(default_factory=list)
 
     @property
     def is_available(self) -> bool:
@@ -279,6 +280,7 @@ class PlayerState:
     injury_days: int = 0
     fouls_committed: int = 0
     fouls_suffered: int = 0
+    pos_penalty: float = 1.0
 
     def __post_init__(self) -> None:
         self.prev_x = self.x

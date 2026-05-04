@@ -45,6 +45,17 @@ from engine.db import (
     save_training_settings,
     set_active_save_id,
     trigger_totw_for_match_day,
+    mark_message_read,
+    list_club_players,
+    get_club_staff,
+    set_club_staff,
+    get_player_scouting_pct,
+    has_pending_scout_task,
+    get_all_scouting_data,
+    submit_scout_task,
+    SCOUT_DAYS,
+    SCOUT_PCT_RANGE,
+    STAFF_WEEKLY_SALARIES,
 )
 from engine.loader import available_formations, pick_best_xi
 from engine.match_engine import MatchEngine
@@ -258,6 +269,20 @@ class ManagerGameApp:
         self.squad_roles_selected_role: str | None = None
         self.transfer_data: dict = {}
         self.transfer_negotiate_offer_id: str | None = None
+        self.overview_news_page: int = 0
+        # Detail screens
+        self.detail_club_id: str | None = None
+        self.detail_club_data: dict | None = None
+        self.detail_player_id: str | None = None
+        self.detail_player_data: dict | None = None
+        self.detail_selected_player_id: str | None = None
+        self.detail_show_attrs: bool = False
+        self.detail_nav_stack: list[tuple[str, str]] = []
+        self.detail_is_user_club: bool = True
+        self.detail_scouting_pct: int = 100
+        self.detail_scout_pending: bool = False
+        # Staff
+        self.staff_data: dict[str, str] = {}
         self._reload_state(apply_display=True)
 
     def _fixture_gameweeks(self) -> list[int]:
@@ -290,6 +315,18 @@ class ManagerGameApp:
         self.fixtures_page = current
         self._clamp_fixtures_page()
 
+    def _reload_overview(self) -> None:
+        if self.active_save_id is None:
+            return
+        with db_session(self.db_path) as conn:
+            self.overview = load_save_overview(conn, self.active_save_id, news_page=self.overview_news_page)
+            if self.overview and not self.overview_club_id:
+                self.overview_club_id = self.overview["club_id"]
+        if self.overview:
+            self._load_squad_draft()
+            self._clamp_fixtures_page()
+        self._reload_transfer_data()
+
     def _reload_state(self, apply_display: bool = False) -> None:
         with db_session(self.db_path) as conn:
             bootstrap_database(conn)
@@ -316,11 +353,13 @@ class ManagerGameApp:
                 self.selected_save_id = None
             self.active_save_id = load_active_save_id(conn)
             if self.active_save_id is not None:
-                self.overview = load_save_overview(conn, self.active_save_id)
+                self.overview = load_save_overview(conn, self.active_save_id, news_page=self.overview_news_page)
                 if self.overview and not self.overview_club_id:
                     self.overview_club_id = self.overview["club_id"]
+                self.staff_data = get_club_staff(conn, self.active_save_id)
             else:
                 self.overview = None
+                self.staff_data = {}
         if self.overview:
             self._load_squad_draft()
             self._clamp_fixtures_page()
@@ -358,7 +397,8 @@ class ManagerGameApp:
         with db_session(self.db_path) as conn:
             set_active_save_id(conn, save_id)
             conn.commit()
-            self.overview = load_save_overview(conn, save_id)
+            self.overview = load_save_overview(conn, save_id, news_page=0)
+        self.overview_news_page = 0
         self.active_save_id = save_id
         if self.overview:
             self.overview_club_id = self.overview["club_id"]
@@ -1106,10 +1146,10 @@ class ManagerGameApp:
         if self.active_save_id is None:
             return
         with db_session(self.db_path) as conn:
-            bootstrap_database(conn)
             managed_club_id = self._managed_club_id()
             advance_save_one_day(conn, self.active_save_id, managed_club_id)
-        self._reload_state()
+        self._reload_overview()
+        pygame.event.clear()  # discard clicks that queued during the blocking DB work
 
     def _finish_matchday(self) -> None:
         self._finish_matchday_with_score(None)
@@ -1336,6 +1376,46 @@ class ManagerGameApp:
             ],
         }
 
+    def _navigate_to_club(self, club_id: str) -> None:
+        clubs_meta = (self.overview or {}).get("clubs", [])
+        club_meta = next((c for c in clubs_meta if c.get("id") == club_id), None)
+        if club_meta is None:
+            return
+        with db_session(self.db_path) as conn:
+            players = list_club_players(conn, club_id, save_id=self.active_save_id)
+        club_setup = (self.overview or {}).get("club_setups", {}).get(club_id, {})
+        self.detail_club_data = {
+            **club_meta,
+            "players": players,
+            "formation": str(club_setup.get("formation", "4-3-3")),
+        }
+        self.detail_player_data = None
+        self.detail_selected_player_id = None
+        self.detail_show_attrs = False
+        self.detail_nav_stack = [(self.screen, self.overview_tab)]
+        self.screen = "club_detail"
+
+    def _navigate_to_player(self, player_id: str) -> None:
+        players = (self.detail_club_data or {}).get("players", [])
+        player = next((p for p in players if p.get("id") == player_id), None)
+        if player is None:
+            return
+        self.detail_player_data = player
+        self.detail_show_attrs = False
+        managed_club_id = (self.overview or {}).get("club_id", "")
+        player_club_id = str((self.detail_club_data or {}).get("id", ""))
+        self.detail_is_user_club = (player_club_id == managed_club_id)
+        self.detail_scout_pending: bool = False
+        if not self.detail_is_user_club and self.active_save_id:
+            season_year = int((self.overview or {}).get("season_year", 0))
+            with db_session(self.db_path) as conn:
+                self.detail_scouting_pct = get_player_scouting_pct(conn, self.active_save_id, player_id, season_year)
+                self.detail_scout_pending = has_pending_scout_task(conn, self.active_save_id, player_id)
+        else:
+            self.detail_scouting_pct = 100
+        self.detail_nav_stack.append((self.screen, self.overview_tab))
+        self.screen = "player_detail"
+
     def _handle_action(self, action: str | None) -> None:
         if not action:
             return
@@ -1560,6 +1640,12 @@ class ManagerGameApp:
             if tab in {"club", "club_finances"}:
                 self.overview_tab = "club_finances"
                 return
+            if tab == "club_staff":
+                self.overview_tab = "club_staff"
+                return
+            if tab == "club_scouting":
+                self.overview_tab = "club_scouting"
+                return
             if tab in {"squad", "squad_formation"}:
                 tab = "squad_formation"
             elif tab == "squad_players":
@@ -1728,6 +1814,12 @@ class ManagerGameApp:
                 return
             msg = next((m for m in (self.overview or {}).get("messages", []) if m.get("id") == msg_id), None)
             if msg:
+                # Mark as read in DB
+                if self.active_save_id and not msg.get("is_read"):
+                    with db_session(self.db_path) as conn:
+                        mark_message_read(conn, self.active_save_id, msg_id)
+                        conn.commit()
+                    self._reload_state()
                 body_str = str(msg.get("body", ""))
                 totw_data = None
                 try:
@@ -1746,6 +1838,18 @@ class ManagerGameApp:
                     "date": str(msg.get("date_text", "")),
                     "buttons": [{"label": "CLOSE", "action": "modal:close"}],
                 }
+            return
+        if action.startswith("news:page:"):
+            try:
+                page = int(action.split(":", 2)[2])
+            except (ValueError, IndexError):
+                return
+            if not self.active_save_id or not self.overview:
+                return
+            total = int(self.overview.get("messages_total", 0))
+            max_page = max(0, (total - 1) // 10)
+            self.overview_news_page = max(0, min(page, max_page))
+            self._reload_state()
             return
         if action.startswith("squad:list_player:"):
             player_id = action.split(":", 2)[2]
@@ -2007,6 +2111,129 @@ class ManagerGameApp:
                 "buttons": [{"label": "OK", "action": "modal:close"}],
             }
             return
+        if action.startswith("goto:club:"):
+            self._navigate_to_club(action[len("goto:club:"):])
+            return
+        if action.startswith("goto:player:"):
+            self._navigate_to_player(action[len("goto:player:"):])
+            return
+        if action == "back":
+            if self.detail_nav_stack:
+                prev_screen, prev_tab = self.detail_nav_stack.pop()
+            else:
+                prev_screen, prev_tab = "overview", "matches_standings"
+            self.screen = prev_screen
+            self.overview_tab = prev_tab
+            self.detail_player_data = None
+            if prev_screen != "club_detail":
+                self.detail_club_data = None
+                self.detail_nav_stack.clear()
+            return
+        if action == "player_detail:toggle_attrs":
+            self.detail_show_attrs = not self.detail_show_attrs
+            return
+        if action == "scout:request":
+            player = self.detail_player_data or {}
+            player_id = str(player.get("id", ""))
+            player_name = str(player.get("name", "PLAYER")).upper()
+            if not player_id or not self.active_save_id:
+                return
+            scout_quality = self.staff_data.get("scout", "")
+            if not scout_quality:
+                self.modal = {
+                    "title": "NO SCOUT",
+                    "message": "You have no scout on staff.\nHire a scout from the Club > Staff menu.",
+                    "buttons": [{"label": "OK", "action": "modal:close"}],
+                }
+                return
+            self.modal = {
+                "title": "SEND SCOUT?",
+                "message": f"Send your {scout_quality.upper()} scout\nto watch {player_name}?\nReport in {SCOUT_DAYS[scout_quality]} days.",
+                "buttons": [
+                    {"label": "YES, SEND SCOUT", "action": f"scout:confirm:{player_id}", "fill": (46, 160, 67)},
+                    {"label": "CANCEL", "action": "modal:close"},
+                ],
+            }
+            return
+        if action.startswith("scout:confirm:"):
+            player_id = action[len("scout:confirm:"):]
+            if not self.active_save_id or not self.overview:
+                return
+            scout_quality = self.staff_data.get("scout", "")
+            if not scout_quality or not player_id:
+                return
+            current_date = str(self.overview.get("current_date", ""))
+            player = self.detail_player_data or {}
+            player_name = str(player.get("name", "PLAYER"))
+            from datetime import date as _date, timedelta as _td
+            days = SCOUT_DAYS.get(scout_quality, 10)
+            due_date = (_date.fromisoformat(current_date) + _td(days=days)).isoformat()
+            pct_min, pct_max = SCOUT_PCT_RANGE.get(scout_quality, (15, 25))
+            with db_session(self.db_path) as conn:
+                submit_scout_task(conn, self.active_save_id, player_id, player_name, due_date, scout_quality, pct_min, pct_max)
+                conn.commit()
+            self.detail_scout_pending = True
+            self.modal = {
+                "title": "SCOUT DISPATCHED",
+                "message": f"Scout sent to watch {player_name.upper()}.\nExpect a report in {days} days.",
+                "buttons": [{"label": "OK", "action": "modal:close"}],
+            }
+            return
+        if action.startswith("staff:hire:"):
+            parts = action.split(":")
+            if len(parts) < 4:
+                return
+            staff_type, quality = parts[2], parts[3]
+            salary = STAFF_WEEKLY_SALARIES.get(staff_type, {}).get(quality, 0)
+            self.modal = {
+                "title": f"HIRE {quality.upper()} {staff_type.upper().replace('_', ' ')}?",
+                "message": f"Weekly salary: £{salary:,}\nThis replaces any existing staff\nof this type.",
+                "buttons": [
+                    {"label": "HIRE", "action": f"staff:confirm:{staff_type}:{quality}", "fill": (46, 160, 67)},
+                    {"label": "CANCEL", "action": "modal:close"},
+                ],
+            }
+            return
+        if action.startswith("staff:confirm:"):
+            parts = action.split(":")
+            if len(parts) < 4:
+                return
+            staff_type, quality = parts[2], parts[3]
+            if not self.active_save_id:
+                return
+            with db_session(self.db_path) as conn:
+                set_club_staff(conn, self.active_save_id, staff_type, quality)
+                conn.commit()
+                self.staff_data = get_club_staff(conn, self.active_save_id)
+            self.modal = None
+            return
+        if action.startswith("scouting:player:"):
+            player_id = action[len("scouting:player:"):]
+            if not player_id or not self.overview:
+                return
+            clubs = (self.overview or {}).get("clubs", [])
+            target_club = None
+            target_player = None
+            for c in clubs:
+                club_id = str(c.get("id", ""))
+                with db_session(self.db_path) as conn:
+                    players = list_club_players(conn, club_id, save_id=self.active_save_id)
+                p = next((pl for pl in players if str(pl.get("id", "")) == player_id), None)
+                if p:
+                    target_club = c
+                    target_player = players
+                    break
+            if not target_club:
+                return
+            club_setup = (self.overview or {}).get("club_setups", {}).get(str(target_club.get("id", "")), {})
+            self.detail_club_data = {
+                **target_club,
+                "players": target_player,
+                "formation": str(club_setup.get("formation", "4-3-3")),
+            }
+            self.detail_nav_stack = [(self.screen, self.overview_tab)]
+            self._navigate_to_player(player_id)
+            return
 
     def _handle_keydown(self, event: pygame.event.Event) -> None:
         if self.modal:
@@ -2069,6 +2296,10 @@ class ManagerGameApp:
             if self._is_bound(event, "bind_menu", "escape"):
                 self._handle_action("back:match_report")
             return
+        if self.screen in ("club_detail", "player_detail"):
+            if self._is_bound(event, "bind_menu", "escape"):
+                self._handle_action("back")
+            return
         if self.screen == "overview" and not self.modal and event.key == pygame.K_SPACE:
             if self.overview and self.overview.get("today_fixture"):
                 self._handle_action("overview:play_next_match")
@@ -2122,9 +2353,40 @@ class ManagerGameApp:
             club_id = overview.get("club_id", "")
             listed_ids: list[str] = [str(l.get("player_id", "")) for l in self.transfer_data.get("user_listings", [])]
             finance_transactions: list[dict] = []
+            scouting_entries: list[dict] = []
             if self.active_save_id and self.overview_tab == "club_finances":
                 with db_session(self.db_path) as conn:
                     finance_transactions = get_finance_transactions(conn, self.active_save_id)
+            if self.active_save_id and self.overview_tab == "club_scouting":
+                season_year = int(overview.get("season_year", 0))
+                clubs_meta = overview.get("clubs", [])
+                with db_session(self.db_path) as conn:
+                    scouting_entries = get_all_scouting_data(conn, self.active_save_id, season_year)
+                    # Build player→club lookup for enrichment
+                    player_club_map: dict[str, dict] = {}
+                    player_info_map: dict[str, dict] = {}
+                    for c in clubs_meta:
+                        cid = str(c.get("id", ""))
+                        cplayers = list_club_players(conn, cid, save_id=self.active_save_id)
+                        for p in cplayers:
+                            pid = str(p.get("id", ""))
+                            player_club_map[pid] = c
+                            player_info_map[pid] = p
+                for entry in scouting_entries:
+                    pid = str(entry.get("player_id", ""))
+                    p = player_info_map.get(pid)
+                    c = player_club_map.get(pid)
+                    if p:
+                        entry["player_name"] = str(p.get("name", entry.get("player_name", pid)))
+                        entry["ovr"] = int(p.get("ovr", 0))
+                        entry["age"] = int(p.get("age", 0))
+                        entry["pos"] = str(p.get("position", ""))
+                        entry["player_data"] = p
+                    if c:
+                        entry["club_name"] = str(c.get("name", ""))
+                        entry["club_badge"] = c.get("badge")
+                        entry["club_primary"] = str(c.get("primary_color", "#2E3A6A"))
+                        entry["club_secondary"] = str(c.get("secondary_color", "#F5F5F5"))
             return {
                 "screen": "overview",
                 "overview": overview,
@@ -2135,6 +2397,9 @@ class ManagerGameApp:
                 "transfer_data": self.transfer_data,
                 "transfer_listed_ids": listed_ids,
                 "finance_transactions": finance_transactions,
+                "scouting_entries": scouting_entries,
+                "news_page": self.overview_news_page,
+                "staff_data": self.staff_data,
                 "squad_draft": {
                     "formation": self.squad_draft_formation,
                     "xi_ids": self.squad_draft_xi_ids,
@@ -2152,6 +2417,29 @@ class ManagerGameApp:
                     "roles": self.squad_roles,
                     "roles_selected_role": self.squad_roles_selected_role,
                 },
+            }
+        if self.screen == "club_detail":
+            return {
+                "screen": "club_detail",
+                "club": self.detail_club_data or {},
+                "players": (self.detail_club_data or {}).get("players", []),
+                "standings": (self.overview or {}).get("standings", []),
+                "fixtures": (self.overview or {}).get("fixtures", []),
+                "clubs_meta": (self.overview or {}).get("clubs", []),
+                "selected_player_id": self.detail_selected_player_id,
+                "show_attrs": self.detail_show_attrs,
+            }
+        if self.screen == "player_detail":
+            return {
+                "screen": "player_detail",
+                "player": self.detail_player_data or {},
+                "club": self.detail_club_data or {},
+                "show_attrs": self.detail_show_attrs,
+                "is_user_club": self.detail_is_user_club,
+                "scouting_pct": self.detail_scouting_pct,
+                "scout_pending": self.detail_scout_pending,
+                "has_scout": "scout" in self.staff_data,
+                "staff_data": self.staff_data,
             }
         return {"screen": "menu", "footer_text": footer_text}
 
