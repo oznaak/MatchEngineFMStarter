@@ -2190,6 +2190,9 @@ def start_next_season_if_ready(conn: sqlite3.Connection, save_id: int) -> bool:
     all_leagues = conn.execute("SELECT id FROM leagues").fetchall()
     for league_row in all_leagues:
         _seed_fixtures_for_save(conn, save_id, str(league_row["id"]), next_year)
+    from .cups import seed_cup_for_save, CUP_CONFIGS
+    for cup_key in CUP_CONFIGS:
+        seed_cup_for_save(conn, save_id, cup_key, next_year)
     add_save_message(
         conn,
         save_id,
@@ -2416,6 +2419,8 @@ def advance_save_one_day(conn: sqlite3.Connection, save_id: int, managed_club_id
     # Weekly AI transfers every 7 days
     if next_day % 7 == 0:
         simulate_ai_transfers(conn, save_id)
+    from .cups import advance_cup_rounds
+    advance_cup_rounds(conn, save_id, current_date_str)
 
     _create_daily_save_messages(conn, save_id, str(managed_club_id or ""), current_date_str, training_result)
     _maybe_generate_team_of_the_week(conn, save_id, current_date_str, managed_club_id)
@@ -2514,6 +2519,9 @@ def create_save_game(conn: sqlite3.Connection, manager_name: str, league_id: str
     all_leagues = conn.execute("SELECT id FROM leagues").fetchall()
     for league_row in all_leagues:
         _seed_fixtures_for_save(conn, save_id, str(league_row["id"]), season_year)
+    from .cups import seed_cup_for_save, CUP_CONFIGS
+    for cup_key in CUP_CONFIGS:
+        seed_cup_for_save(conn, save_id, cup_key, season_year)
     seed_save_player_condition_defaults(conn, save_id)
     seed_save_player_status_defaults(conn, save_id)
     seed_save_club_setups(conn, save_id)
