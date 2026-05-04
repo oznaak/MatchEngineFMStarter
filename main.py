@@ -56,6 +56,8 @@ from engine.db import (
     SCOUT_DAYS,
     SCOUT_PCT_RANGE,
     STAFF_WEEKLY_SALARIES,
+    load_all_competitions,
+    load_cup_bracket,
 )
 from engine.loader import available_formations, pick_best_xi
 from engine.match_engine import MatchEngine
@@ -283,6 +285,9 @@ class ManagerGameApp:
         self.detail_scout_pending: bool = False
         # Staff
         self.staff_data: dict[str, str] = {}
+        self.competitions_data: list = []
+        self.cup_bracket_data: dict = {}
+        self.cup_bracket_competition_id: str = ""
         self._reload_state(apply_display=True)
 
     def _fixture_gameweeks(self) -> list[int]:
@@ -2111,6 +2116,30 @@ class ManagerGameApp:
                 "buttons": [{"label": "OK", "action": "modal:close"}],
             }
             return
+        if action == "nav:world_competitions":
+            if self.active_save_id:
+                with db_session(self.db_path) as conn:
+                    self.competitions_data = load_all_competitions(conn, self.active_save_id)
+            self.screen = "world_competitions"
+            return
+        if action.startswith("open_cup_bracket:"):
+            comp_id = action.split(":", 1)[1]
+            if self.active_save_id:
+                with db_session(self.db_path) as conn:
+                    self.cup_bracket_data = load_cup_bracket(conn, self.active_save_id, comp_id)
+            self.cup_bracket_competition_id = comp_id
+            self.screen = "cup_bracket"
+            return
+        if action.startswith("open_league_standings:"):
+            self.screen = "overview"
+            self.overview_tab = "matches_standings"
+            return
+        if action == "back:world_competitions":
+            if self.active_save_id:
+                with db_session(self.db_path) as conn:
+                    self.competitions_data = load_all_competitions(conn, self.active_save_id)
+            self.screen = "world_competitions"
+            return
         if action.startswith("goto:club:"):
             self._navigate_to_club(action[len("goto:club:"):])
             return
@@ -2417,6 +2446,17 @@ class ManagerGameApp:
                     "roles": self.squad_roles,
                     "roles_selected_role": self.squad_roles_selected_role,
                 },
+            }
+        if self.screen == "world_competitions":
+            return {
+                "screen": "world_competitions",
+                "competitions": self.competitions_data,
+            }
+        if self.screen == "cup_bracket":
+            return {
+                "screen": "cup_bracket",
+                "competition_id": self.cup_bracket_competition_id,
+                "bracket": self.cup_bracket_data,
             }
         if self.screen == "club_detail":
             return {
