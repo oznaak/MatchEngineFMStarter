@@ -2486,7 +2486,10 @@ def create_save_game(conn: sqlite3.Connection, manager_name: str, league_id: str
         (manager_id, league_id, club_id, season_year, start_date.isoformat()),
     )
     save_id = int(cursor.lastrowid)
-    _seed_fixtures_for_save(conn, save_id, league_id, season_year)
+    _seed_save_league_clubs(conn, save_id, season_year)
+    all_leagues = conn.execute("SELECT id FROM leagues").fetchall()
+    for league_row in all_leagues:
+        _seed_fixtures_for_save(conn, save_id, str(league_row["id"]), season_year)
     seed_save_player_condition_defaults(conn, save_id)
     seed_save_player_status_defaults(conn, save_id)
     seed_save_club_setups(conn, save_id)
@@ -2927,30 +2930,56 @@ def load_save_standings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
     return standings
 
 
-def _seed_fixtures_for_save(conn: sqlite3.Connection, save_id: int, league_id: str, season_year: int) -> None:
+def _seed_save_league_clubs(conn: sqlite3.Connection, save_id: int, season_year: int) -> None:
+    rows = conn.execute("SELECT league_id, club_id FROM league_clubs").fetchall()
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO save_league_clubs (save_id, league_id, club_id, season)
+        VALUES (?, ?, ?, ?)
+        """,
+        [(save_id, str(r["league_id"]), str(r["club_id"]), season_year) for r in rows],
+    )
+
+
+def _seed_fixtures_for_save(
+    conn: sqlite3.Connection,
+    save_id: int,
+    league_id: str,
+    season_year: int,
+    competition_id: str | None = None,
+) -> None:
+    if competition_id is None:
+        competition_id = f"{league_id}_{season_year}"
     club_rows = conn.execute(
         """
         SELECT club_id
-        FROM league_clubs
-        WHERE league_id = ?
-        ORDER BY display_order, club_id
+        FROM save_league_clubs
+        WHERE save_id = ? AND league_id = ? AND season = ?
+        ORDER BY club_id
         """,
-        (league_id,),
+        (save_id, league_id, season_year),
     ).fetchall()
+    if not club_rows:
+        club_rows = conn.execute(
+            "SELECT club_id FROM league_clubs WHERE league_id = ? ORDER BY display_order, club_id",
+            (league_id,),
+        ).fetchall()
     club_ids = [str(row["club_id"]) for row in club_rows]
+    if len(club_ids) < 2:
+        return
     match_day = 1
-    fixture_rows: List[tuple[int, int, str, str, str]] = []
+    fixture_rows: List[tuple] = []
     match_date = first_match_date(season_year)
     matches_per_round = max(1, len(club_ids) // 2)
     for home_id, away_id in _generate_double_round_robin(club_ids):
-        fixture_rows.append((save_id, match_day, match_date.isoformat(), home_id, away_id))
+        fixture_rows.append((save_id, match_day, match_date.isoformat(), home_id, away_id, competition_id))
         if len(fixture_rows) % matches_per_round == 0:
             match_day += 1
             match_date += timedelta(days=7)
     conn.executemany(
         """
-        INSERT INTO fixtures (save_id, match_day, fixture_date, home_club_id, away_club_id)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO fixtures (save_id, match_day, fixture_date, home_club_id, away_club_id, competition_id)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         fixture_rows,
     )
