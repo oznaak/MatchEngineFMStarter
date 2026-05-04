@@ -2781,6 +2781,24 @@ def save_fixture_result(
             int(fixture_id),
         ),
     )
+    # Update pre-aggregated standings
+    if fixture_meta is not None:
+        fid_row = conn.execute(
+            "SELECT competition_id FROM fixtures WHERE id=?", (int(fixture_id),)
+        ).fetchone()
+        comp_id = str(fid_row["competition_id"] or "") if fid_row else ""
+        if comp_id:
+            from .simulation import _update_standings
+            season_row = conn.execute(
+                "SELECT season_year FROM saves WHERE id=?", (fixture_meta[0],)
+            ).fetchone()
+            season = int(season_row["season_year"]) if season_row else 2025
+            _update_standings(
+                conn, fixture_meta[0], comp_id, season,
+                str(fixture_meta[1]), str(fixture_meta[2]),
+                int(home_goals), int(away_goals),
+            )
+
     if report is not None and fixture_meta is not None:
         apply_match_report_player_status(conn, fixture_meta[0], report)
 
@@ -2814,42 +2832,70 @@ def set_save_current_day(conn: sqlite3.Connection, save_id: int, current_day: in
     )
 
 
-def load_save_standings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
-    save_row = conn.execute("SELECT league_id FROM saves WHERE id = ?", (save_id,)).fetchone()
+def load_save_standings(conn: sqlite3.Connection, save_id: int, competition_id: str | None = None) -> List[dict]:
+    save_row = conn.execute(
+        "SELECT league_id, season_year FROM saves WHERE id = ?", (save_id,)
+    ).fetchone()
     if save_row is None:
         return []
-    clubs = list_league_clubs(conn, str(save_row["league_id"]))
-    table = {
-        club["id"]: {
-            "club_id": club["id"],
-            "club_name": club["name"],
-            "played": 0,
-            "wins": 0,
-            "draws": 0,
-            "losses": 0,
-            "goals_for": 0,
-            "goals_against": 0,
-            "goal_difference": 0,
-            "points": 0,
-            "recent_form": [],
-            "next_fixture": None,
-        }
-        for club in clubs
-    }
-    club_names = {club["id"]: club["name"] for club in clubs}
+    league_id = str(save_row["league_id"])
+    season_year = int(save_row["season_year"] or current_season_year())
 
-    rows = conn.execute(
+    if competition_id is None:
+        competition_id = f"{league_id}_{season_year}"
+
+    # Derive league_id from competition_id for club list lookup
+    comp_league_id = competition_id.split("_")[0] if "_" in competition_id else league_id
+
+    clubs_rows = conn.execute(
+        """
+        SELECT slc.club_id, c.name
+        FROM save_league_clubs slc
+        JOIN clubs c ON c.id = slc.club_id
+        WHERE slc.save_id = ? AND slc.league_id = ? AND slc.season = ?
+        ORDER BY slc.club_id
+        """,
+        (save_id, comp_league_id, season_year),
+    ).fetchall()
+    if not clubs_rows:
+        clubs_rows = conn.execute(
+            """
+            SELECT lc.club_id, c.name
+            FROM league_clubs lc
+            JOIN clubs c ON c.id = lc.club_id
+            WHERE lc.league_id = ?
+            ORDER BY lc.display_order, lc.club_id
+            """,
+            (comp_league_id,),
+        ).fetchall()
+
+    table = {
+        str(row["club_id"]): {
+            "club_id": str(row["club_id"]),
+            "club_name": str(row["name"]),
+            "played": 0, "wins": 0, "draws": 0, "losses": 0,
+            "goals_for": 0, "goals_against": 0, "goal_difference": 0,
+            "points": 0, "recent_form": [], "next_fixture": None,
+        }
+        for row in clubs_rows
+    }
+    club_names = {str(r["club_id"]): str(r["name"]) for r in clubs_rows}
+
+    played_rows = conn.execute(
         """
         SELECT id, fixture_date, home_club_id, away_club_id, home_goals, away_goals
         FROM fixtures
         WHERE save_id = ? AND played = 1
+          AND (competition_id = ? OR (competition_id IS NULL AND ? LIKE 'ENG1%'))
         ORDER BY fixture_date, id
         """,
-        (save_id,),
+        (save_id, competition_id, competition_id),
     ).fetchall()
-    for row in rows:
+    for row in played_rows:
         home_id = str(row["home_club_id"])
         away_id = str(row["away_club_id"])
+        if home_id not in table or away_id not in table:
+            continue
         home_goals = int(row["home_goals"] or 0)
         away_goals = int(row["away_goals"] or 0)
         home = table[home_id]
@@ -2861,31 +2907,25 @@ def load_save_standings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
         away["goals_for"] += away_goals
         away["goals_against"] += home_goals
         if home_goals > away_goals:
-            home["wins"] += 1
-            away["losses"] += 1
+            home["wins"] += 1; away["losses"] += 1
             home["points"] += 3
             home_result, away_result = "W", "L"
         elif away_goals > home_goals:
-            away["wins"] += 1
-            home["losses"] += 1
+            away["wins"] += 1; home["losses"] += 1
             away["points"] += 3
             home_result, away_result = "L", "W"
         else:
-            home["draws"] += 1
-            away["draws"] += 1
-            home["points"] += 1
-            away["points"] += 1
+            home["draws"] += 1; away["draws"] += 1
+            home["points"] += 1; away["points"] += 1
             home_result, away_result = "D", "D"
         base = {
             "fixture_id": int(row["id"]),
             "fixture_date": str(row["fixture_date"] or ""),
             "fixture_date_label": format_game_date(str(row["fixture_date"] or "")),
-            "home_club_id": home_id,
-            "away_club_id": away_id,
+            "home_club_id": home_id, "away_club_id": away_id,
             "home_name": club_names.get(home_id, home_id),
             "away_name": club_names.get(away_id, away_id),
-            "home_goals": home_goals,
-            "away_goals": away_goals,
+            "home_goals": home_goals, "away_goals": away_goals,
         }
         home["recent_form"].append({**base, "result": home_result, "opponent_id": away_id, "opponent_name": club_names.get(away_id, away_id)})
         away["recent_form"].append({**base, "result": away_result, "opponent_id": home_id, "opponent_name": club_names.get(home_id, home_id)})
@@ -2895,9 +2935,10 @@ def load_save_standings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
         SELECT id, fixture_date, home_club_id, away_club_id
         FROM fixtures
         WHERE save_id = ? AND played = 0
+          AND (competition_id = ? OR (competition_id IS NULL AND ? LIKE 'ENG1%'))
         ORDER BY fixture_date, id
         """,
-        (save_id,),
+        (save_id, competition_id, competition_id),
     ).fetchall()
     for row in next_rows:
         home_id = str(row["home_club_id"])
@@ -2909,8 +2950,7 @@ def load_save_standings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
                 "fixture_id": int(row["id"]),
                 "fixture_date": str(row["fixture_date"] or ""),
                 "fixture_date_label": format_game_date(str(row["fixture_date"] or "")),
-                "home_club_id": home_id,
-                "away_club_id": away_id,
+                "home_club_id": home_id, "away_club_id": away_id,
                 "home_name": club_names.get(home_id, home_id),
                 "away_name": club_names.get(away_id, away_id),
                 "opponent_id": opponent_id,
@@ -2922,14 +2962,9 @@ def load_save_standings(conn: sqlite3.Connection, save_id: int) -> List[dict]:
     for row in standings:
         row["goal_difference"] = row["goals_for"] - row["goals_against"]
         row["recent_form"] = list(row.get("recent_form", []))[-4:]
-    standings.sort(
-        key=lambda row: (
-            -row["points"],
-            -row["goal_difference"],
-            -row["goals_for"],
-            row["club_name"],
-        )
-    )
+    standings.sort(key=lambda r: (-r["points"], -r["goal_difference"], -r["goals_for"], r["club_name"]))
+    for i, row in enumerate(standings):
+        row["position"] = i + 1
     return standings
 
 
