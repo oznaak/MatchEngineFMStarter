@@ -2541,7 +2541,16 @@ class Renderer:
         else:
             advance_rect = pygame.Rect(right_x - 146, 11, 146, 40)
             self._draw_ui_button(advance_rect, "ADVANCE", primary, secondary, "overview:advance_day")
-            right_x = advance_rect.x - 12
+            skip_rect = pygame.Rect(advance_rect.x - 44, 11, 40, 40)
+            self._draw_ui_button(skip_rect, ">>", (40, 44, 54), (200, 200, 210), "overview:advance_to_event")
+            if skip_rect.collidepoint(pygame.mouse.get_pos()):
+                tooltip_text = "ADVANCE UNTIL NEXT EVENT"
+                tw = text_width(tooltip_text, 1) + 18
+                tt = pygame.Rect(skip_rect.right - tw, skip_rect.bottom + 4, tw, 26)
+                pygame.draw.rect(self.screen, (10, 12, 16), tt, border_radius=5)
+                pygame.draw.rect(self.screen, (248, 187, 32), tt, 1, border_radius=5)
+                draw_text(self.screen, tooltip_text, tt.x + 9, tt.y + 9, (245, 245, 245), scale=1)
+            right_x = skip_rect.x - 12
         info = overview.get("current_date_label", "")
         draw_text(self.screen, info, right_x - text_width(info, 2), 20, (245, 245, 245), scale=2)
 
@@ -3252,6 +3261,7 @@ class Renderer:
             date_label = str(fixture.get("fixture_date_label", ""))
             played = bool(fixture.get("played"))
             has_report = bool(fixture.get("has_report"))
+            has_score = bool(fixture.get("has_score"))
 
             is_user_match = managed_club_id and (home_id == managed_club_id or away_id == managed_club_id)
             row_bg = (24, 28, 40) if is_user_match else (20, 23, 28)
@@ -3260,7 +3270,7 @@ class Renderer:
             row = pygame.Rect(panel.x + 14, y, panel.width - 28, row_h - 8)
             pygame.draw.rect(self.screen, row_bg, row, border_radius=6)
             pygame.draw.rect(self.screen, row_border, row, 1, border_radius=6)
-            if has_report:
+            if has_score:
                 self._register_ui(f"overview:fixture:{fixture['id']}", row)
 
             date_rect = pygame.Rect(row.x + 10, row.y + 11, 90, row.height - 22)
@@ -3299,8 +3309,9 @@ class Renderer:
             if away_id:
                 self._register_ui(f"goto:club:{away_id}", away_name_rect)
 
-            if has_report:
-                draw_text(self.screen, "REPORT", row.right - 98, row.y + row.height - 15, (248, 187, 32), scale=1)
+            if has_score:
+                label = "REPORT" if has_report else "RESULT"
+                draw_text(self.screen, label, row.right - 98, row.y + row.height - 15, (248, 187, 32), scale=1)
             y += row_h
 
     def _draw_overview_players_tab(

@@ -1156,6 +1156,34 @@ class ManagerGameApp:
         self._reload_overview()
         pygame.event.clear()  # discard clicks that queued during the blocking DB work
 
+    def _advance_to_next_event(self) -> None:
+        """Advance days until the user has a match today or a transfer notification appears."""
+        if self.active_save_id is None:
+            return
+        managed_club_id = self._managed_club_id()
+        prev_transfer_unread = self._count_unread_transfer_messages()
+        for _ in range(365):
+            with db_session(self.db_path) as conn:
+                advance_save_one_day(conn, self.active_save_id, managed_club_id)
+            self._reload_overview()
+            if not self.overview:
+                break
+            # Stop when user has a match today
+            if self.overview.get("today_fixture"):
+                break
+            # Stop when a new transfer notification appeared
+            if self._count_unread_transfer_messages() > prev_transfer_unread:
+                break
+        pygame.event.clear()
+
+    def _count_unread_transfer_messages(self) -> int:
+        if not self.overview:
+            return 0
+        return sum(
+            1 for m in self.overview.get("messages", [])
+            if not m.get("is_read") and m.get("category", "") in ("transfer", "transfers", "transfer_offer", "offer")
+        )
+
     def _finish_matchday(self) -> None:
         self._finish_matchday_with_score(None)
 
@@ -1304,11 +1332,26 @@ class ManagerGameApp:
                     report=self._build_match_report(engine, other),
                 )
             save_condition_state_to_conn(conn, season_clubs, self.match_current_day, save_id=self.active_save_id)
+            # Simulate cross-competition AI fixtures on the same calendar date using fast
+            # Poisson model (MatchEngine loop above only covers same match_day integer).
+            fixture_date_str = str(fixture.get("fixture_date", ""))
+            managed_id_str = str(self.overview.get("club_id", "")) if self.overview else ""
+            if fixture_date_str and self.active_save_id is not None:
+                from engine.simulation import simulate_all_ai_fixtures
+                cross_comp_rows = conn.execute(
+                    """
+                    SELECT id, home_club_id, away_club_id, competition_id FROM fixtures
+                    WHERE save_id=? AND played=0 AND fixture_date=?
+                      AND home_club_id!=? AND away_club_id!=?
+                    """,
+                    (self.active_save_id, fixture_date_str, managed_id_str, managed_id_str),
+                ).fetchall()
+                if cross_comp_rows:
+                    sy = int((conn.execute("SELECT season_year FROM saves WHERE id=?", (self.active_save_id,)).fetchone() or {}).get("season_year", 2025))
+                    simulate_all_ai_fixtures(conn, self.active_save_id, cross_comp_rows, sy)
             # Generate TOTW immediately so it appears on the next overview load
             # (uses virtual date = fixture_date + 2 to satisfy the 2-day check)
-            fixture_date_str = str(fixture.get("fixture_date", ""))
             if fixture_date_str and self.overview:
-                managed_id_str = str(self.overview.get("club_id", ""))
                 trigger_totw_for_match_day(conn, self.active_save_id, fixture_date_str, managed_id_str or None)
             conn.commit()
         self.match_condition_saved = True
@@ -1617,6 +1660,24 @@ class ManagerGameApp:
             fixture_id = int(action.split(":", 2)[2])
             with db_session(self.db_path) as conn:
                 report = get_fixture_report(conn, fixture_id)
+                if not report:
+                    # No full report — load minimal score data for the modal
+                    row = conn.execute(
+                        """SELECT f.home_goals, f.away_goals,
+                                  hc.name AS home_name, ac.name AS away_name
+                           FROM fixtures f
+                           JOIN clubs hc ON hc.id = f.home_club_id
+                           JOIN clubs ac ON ac.id = f.away_club_id
+                           WHERE f.id=?""",
+                        (fixture_id,),
+                    ).fetchone()
+                    if row:
+                        self.modal = {
+                            "type": "info",
+                            "title": "FULL TIME",
+                            "message": f"{row['home_name']}  {row['home_goals']} - {row['away_goals']}  {row['away_name']}",
+                            "buttons": [{"label": "CLOSE", "action": "modal:close"}],
+                        }
             if report:
                 self.fixture_report = report
                 home_players = report.get("players", {}).get("home", [])
@@ -1788,6 +1849,9 @@ class ManagerGameApp:
         if action == "overview:advance_day":
             self._advance_one_day()
             return
+        if action == "overview:advance_to_event":
+            self._advance_to_next_event()
+            return
         if action == "back:match_report":
             self.fixture_report = None
             self.fixture_report_selected_player_id = None
@@ -1819,12 +1883,14 @@ class ManagerGameApp:
                 return
             msg = next((m for m in (self.overview or {}).get("messages", []) if m.get("id") == msg_id), None)
             if msg:
-                # Mark as read in DB
+                # Mark as read in DB and update local state without full reload
                 if self.active_save_id and not msg.get("is_read"):
                     with db_session(self.db_path) as conn:
                         mark_message_read(conn, self.active_save_id, msg_id)
                         conn.commit()
-                    self._reload_state()
+                    msg["is_read"] = True
+                    if self.overview:
+                        self.overview["unread_messages"] = max(0, int(self.overview.get("unread_messages", 0)) - 1)
                 body_str = str(msg.get("body", ""))
                 totw_data = None
                 try:

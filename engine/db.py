@@ -2402,18 +2402,26 @@ def advance_save_one_day(conn: sqlite3.Connection, save_id: int, managed_club_id
     current_date_str = str(updated["current_date"])
     season_year_val = int(updated["season_year"])
 
-    # Simulate all non-user AI fixtures scheduled for today (batch — 3 DB ops total)
+    # Simulate all non-user AI fixtures for today (batch — 3 DB ops total).
+    # Skip if the user has a fixture today — defer to after they play so AI results
+    # aren't visible before kickoff (and same-matchday fixtures get full MatchEngine reports).
     from .simulation import simulate_all_ai_fixtures, simulate_ai_transfers
     managed_id_str = str(managed_club_id or "")
-    ai_fixture_rows = conn.execute(
-        """
-        SELECT id, home_club_id, away_club_id, competition_id FROM fixtures
-        WHERE save_id = ? AND played = 0 AND fixture_date = ?
-          AND home_club_id != ? AND away_club_id != ?
-        """,
+    has_user_fixture_today = bool(conn.execute(
+        "SELECT id FROM fixtures WHERE save_id=? AND played=0 AND fixture_date=? AND (home_club_id=? OR away_club_id=?)",
         (save_id, current_date_str, managed_id_str, managed_id_str),
-    ).fetchall()
-    simulate_all_ai_fixtures(conn, save_id, ai_fixture_rows, season_year_val)
+    ).fetchone()) if managed_id_str else False
+
+    if not has_user_fixture_today:
+        ai_fixture_rows = conn.execute(
+            """
+            SELECT id, home_club_id, away_club_id, competition_id FROM fixtures
+            WHERE save_id = ? AND played = 0 AND fixture_date = ?
+              AND home_club_id != ? AND away_club_id != ?
+            """,
+            (save_id, current_date_str, managed_id_str, managed_id_str),
+        ).fetchall()
+        simulate_all_ai_fixtures(conn, save_id, ai_fixture_rows, season_year_val)
 
     # Weekly AI transfers every 7 days
     if next_day % 7 == 0:
@@ -2632,7 +2640,9 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int, news_page: int = 
     next_fixture = get_next_fixture_for_save(conn, save_id, club_id)
     current_date = str(save_row["current_date"] or season_start_date(int(save_row["season_year"] or current_season_year())).isoformat())
     today_fixture = get_playable_fixture_for_save(conn, save_id, club_id, current_date)
-    fixtures = list_save_fixtures(conn, save_id)
+    season_year = int(save_row["season_year"] or 0)
+    user_competition_id = f"{league_id}_{season_year}" if season_year else None
+    fixtures = list_save_fixtures(conn, save_id, competition_id=user_competition_id)
     current_fixture = today_fixture or next_fixture
     if current_fixture:
         current_gameweek = int(current_fixture.get("gameweek", current_fixture.get("match_day", 1)) or 1)
@@ -2666,20 +2676,35 @@ def load_save_overview(conn: sqlite3.Connection, save_id: int, news_page: int = 
     }
 
 
-def list_save_fixtures(conn: sqlite3.Connection, save_id: int) -> List[dict]:
-    rows = conn.execute(
-        """
-        SELECT f.id, f.match_day, f.fixture_date, f.home_club_id, f.away_club_id,
-               hc.name AS home_name, ac.name AS away_name,
-               f.played, f.home_goals, f.away_goals, f.report_json
-        FROM fixtures f
-        JOIN clubs hc ON hc.id = f.home_club_id
-        JOIN clubs ac ON ac.id = f.away_club_id
-        WHERE f.save_id = ?
-        ORDER BY f.fixture_date, f.id
-        """,
-        (save_id,),
-    ).fetchall()
+def list_save_fixtures(conn: sqlite3.Connection, save_id: int, competition_id: str | None = None) -> List[dict]:
+    if competition_id:
+        rows = conn.execute(
+            """
+            SELECT f.id, f.match_day, f.fixture_date, f.home_club_id, f.away_club_id,
+                   hc.name AS home_name, ac.name AS away_name,
+                   f.played, f.home_goals, f.away_goals, f.report_json
+            FROM fixtures f
+            JOIN clubs hc ON hc.id = f.home_club_id
+            JOIN clubs ac ON ac.id = f.away_club_id
+            WHERE f.save_id = ? AND (f.competition_id = ? OR f.competition_id IS NULL)
+            ORDER BY f.fixture_date, f.id
+            """,
+            (save_id, competition_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT f.id, f.match_day, f.fixture_date, f.home_club_id, f.away_club_id,
+                   hc.name AS home_name, ac.name AS away_name,
+                   f.played, f.home_goals, f.away_goals, f.report_json
+            FROM fixtures f
+            JOIN clubs hc ON hc.id = f.home_club_id
+            JOIN clubs ac ON ac.id = f.away_club_id
+            WHERE f.save_id = ?
+            ORDER BY f.fixture_date, f.id
+            """,
+            (save_id,),
+        ).fetchall()
     return [
         {
             "id": int(row["id"]),
@@ -2695,6 +2720,7 @@ def list_save_fixtures(conn: sqlite3.Connection, save_id: int) -> List[dict]:
             "home_goals": None if row["home_goals"] is None else int(row["home_goals"]),
             "away_goals": None if row["away_goals"] is None else int(row["away_goals"]),
             "has_report": bool(row["report_json"]),
+            "has_score": bool(row["played"]) and row["home_goals"] is not None,
         }
         for row in rows
     ]
