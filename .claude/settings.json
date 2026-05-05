@@ -1,0 +1,27 @@
+// Example: ~/.claude.json (recommended for reliability)
+{
+  "projects": {
+    "/home/oznaak/Documents/projects/MatchEngineFMStarter/.claude/settings.json": {
+      "mcpServers": {
+        "filesystem": {
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/username/Desktop", "/path/to/allowed/dir"]
+        }
+      },
+      "allowedTools": [
+        "Task",
+        "Bash",                    // ⚠️ Dangerous: allows all system commands
+        "Bash(git log:*)",   // Safer: only allows git log commands
+        "Glob",
+        "Grep",
+        "LS",
+        "Read",
+        "Edit",
+        "MultiEdit",
+        "Write",
+        "WebFetch",
+        "WebSearch"
+      ]
+    }
+  }
+}

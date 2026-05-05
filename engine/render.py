@@ -5893,3 +5893,24 @@ class Renderer:
             fill = button.get("fill", (36, 52, 96))
             text = button.get("text_color", (245, 245, 245))
             self._draw_ui_button(rect, button["label"], fill, text, button.get("action"))
+
+    def draw_loading_overlay(self, message: str = "SIMULATING...") -> None:
+        """Draw a full-screen dimmed loading overlay and flip immediately."""
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+
+        panel_w, panel_h = 420, 120
+        panel = pygame.Rect((SCREEN_W - panel_w) // 2, (SCREEN_H - panel_h) // 2, panel_w, panel_h)
+        pygame.draw.rect(self.screen, (16, 18, 24), panel, border_radius=10)
+        pygame.draw.rect(self.screen, (76, 76, 92), panel, 2, border_radius=10)
+
+        label = message
+        lw = text_width(label, 3)
+        draw_text(self.screen, label, panel.x + (panel_w - lw) // 2, panel.y + 28, (245, 245, 245), scale=3)
+
+        sub = "PLEASE WAIT"
+        sw = text_width(sub, 2)
+        draw_text(self.screen, sub, panel.x + (panel_w - sw) // 2, panel.y + 72, (160, 160, 172), scale=2)
+
+        pygame.display.flip()

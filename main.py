@@ -1162,7 +1162,9 @@ class ManagerGameApp:
             return
         managed_club_id = self._managed_club_id()
         prev_transfer_unread = self._count_unread_transfer_messages()
+        self.renderer.draw_loading_overlay("SIMULATING...")
         for _ in range(365):
+            pygame.event.pump()  # keep OS from marking the window as unresponsive
             with db_session(self.db_path) as conn:
                 advance_save_one_day(conn, self.active_save_id, managed_club_id)
             self._reload_overview()
@@ -1348,7 +1350,8 @@ class ManagerGameApp:
                     (self.active_save_id, fixture_date_str, managed_id_str, managed_id_str),
                 ).fetchall()
                 if cross_comp_rows:
-                    sy = int((conn.execute("SELECT season_year FROM saves WHERE id=?", (self.active_save_id,)).fetchone() or {}).get("season_year", 2025))
+                    _sy_row = conn.execute("SELECT season_year FROM saves WHERE id=?", (self.active_save_id,)).fetchone()
+                    sy = int(_sy_row["season_year"]) if _sy_row else 2025
                     simulate_all_ai_fixtures(conn, self.active_save_id, cross_comp_rows, sy)
             # Generate TOTW immediately so it appears on the next overview load
             # (uses virtual date = fixture_date + 2 to satisfy the 2-day check)
