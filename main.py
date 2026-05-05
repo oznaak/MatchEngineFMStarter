@@ -47,6 +47,7 @@ from engine.db import (
     set_active_save_id,
     trigger_totw_for_match_day,
     mark_message_read,
+    list_save_messages,
     list_club_players,
     get_club_staff,
     set_club_staff,
@@ -500,6 +501,7 @@ class ManagerGameApp:
         self.overview_club_id = club_id
         self.saves = []
         self.overview_tab = "overview"
+        self.modal = None
         self.screen = "overview"
 
     def _save_option(self, key: str, value: str) -> None:
@@ -1257,8 +1259,9 @@ class ManagerGameApp:
     def _advance_one_day(self) -> None:
         if self.active_save_id is None:
             return
+        self.renderer.draw_loading_overlay("ADVANCING...")
+        managed_club_id = self._managed_club_id()
         with db_session(self.db_path) as conn:
-            managed_club_id = self._managed_club_id()
             advance_save_one_day(conn, self.active_save_id, managed_club_id)
         self._reload_overview()
         pygame.event.clear()  # discard clicks that queued during the blocking DB work
@@ -1269,7 +1272,7 @@ class ManagerGameApp:
             return
         managed_club_id = self._managed_club_id()
         prev_transfer_unread = self._count_unread_transfer_messages()
-        self.renderer.draw_loading_overlay("SIMULATING...")
+        self.renderer.draw_loading_overlay("ADVANCING...")
         for _ in range(365):
             pygame.event.pump()  # keep OS from marking the window as unresponsive
             with db_session(self.db_path) as conn:
@@ -1367,6 +1370,7 @@ class ManagerGameApp:
     def _finish_matchday_with_score(self, score_override: tuple[int, int] | None) -> None:
         if not self.match_engine or not self.match_fixture or not self.match_clubs or self.active_save_id is None:
             return
+        self.renderer.draw_loading_overlay("ADVANCING...")
         season_clubs = self.match_clubs
         fixture = self.match_fixture
         fixture_report = self._build_match_report(self.match_engine, fixture) if score_override is None else None
@@ -1711,6 +1715,12 @@ class ManagerGameApp:
             self.screen = "select_club"
             threading.Thread(target=self._async_load_league_clubs, args=(self.selected_league_id,), daemon=True).start()
             return
+        if action.startswith("club:confirm_sign:"):
+            club_id = action.split(":", 2)[2]
+            self.selected_club_id = club_id
+            self.modal = {"title": "STARTING SEASON...", "message": "Please wait", "buttons": []}
+            threading.Thread(target=self._async_create_new_save, args=(club_id,), daemon=True).start()
+            return
         if action.startswith("club:"):
             # Show club sign/contract confirmation modal with club details
             club_id = action.split(":", 1)[1]
@@ -1746,13 +1756,6 @@ class ManagerGameApp:
                     {"label": "SIGN CONTRACT", "action": f"club:confirm_sign:{club_id}", "fill": (46, 160, 67), "text_color": (245, 245, 245)},
                 ],
             }
-            return
-        if action.startswith("club:confirm_sign:"):
-            club_id = action.split(":", 2)[2]
-            self.selected_club_id = club_id
-            self.modal = None
-            # Run save creation in background to avoid blocking the UI and rendering glitches
-            threading.Thread(target=self._async_create_new_save, args=(club_id,), daemon=True).start()
             return
         if action == "select_club:next":
             self.select_club_page = min(self.select_club_page + 1, max(0, (len(self.club_choices) - 1) // self.clubs_per_page))
@@ -2051,7 +2054,7 @@ class ManagerGameApp:
                     self.db_worker.enqueue(mark_message_read, int(self.active_save_id), int(msg_id))
                     msg["is_read"] = True
                     if self.overview:
-                        self.overview["unread_messages"] = max(0, int(self.overview.get("unread_messages", 0)) - 1)
+                        self.overview["messages_unread"] = max(0, int(self.overview.get("messages_unread", 0)) - 1)
                 body_str = str(msg.get("body", ""))
                 totw_data = None
                 try:
@@ -2081,7 +2084,10 @@ class ManagerGameApp:
             total = int(self.overview.get("messages_total", 0))
             max_page = max(0, (total - 1) // 10)
             self.overview_news_page = max(0, min(page, max_page))
-            self._reload_state()
+            with db_session(self.db_path) as conn:
+                self.overview["messages"] = list_save_messages(
+                    conn, self.active_save_id, limit=10, offset=self.overview_news_page * 10
+                )
             return
         if action.startswith("squad:list_player:"):
             player_id = action.split(":", 2)[2]

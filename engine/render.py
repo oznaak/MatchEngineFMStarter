@@ -2561,7 +2561,17 @@ class Renderer:
             advance_rect = pygame.Rect(right_x - 146, 11, 146, 40)
             self._draw_ui_button(advance_rect, "ADVANCE", primary, secondary, "overview:advance_day")
             skip_rect = pygame.Rect(advance_rect.x - 44, 11, 40, 40)
-            self._draw_ui_button(skip_rect, ">>", (40, 44, 54), (200, 200, 210), "overview:advance_to_event")
+            pygame.draw.rect(self.screen, (40, 44, 54), skip_rect, border_radius=6)
+            pygame.draw.rect(self.screen, (22, 22, 26), skip_rect, 2, border_radius=6)
+            cx, cy = skip_rect.centerx, skip_rect.centery
+            aw, ah = 7, 9
+            for ox in (-4, 3):
+                pygame.draw.polygon(self.screen, (255, 255, 255), [
+                    (cx + ox, cy - ah // 2),
+                    (cx + ox + aw, cy),
+                    (cx + ox, cy + ah // 2),
+                ])
+            self._register_ui("overview:advance_to_event", skip_rect)
             if skip_rect.collidepoint(pygame.mouse.get_pos()):
                 tooltip_text = "ADVANCE UNTIL NEXT EVENT"
                 tw = text_width(tooltip_text, 1) + 18
@@ -3316,8 +3326,8 @@ class Renderer:
             score_color = (248, 187, 32) if played else (220, 220, 224)
             draw_text(self.screen, score, score_rect.centerx - text_width(score, 2) // 2, score_rect.y + 8, score_color, scale=2)
 
-            home_color = primary if is_user_match and home_id == managed_club_id else (245, 245, 245)
-            away_color = primary if is_user_match and away_id == managed_club_id else (245, 245, 245)
+            home_color = (245, 245, 245)
+            away_color = (245, 245, 245)
             draw_text(self.screen, home_name, home_badge.right + 10, row.y + 18, home_color, scale=1)
             away_name_x = away_badge.x - 10 - text_width(away_name, 1)
             draw_text(self.screen, away_name, away_name_x, row.y + 18, away_color, scale=1)

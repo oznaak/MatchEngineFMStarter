@@ -1,7 +1,7 @@
 // Example: ~/.claude.json (recommended for reliability)
 {
   "projects": {
-    "/home/oznaak/Documents/projects/MatchEngineFMStarter/.claude/settings.json": {
+    "/home/oznaak/Documents/projects/MatchEngineFMStarter": {
       "mcpServers": {
         "filesystem": {
           "command": "npx",
