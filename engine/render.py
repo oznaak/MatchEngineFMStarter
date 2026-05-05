@@ -2220,11 +2220,15 @@ class Renderer:
         self._draw_panel(panel, "SELECT LEAGUE", (248, 187, 32))
         for idx, league in enumerate(leagues):
             rect = pygame.Rect(panel.x + 28, panel.y + 62 + idx * 78, panel.width - 56, 56)
-            self._draw_ui_button(rect, league["name"], (220, 52, 52), (245, 245, 245), f"league:{league['id']}")
+            fill = hex_to_rgb(league.get("primary_color", "#2E3A6A"), (220, 52, 52))
+            text = hex_to_rgb(league.get("secondary_color", "#F5F5F5"), (245, 245, 245))
+            self._draw_ui_button(rect, league["name"], fill, text, f"league:{league['id']}")
         self._draw_ui_button(pygame.Rect(panel.x + 28, panel.bottom - 60, 128, 40), "BACK", (36, 52, 96), (245, 245, 245), "back:new_game_name")
 
     def _draw_club_select(self, view: dict) -> None:
         clubs = view.get("clubs", [])
+        page = int(view.get("clubs_page", 0))
+        page_count = int(view.get("clubs_page_count", 1))
         panel = pygame.Rect(100, 110, SCREEN_W - 200, SCREEN_H - 210)
         self._draw_panel(panel, "SELECT CLUB", (248, 187, 32))
         columns = 2
@@ -2246,7 +2250,14 @@ class Renderer:
             draw_text(self.screen, meta, rect.x + 18, rect.y + 58, text, scale=2)
             draw_text(self.screen, squad, rect.x + 18, rect.y + 86, text, scale=2)
             self._register_ui(f"club:{club['id']}", rect)
-        self._draw_ui_button(pygame.Rect(panel.x + 26, panel.bottom - 54, 128, 40), "BACK", (36, 52, 96), (245, 245, 245), "back:select_league")
+        # Pagination controls
+        page_text = f"Page {page + 1}/{page_count}"
+        draw_text(self.screen, page_text, panel.centerx - text_width(page_text, 2) // 2, panel.bottom - 50, (245, 245, 245), scale=2)
+        if page > 0:
+            self._draw_ui_button(pygame.Rect(panel.x + 26, panel.bottom - 54, 128, 40), "PREV", (36, 52, 96), (245, 245, 245), "select_club:prev")
+        if page + 1 < page_count:
+            self._draw_ui_button(pygame.Rect(panel.right - 154, panel.bottom - 54, 128, 40), "NEXT", (36, 52, 96), (245, 245, 245), "select_club:next")
+        self._draw_ui_button(pygame.Rect(panel.centerx - 64, panel.bottom - 54, 128, 40), "BACK", (36, 52, 96), (245, 245, 245), "back:select_league")
 
     def _draw_options_screen(self, view: dict) -> None:
         options = view.get("options", {})

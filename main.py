@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pygame
+import threading
 
 from engine.condition import advance_condition_days, apply_post_match_condition, load_condition_state, save_condition_state, save_condition_state_to_conn
 from engine.db import (
@@ -218,6 +219,9 @@ class ManagerGameApp:
         self.leagues: list[dict] = []
         self.club_choices: list[dict] = []
         self.saves: list[dict] = []
+        # Async UI helpers
+        self.select_club_page: int = 0
+        self.clubs_per_page: int = 8
         self.selected_save_id: int | None = None
         self.active_save_id: int | None = None
         self.overview: dict | None = None
@@ -343,6 +347,20 @@ class ManagerGameApp:
     def _reload_state(self, apply_display: bool = False) -> None:
         # Schema/bootstrap work is expensive and only needed once at startup.
         # Avoid re-running `bootstrap_database` here to keep UI transitions snappy.
+        def _league_colors(lid: str) -> tuple[str, str]:
+            lid_up = (lid or "").upper()
+            if lid_up.startswith("ENG"):
+                return ("#FFFFFF", "#D03434")
+            if lid_up.startswith("POR"):
+                return ("#006600", "#CC0033")
+            if lid_up.startswith("ESP") or lid_up.startswith("SPA"):
+                return ("#C60B1E", "#F1BF00")
+            if lid_up.startswith("GER"):
+                return ("#000000", "#DD0000")
+            if lid_up.startswith("FRA"):
+                return ("#002395", "#ED2939")
+            return ("#2E3A6A", "#F5F5F5")
+
         with db_session(self.db_path) as conn:
             self.options = load_app_options(conn)
             self.option_choices = {
@@ -361,7 +379,7 @@ class ManagerGameApp:
                 )
             }
             self.option_choices["display"] = self.renderer.available_displays()
-            self.leagues = list_leagues(conn)
+            raw_leagues = list_leagues(conn)
             self.saves = list_save_games(conn)
             if self.selected_save_id is not None and not any(save["id"] == self.selected_save_id for save in self.saves):
                 self.selected_save_id = None
@@ -374,6 +392,9 @@ class ManagerGameApp:
             else:
                 self.overview = None
                 self.staff_data = {}
+
+        # Post-process leagues to include color hints
+        self.leagues = [{**l, "primary_color": _league_colors(l["id"])[0], "secondary_color": _league_colors(l["id"])[1]} for l in (raw_leagues or [])]
         if self.overview:
             self._load_squad_draft()
             self._clamp_fixtures_page()
@@ -393,6 +414,26 @@ class ManagerGameApp:
             return
         with db_session(self.db_path) as conn:
             self.club_choices = list_league_clubs(conn, self.selected_league_id)
+
+    def _async_load_league_clubs(self, league_id: str) -> None:
+        try:
+            with db_session(self.db_path) as conn:
+                clubs = list_league_clubs(conn, league_id)
+        except Exception:
+            clubs = []
+        # Add fallback colors if missing
+        for c in clubs:
+            c.setdefault("primary_color", "#2E3A6A")
+            c.setdefault("secondary_color", "#F5F5F5")
+        self.club_choices = clubs
+
+    def _async_load_saves(self) -> None:
+        try:
+            with db_session(self.db_path) as conn:
+                saves = list_save_games(conn)
+        except Exception:
+            saves = []
+        self.saves = saves
 
     def _reload_transfer_data(self) -> None:
         if not self.active_save_id or not self.overview:
@@ -1603,8 +1644,11 @@ class ManagerGameApp:
             return
         if action == "menu:load_game":
             self.selected_save_id = None
+            # Open load screen immediately and fetch saves asynchronously
+            self.selected_save_id = None
+            self.saves = []
             self.screen = "load_game"
-            self._reload_state()
+            threading.Thread(target=self._async_load_saves, daemon=True).start()
             return
         if action == "menu:options":
             self.options_return_screen = None
@@ -1636,12 +1680,21 @@ class ManagerGameApp:
             return
         if action.startswith("league:"):
             self.selected_league_id = action.split(":", 1)[1]
-            self._load_league_clubs()
+            # Open select club screen and load clubs in background
+            self.club_choices = []
+            self.select_club_page = 0
             self.screen = "select_club"
+            threading.Thread(target=self._async_load_league_clubs, args=(self.selected_league_id,), daemon=True).start()
             return
         if action.startswith("club:"):
             self.selected_club_id = action.split(":", 1)[1]
             self._create_new_save()
+            return
+        if action == "select_club:next":
+            self.select_club_page = min(self.select_club_page + 1, max(0, (len(self.club_choices) - 1) // self.clubs_per_page))
+            return
+        if action == "select_club:prev":
+            self.select_club_page = max(0, self.select_club_page - 1)
             return
         if action.startswith("option:"):
             _, key, value = action.split(":", 2)
@@ -2490,7 +2543,16 @@ class ManagerGameApp:
         if self.screen == "select_league":
             return {"screen": "select_league", "leagues": self.leagues}
         if self.screen == "select_club":
-            return {"screen": "select_club", "clubs": self.club_choices}
+            # Provide paginated clubs to the renderer to avoid layout overflow
+            total = len(self.club_choices or [])
+            per_page = int(self.clubs_per_page or 8)
+            page = int(self.select_club_page or 0)
+            page_count = max(1, (total + per_page - 1) // per_page)
+            page = max(0, min(page, page_count - 1))
+            start = page * per_page
+            end = start + per_page
+            clubs_slice = (self.club_choices or [])[start:end]
+            return {"screen": "select_club", "clubs": clubs_slice, "clubs_page": page, "clubs_page_count": page_count}
         if self.screen == "options":
             return {"screen": "options", "options": self.options, "choices": self.option_choices}
         if self.screen == "load_game":
