@@ -2598,7 +2598,48 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
         clear_active_save_id(conn)
 
 
+def _ensure_multi_league_seeded(conn: sqlite3.Connection, save_id: int) -> None:
+    """Migration: seed competitions/cups for saves created before the multi-league patch."""
+    count = conn.execute(
+        "SELECT COUNT(*) AS c FROM competitions WHERE save_id=?", (save_id,)
+    ).fetchone()
+    if count and int(count["c"]) > 0:
+        return
+    save_row = conn.execute(
+        "SELECT season_year, current_date FROM saves WHERE id=?", (save_id,)
+    ).fetchone()
+    if save_row is None:
+        return
+    season_year = int(save_row["season_year"])
+    current_date = str(save_row["current_date"] or "")
+    # Ensure save_league_clubs is seeded (needed by seed_cup_for_save)
+    slc_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM save_league_clubs WHERE save_id=?", (save_id,)
+    ).fetchone()
+    if slc_count and int(slc_count["c"]) == 0:
+        _seed_save_league_clubs(conn, save_id, season_year)
+    from .cups import seed_cup_for_save, CUP_CONFIGS
+    from .simulation import simulate_all_ai_fixtures
+    for cup_key in CUP_CONFIGS:
+        seed_cup_for_save(conn, save_id, cup_key, season_year)
+    # Batch-simulate any cup fixtures that are already past the current date
+    # so the bracket state is coherent for mid-season saves.
+    if current_date:
+        past_cup_rows = conn.execute(
+            """
+            SELECT f.id, f.home_club_id, f.away_club_id, f.competition_id FROM fixtures f
+            JOIN competitions c ON c.id = f.competition_id AND c.save_id = f.save_id
+            WHERE f.save_id=? AND f.played=0 AND f.fixture_date < ? AND c.type='cup'
+            """,
+            (save_id, current_date),
+        ).fetchall()
+        if past_cup_rows:
+            simulate_all_ai_fixtures(conn, save_id, past_cup_rows, season_year)
+    conn.commit()
+
+
 def load_save_overview(conn: sqlite3.Connection, save_id: int, news_page: int = 0) -> dict | None:
+    _ensure_multi_league_seeded(conn, save_id)
     seed_save_player_condition_defaults(conn, save_id)
     seed_save_player_status_defaults(conn, save_id)
     seed_save_club_setups(conn, save_id)
@@ -2760,7 +2801,7 @@ def get_playable_fixture_for_save(conn: sqlite3.Connection, save_id: int, club_i
     row = conn.execute(
         """
         SELECT f.id, f.match_day, f.fixture_date, f.home_club_id, f.away_club_id,
-               hc.name AS home_name, ac.name AS away_name
+               f.competition_id, hc.name AS home_name, ac.name AS away_name
         FROM fixtures f
         JOIN clubs hc ON hc.id = f.home_club_id
         JOIN clubs ac ON ac.id = f.away_club_id
@@ -2782,21 +2823,39 @@ def get_playable_fixture_for_save(conn: sqlite3.Connection, save_id: int, club_i
         "fixture_date_label": format_game_date(str(row["fixture_date"] or "")),
         "home_club_id": str(row["home_club_id"]),
         "away_club_id": str(row["away_club_id"]),
+        "competition_id": str(row["competition_id"] or ""),
         "home_name": str(row["home_name"]),
         "away_name": str(row["away_name"]),
     }
 
 
-def list_matchday_fixtures(conn: sqlite3.Connection, save_id: int, match_day: int) -> List[dict]:
-    rows = conn.execute(
-        """
-        SELECT id, fixture_date, home_club_id, away_club_id
-        FROM fixtures
-        WHERE save_id = ? AND match_day = ?
-        ORDER BY id
-        """,
-        (save_id, match_day),
-    ).fetchall()
+def list_matchday_fixtures(
+    conn: sqlite3.Connection,
+    save_id: int,
+    match_day: int,
+    competition_id: str | None = None,
+) -> List[dict]:
+    """Return fixtures for a match_day, optionally filtered to one competition."""
+    if competition_id:
+        rows = conn.execute(
+            """
+            SELECT id, fixture_date, home_club_id, away_club_id
+            FROM fixtures
+            WHERE save_id = ? AND match_day = ? AND competition_id = ?
+            ORDER BY id
+            """,
+            (save_id, match_day, competition_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, fixture_date, home_club_id, away_club_id
+            FROM fixtures
+            WHERE save_id = ? AND match_day = ?
+            ORDER BY id
+            """,
+            (save_id, match_day),
+        ).fetchall()
     return [
         {
             "id": int(row["id"]),

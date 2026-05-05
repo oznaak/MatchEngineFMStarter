@@ -1303,7 +1303,8 @@ class ManagerGameApp:
                         f"red_card:{fixture['id']}:{player_id}",
                     )
             match_day = fixture["match_day"]
-            same_day = list_matchday_fixtures(conn, self.active_save_id, match_day)
+            fixture_competition_id = str(fixture.get("competition_id") or "")
+            same_day = list_matchday_fixtures(conn, self.active_save_id, match_day, competition_id=fixture_competition_id or None)
             for other in same_day:
                 if other["id"] == fixture["id"]:
                     continue
