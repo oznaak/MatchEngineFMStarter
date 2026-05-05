@@ -61,6 +61,7 @@ from engine.db import (
     load_cup_bracket,
 )
 from engine.loader import available_formations, pick_best_xi
+from engine.cups import CUP_CONFIGS
 from engine.match_engine import MatchEngine
 from engine.models import (
     DEFAULT_PLAYER_INSTRUCTIONS,
@@ -473,6 +474,30 @@ class ManagerGameApp:
         self.active_save_id = self.overview["save_id"] if self.overview else None
         self._reload_transfer_data()
         self.overview_club_id = self.selected_club_id
+        self.saves = []
+        self.overview_tab = "overview"
+        self.screen = "overview"
+
+    def _async_create_new_save(self, club_id: str) -> None:
+        # Background wrapper for _create_new_save to avoid UI freezes
+        if not self.manager_name.strip():
+            self.error_message = "Manager name required."
+            return
+        if not self.selected_league_id or not club_id:
+            return
+        try:
+            with db_session(self.db_path) as conn:
+                save_id = create_save_game(conn, self.manager_name, self.selected_league_id, club_id)
+                overview = load_save_overview(conn, save_id)
+        except Exception:
+            # On failure, set an error modal on the main thread
+            self.modal = {"type": "error", "title": "ERROR", "body": "Failed to create save."}
+            return
+        # Update UI state (existing code updates shared state directly from background threads elsewhere)
+        self.overview = overview
+        self.active_save_id = overview["save_id"] if overview else None
+        self._reload_transfer_data()
+        self.overview_club_id = club_id
         self.saves = []
         self.overview_tab = "overview"
         self.screen = "overview"
@@ -1687,8 +1712,47 @@ class ManagerGameApp:
             threading.Thread(target=self._async_load_league_clubs, args=(self.selected_league_id,), daemon=True).start()
             return
         if action.startswith("club:"):
-            self.selected_club_id = action.split(":", 1)[1]
-            self._create_new_save()
+            # Show club sign/contract confirmation modal with club details
+            club_id = action.split(":", 1)[1]
+            self.selected_club_id = club_id
+            # Load club meta and players synchronously (small query)
+            with db_session(self.db_path) as conn:
+                clubs_meta = list_league_clubs(conn, self.selected_league_id) if self.selected_league_id else []
+                club_meta = next((c for c in clubs_meta if str(c.get("id")) == str(club_id)), None)
+                players = list_club_players(conn, club_id)
+            # Finances placeholder (defaults used for new saves)
+            finances = {"balance": 25000000, "transfer_budget": 10000000, "wage_budget_weekly": 500000}
+            # Build competitions relevant to this club: the selected league plus domestic cups for that league
+            competitions = []
+            # league entry
+            league_meta = next((l for l in self.leagues if str(l.get("id")) == str(self.selected_league_id)), None)
+            if league_meta:
+                competitions.append({"id": league_meta.get("id"), "name": league_meta.get("name"), "type": "league"})
+            # cups that include this league
+            for cup_key, cfg in CUP_CONFIGS.items():
+                if self.selected_league_id in cfg.get("leagues", []):
+                    competitions.append({"id": cup_key, "name": cfg.get("name", cup_key), "type": "cup"})
+            objectives = [{"text": "Win the league"}, {"text": "Reach cup quarter-final"}]  # placeholder
+            self.modal = {
+                "type": "club_offer",
+                "title": f"SIGN FOR {str(club_meta.get('name') if club_meta else club_id).upper()}",
+                "club": club_meta or {"id": club_id, "name": str(club_id)},
+                "players": players,
+                "finances": finances,
+                "competitions": competitions,
+                "objectives": objectives,
+                "buttons": [
+                    {"label": "BACK", "action": "modal:close"},
+                    {"label": "SIGN CONTRACT", "action": f"club:confirm_sign:{club_id}", "fill": (46, 160, 67), "text_color": (245, 245, 245)},
+                ],
+            }
+            return
+        if action.startswith("club:confirm_sign:"):
+            club_id = action.split(":", 2)[2]
+            self.selected_club_id = club_id
+            self.modal = None
+            # Run save creation in background to avoid blocking the UI and rendering glitches
+            threading.Thread(target=self._async_create_new_save, args=(club_id,), daemon=True).start()
             return
         if action == "select_club:next":
             self.select_club_page = min(self.select_club_page + 1, max(0, (len(self.club_choices) - 1) // self.clubs_per_page))

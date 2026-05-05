@@ -2245,6 +2245,14 @@ class Renderer:
             pygame.draw.rect(self.screen, fill, rect, border_radius=10)
             pygame.draw.rect(self.screen, (16, 18, 22), rect, 2, border_radius=10)
             draw_text(self.screen, club["name"], rect.x + 18, rect.y + 18, text, scale=2)
+            # Club badge on card (right side)
+            badge_rect = pygame.Rect(rect.right - 86, rect.y + 12, 64, 80)
+            self._draw_club_badge({
+                "template_id": club.get("badge_template_id", club.get("badge_id", "1")),
+                "primary": club.get("badge_primary", club.get("primary_color", "#2E3A6A")),
+                "secondary": club.get("badge_secondary", club.get("secondary_color", "#F5F5F5")),
+                "border": club.get("badge_border", "#F5F5F5"),
+            }, badge_rect)
             meta = f"OVR {club['avg_ovr']:.1f}"
             squad = f"PLAYERS {club['players_count']}"
             draw_text(self.screen, meta, rect.x + 18, rect.y + 58, text, scale=2)
@@ -5332,6 +5340,99 @@ class Renderer:
             self._draw_ui_button(rect, button["label"], button.get("fill", (36, 52, 96)), button.get("text_color", (245, 245, 245)), button.get("action"), scale=2)
             x += 196
 
+    def _draw_club_offer_modal(self, modal: dict) -> None:
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 200))
+        self.screen.blit(overlay, (0, 0))
+        club = modal.get("club") or {}
+        players = modal.get("players", [])
+        finances = modal.get("finances", {})
+        competitions = modal.get("competitions", [])
+        objectives = modal.get("objectives", [])
+
+        panel_w = min(1000, SCREEN_W - 120)
+        panel_h = min(680, SCREEN_H - 120)
+        panel = pygame.Rect((SCREEN_W - panel_w) // 2, (SCREEN_H - panel_h) // 2, panel_w, panel_h)
+        self._draw_panel(panel, None)
+        title = str(modal.get("title", "SIGN FOR CLUB")).upper()
+        draw_text(self.screen, title, panel.x + (panel.width - text_width(title, 3)) // 2, panel.y + 18, (245, 245, 245), scale=3)
+
+        # Left: badge and club meta
+        left = pygame.Rect(panel.x + 20, panel.y + 72, 240, panel.height - 160)
+        pygame.draw.rect(self.screen, (18, 20, 24), left, border_radius=6)
+        name = str(club.get("name", "CLUB")).upper()
+        draw_text(self.screen, name, left.x + 12, left.y + 12, (245, 245, 245), scale=2)
+        badge_rect = pygame.Rect(left.x + 18, left.y + 52, 80, 100)
+        if club:
+            self._draw_club_badge({
+                "template_id": club.get("badge_template_id", "1"),
+                "primary": club.get("badge_primary", club.get("primary_color", "#2E3A6A")),
+                "secondary": club.get("badge_secondary", club.get("secondary_color", "#F5F5F5")),
+                "border": club.get("badge_border", "#F5F5F5"),
+            }, badge_rect)
+        # Finances
+        fin_y = badge_rect.bottom + 12
+        draw_text(self.screen, "FINANCES", left.x + 12, fin_y, (248, 187, 32), scale=2)
+        fin_y += 30
+        draw_text(self.screen, f"Balance: £{int(finances.get('balance',0)):,}", left.x + 12, fin_y, (210,210,214), scale=1)
+        fin_y += 22
+        draw_text(self.screen, f"Transfer Budget: £{int(finances.get('transfer_budget',0)):,}", left.x + 12, fin_y, (210,210,214), scale=1)
+
+        # Middle: players list
+        mid = pygame.Rect(left.right + 16, panel.y + 72, panel.width - left.width - 320, panel.height - 160)
+        pygame.draw.rect(self.screen, (18, 20, 24), mid, border_radius=6)
+        draw_text(self.screen, "PLAYERS", mid.x + 12, mid.y + 8, (248, 187, 32), scale=2)
+        py = mid.y + 40
+        # Show full players list in two logical columns, with three invisible sub-columns:
+        # Name | Position | OVR — each left-aligned inside its sub-column.
+        count = len(players)
+        cols = 2 if count > 1 else 1
+        rows = math.ceil(count / cols) if count > 0 else 0
+        col_w = (mid.width - 28) // max(1, cols)
+        line_h = 22
+        name_w = int(col_w * 0.62)
+        pos_w = int(col_w * 0.18)
+        ovr_w = col_w - name_w - pos_w - 8
+        padding = 6
+        for idx, p in enumerate(players):
+            col = idx // rows
+            row = idx % rows
+            name = short_display_name(str(p.get("name", "")), 22)
+            pos = str(p.get("position", ""))
+            ovr = int(p.get("ovr", 0) or 0)
+            cx = mid.x + 12 + col * (col_w + 4)
+            name_x = cx + padding
+            pos_x = name_x + name_w + 4
+            ovr_x = pos_x + pos_w + 6
+            y = py + row * line_h
+            draw_text(self.screen, name, name_x, y, (248, 187, 32), scale=1)
+            draw_text(self.screen, pos, pos_x, y, (200, 200, 204), scale=1)
+            draw_text(self.screen, str(ovr), ovr_x, y, (245, 245, 245), scale=1)
+
+        # Right: competitions & objectives
+        right = pygame.Rect(mid.right + 16, panel.y + 72, 240, panel.height - 160)
+        pygame.draw.rect(self.screen, (18,20,24), right, border_radius=6)
+        draw_text(self.screen, "COMPETITIONS", right.x + 12, right.y + 8, (248,187,32), scale=2)
+        ry = right.y + 36
+        for c in competitions[:6]:
+            cname = str(c.get("name") or c.get("id",""))
+            draw_text(self.screen, cname, right.x + 12, ry, (245,245,245), scale=1)
+            ry += 20
+        draw_text(self.screen, "OBJECTIVES", right.x + 12, ry + 12, (248,187,32), scale=2)
+        oy = ry + 44
+        for obj in objectives[:4]:
+            draw_text(self.screen, f"- {str(obj.get('text',''))}", right.x + 12, oy, (210,210,214), scale=1)
+            oy += 20
+
+        # Buttons
+        button_y = panel.bottom - 64
+        btn_w = 180
+        gap = 24
+        total_w = btn_w * 2 + gap
+        bx = panel.centerx - total_w // 2
+        self._draw_ui_button(pygame.Rect(bx, button_y, btn_w, 44), "BACK", (36,52,96), (245,245,245), "modal:close")
+        self._draw_ui_button(pygame.Rect(bx + btn_w + gap, button_y, btn_w, 44), "SIGN CONTRACT", (46,160,67), (245,245,245), modal.get("buttons", [])[1].get("action") if len(modal.get("buttons", []))>1 else None)
+
     def _draw_news_detail_modal(self, modal: dict) -> None:
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 170))
@@ -5873,6 +5974,9 @@ class Renderer:
         self.ui_interaction_enabled = True
         if modal.get("type") == "match_preview":
             self._draw_match_preview_modal(modal)
+            return
+        if modal.get("type") == "club_offer":
+            self._draw_club_offer_modal(modal)
             return
         if modal.get("type") == "news_detail":
             self._draw_news_detail_modal(modal)
