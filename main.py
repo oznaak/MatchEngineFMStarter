@@ -69,6 +69,7 @@ from engine.models import (
     normalize_team_instructions,
 )
 from engine.render import Renderer
+from engine.db_worker import DBWorker
 
 ROOT = Path(__file__).resolve().parent
 DB_FILE = ROOT / "data" / "game.db"
@@ -193,6 +194,13 @@ def run_match_viewer(home_id: str, away_id: str, days: int) -> int:
 class ManagerGameApp:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        # Background DB worker to avoid blocking main/UI thread on commits
+        self.db_worker = DBWorker(self.db_path)
+        # Debounce state for squad saves
+        self._squad_save_pending: bool = False
+        self._squad_save_last_time: float = 0.0
+        self._squad_save_delay: float = 0.6
+        self._squad_save_payload: dict | None = None
         with db_session(self.db_path) as conn:
             bootstrap_database(conn)
             options = load_app_options(conn)
@@ -333,8 +341,9 @@ class ManagerGameApp:
         self._reload_transfer_data()
 
     def _reload_state(self, apply_display: bool = False) -> None:
+        # Schema/bootstrap work is expensive and only needed once at startup.
+        # Avoid re-running `bootstrap_database` here to keep UI transitions snappy.
         with db_session(self.db_path) as conn:
-            bootstrap_database(conn)
             self.options = load_app_options(conn)
             self.option_choices = {
                 key: list_option_choices(conn, key)
@@ -428,10 +437,16 @@ class ManagerGameApp:
         self.screen = "overview"
 
     def _save_option(self, key: str, value: str) -> None:
-        with db_session(self.db_path) as conn:
-            save_app_option(conn, key, value)
-            conn.commit()
-        self._reload_state(apply_display=key in {"resolution", "window_mode", "display"})
+        # For display-changing options we need immediate reload; otherwise enqueue.
+        if key in {"resolution", "window_mode", "display"}:
+            with db_session(self.db_path) as conn:
+                save_app_option(conn, key, value)
+                conn.commit()
+            self._reload_state(apply_display=True if key in {"resolution", "window_mode", "display"} else False)
+            return
+        # Update in-memory and enqueue save to background worker
+        self.options[key] = value
+        self.db_worker.enqueue(save_app_option, str(key), str(value))
 
     def _is_bound(self, event: pygame.event.Event, option_key: str, fallback: str) -> bool:
         value = self.options.get(option_key, fallback)
@@ -559,19 +574,38 @@ class ManagerGameApp:
         club_id = self._managed_club_id()
         if self.active_save_id is None or not club_id or not self.squad_draft_xi_ids:
             return
-        with db_session(self.db_path) as conn:
-            save_save_club_setup(
-                conn,
-                self.active_save_id,
+        # Debounce and batch frequent squad writes: schedule payload and flush
+        # after a short idle period to avoid excessive DB churn while dragging.
+        try:
+            import time
+
+            self._squad_save_payload = {
+                "active_save_id": int(self.active_save_id),
+                "club_id": str(club_id),
+                "formation": str(self.squad_draft_formation),
+                "xi_ids": list(self.squad_draft_xi_ids),
+                "bench_ids": list(self.squad_draft_bench_ids),
+                "instructions": dict(self.squad_draft_instructions),
+                "player_instructions": dict(self.squad_draft_player_instructions),
+            }
+            self._squad_save_last_time = float(time.time())
+            self._squad_save_pending = True
+        except Exception:
+            # Fallback: enqueue immediately if time import or other fails
+            self.db_worker.enqueue(
+                save_save_club_setup,
+                int(self.active_save_id),
                 club_id,
                 self.squad_draft_formation,
-                self.squad_draft_xi_ids,
-                self.squad_draft_bench_ids,
-                self.squad_draft_instructions,
-                self.squad_draft_player_instructions,
+                list(self.squad_draft_xi_ids),
+                list(self.squad_draft_bench_ids),
+                dict(self.squad_draft_instructions),
+                dict(self.squad_draft_player_instructions),
             )
-            conn.commit()
-        self._reload_state()
+        # Avoid a full synchronous reload here (expensive DB reads that block the UI).
+        # The in-memory draft state is already updated and the renderer reads from it,
+        # so skip reloading everything to keep UI interactions snappy.
+        # If a background sync / refresh is needed later, implement an async worker.
 
     def _change_squad_formation(self, formation: str) -> None:
         if self.active_save_id is None or not self.overview:
@@ -657,18 +691,25 @@ class ManagerGameApp:
         training = dict(self.overview.get("training", {}))
         next_focus = str(team_focus or training.get("team_focus", "balanced"))
         next_intensity = str(intensity or training.get("intensity", "normal"))
-        with db_session(self.db_path) as conn:
-            save_training_settings(conn, self.active_save_id, club_id, next_focus, next_intensity)
-            conn.commit()
-        self._reload_state()
+        # Update in-memory overview immediately so UI reflects change,
+        # then enqueue DB write to avoid blocking.
+        if self.overview is not None:
+            self.overview["training"] = {"team_focus": next_focus, "intensity": next_intensity}
+        self.db_worker.enqueue(save_training_settings, int(self.active_save_id), str(club_id), str(next_focus), str(next_intensity))
 
     def _change_player_training_focus(self, player_id: str, focus: str) -> None:
         if self.active_save_id is None or not self.overview:
             return
-        with db_session(self.db_path) as conn:
-            save_player_training_focus(conn, self.active_save_id, player_id, focus)
-            conn.commit()
-        self._reload_state()
+        # Update in-memory overview/training for immediate UI feedback,
+        # then enqueue DB write to avoid blocking.
+        if self.overview is not None:
+            player_map = self.overview.get("players_by_club", {})
+            # Best-effort: record the player's focus in overview structure if present
+            for club_id, players in (player_map or {}).items():
+                for p in players:
+                    if str(p.get("id", "")) == str(player_id):
+                        p.setdefault("training_focus", focus)
+        self.db_worker.enqueue(save_player_training_focus, int(self.active_save_id), str(player_id), str(focus))
 
     def _update_player_instruction_from_pos(self, pos: tuple[int, int]) -> None:
         player_id = self.squad_slider_drag_player_id
@@ -1889,9 +1930,8 @@ class ManagerGameApp:
             if msg:
                 # Mark as read in DB and update local state without full reload
                 if self.active_save_id and not msg.get("is_read"):
-                    with db_session(self.db_path) as conn:
-                        mark_message_read(conn, self.active_save_id, msg_id)
-                        conn.commit()
+                    # Enqueue mark as read; update UI immediately
+                    self.db_worker.enqueue(mark_message_read, int(self.active_save_id), int(msg_id))
                     msg["is_read"] = True
                     if self.overview:
                         self.overview["unread_messages"] = max(0, int(self.overview.get("unread_messages", 0)) - 1)
@@ -2269,8 +2309,17 @@ class ManagerGameApp:
             due_date = (_date.fromisoformat(current_date) + _td(days=days)).isoformat()
             pct_min, pct_max = SCOUT_PCT_RANGE.get(scout_quality, (15, 25))
             with db_session(self.db_path) as conn:
-                submit_scout_task(conn, self.active_save_id, player_id, player_name, due_date, scout_quality, pct_min, pct_max)
-                conn.commit()
+                # Enqueue scout task write; update UI immediately.
+                self.db_worker.enqueue(
+                    submit_scout_task,
+                    int(self.active_save_id),
+                    player_id,
+                    player_name,
+                    due_date,
+                    scout_quality,
+                    pct_min,
+                    pct_max,
+                )
             self.detail_scout_pending = True
             self.modal = {
                 "title": "SCOUT DISPATCHED",
@@ -2300,10 +2349,15 @@ class ManagerGameApp:
             staff_type, quality = parts[2], parts[3]
             if not self.active_save_id:
                 return
-            with db_session(self.db_path) as conn:
-                set_club_staff(conn, self.active_save_id, staff_type, quality)
-                conn.commit()
-                self.staff_data = get_club_staff(conn, self.active_save_id)
+            # Update in-memory staff data for immediate UI feedback,
+            # enqueue DB write to avoid blocking.
+            if self.staff_data is None:
+                self.staff_data = {}
+            try:
+                self.staff_data[staff_type] = quality
+            except Exception:
+                pass
+            self.db_worker.enqueue(set_club_staff, int(self.active_save_id), str(staff_type), str(quality))
             self.modal = None
             return
         if action.startswith("scouting:player:"):
@@ -2556,6 +2610,27 @@ class ManagerGameApp:
     def run(self) -> int:
         while self.running:
             dt = self.renderer.tick()
+            # Flush debounced squad save if pending and delay elapsed
+            try:
+                import time
+
+                if self._squad_save_pending and (time.time() - float(self._squad_save_last_time) >= float(self._squad_save_delay)):
+                    payload = self._squad_save_payload or {}
+                    # Enqueue actual DB write
+                    self.db_worker.enqueue(
+                        save_save_club_setup,
+                        int(payload.get("active_save_id", self.active_save_id or 0)),
+                        str(payload.get("club_id", "")),
+                        str(payload.get("formation", "4-3-3")),
+                        list(payload.get("xi_ids", [])),
+                        list(payload.get("bench_ids", [])),
+                        dict(payload.get("instructions", {})),
+                        dict(payload.get("player_instructions", {})),
+                    )
+                    self._squad_save_pending = False
+                    self._squad_save_payload = None
+            except Exception:
+                pass
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
@@ -2773,6 +2848,11 @@ class ManagerGameApp:
                 self.renderer.draw_modal(self.modal)
                 pygame.display.flip()
         pygame.quit()
+        # Ensure any queued DB writes are flushed before exit.
+        try:
+            self.db_worker.stop(wait=True)
+        except Exception:
+            pass
         return 0
 
     def _managed_club_colors(self) -> tuple[tuple[int, int, int], tuple[int, int, int]] | None:

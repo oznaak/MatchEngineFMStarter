@@ -2587,6 +2587,14 @@ def delete_save_game(conn: sqlite3.Connection, save_id: int) -> None:
     conn.execute("DELETE FROM player_scouting WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM pending_scout_tasks WHERE save_id = ?", (int(save_id),))
     conn.execute("DELETE FROM saves WHERE id = ?", (int(save_id),))
+    # Remove records from other tables that reference this save_id but weren't
+    # covered above to ensure deleted saves free space.
+    conn.execute("DELETE FROM transfer_market WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM transfer_offers WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM player_contracts WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM save_finances WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM finance_transactions WHERE save_id = ?", (int(save_id),))
+    conn.execute("DELETE FROM save_player_club WHERE save_id = ?", (int(save_id),))
     remaining = conn.execute(
         "SELECT COUNT(*) AS count FROM saves WHERE manager_id = ?",
         (manager_id,),
